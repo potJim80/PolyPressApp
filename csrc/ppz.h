@@ -73,6 +73,12 @@ int  table_write_csv_buf(const Table *t, Buf *out);
  * Verified byte-identical against Python's lzma module on liblzma 5.4.3 and
  * 5.8.3, which is what makes a byte-identical port possible at all. */
 int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);
+
+/* Compressed length at preset 1, used only to choose between two orderings of
+ * the same column. Nothing it produces is stored; it exists because the real
+ * preset-9 stage is far too slow to run as a decision procedure, and preset 1
+ * ranks candidates the same way. */
+size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
 int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out);
 

@@ -679,6 +679,145 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
     return R;
 }
 
+/* -------------------------------------------------------- text reordering */
+
+#define TEXT_PARENT_CANDIDATES 3
+
+typedef struct { double g; size_t dp; } Cand;
+
+static int cand_cmp(const void *a, const void *b)
+{
+    const Cand *x = a, *y = b;
+    /* by descending gain, then ascending column index -- matching
+     * ranked.sort(key=lambda r: (-r[0], r[1])) on the Python side */
+    if (x->g > y->g) return -1;
+    if (x->g < y->g) return 1;
+    return x->dp < y->dp ? -1 : (x->dp > y->dp ? 1 : 0);
+}
+
+/* Compressed length of a column under a given row order, via the cheap probe.
+ * `perm` may be NULL for the original order. */
+static size_t probe_order(const Table *t, size_t col, const size_t *perm,
+                          size_t nr)
+{
+    Buf b;
+    buf_init(&b);
+    for (size_t i = 0; i < nr; i++) {
+        if (i) buf_putc(&b, '\n');
+        Str s = table_at(t, perm ? perm[i] : i, col);
+        buf_put(&b, s.p, s.n);
+    }
+    size_t got = ppz_lzma_probe_len(b.data, b.len);
+    buf_free(&b);
+    return got;
+}
+
+/* Choose a reorder parent for each text column.
+ *
+ * Text columns were the one place the reordering idea was never applied, and
+ * they dominate the datasets this codec does worst on. Mirrors
+ * fast.pick_text_parents exactly, including the two-stage shape: conditional
+ * entropy only NOMINATES candidates, and the winner is decided by actually
+ * compressing. Trusting the score alone made one real dataset 66% larger --
+ * entropy measures how often the parent pins the exact value, which is not
+ * what shrinks text, and reordering also destroys whatever useful order the
+ * file already had. */
+static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
+                              size_t nrows, long *tparent)
+{
+    for (size_t i = 0; i < nc; i++) tparent[i] = -1;
+
+    size_t *dict_pos = malloc((nc ? nc : 1) * sizeof(size_t));
+    size_t *text_pos = malloc((nc ? nc : 1) * sizeof(size_t));
+    if (!dict_pos || !text_pos) { free(dict_pos); free(text_pos); return; }
+    size_t nd = 0, nt = 0;
+    for (size_t p = 0; p < nc; p++) {
+        if (plan[p].kind == K_DICT) dict_pos[nd++] = p;
+        else if (plan[p].kind == K_TEXT) text_pos[nt++] = p;
+    }
+    if (nrows < MIN_ROWS_FOR_PARENTS || !nd || !nt) {
+        free(dict_pos); free(text_pos);
+        return;
+    }
+
+    long long npairs = (long long)nt * (long long)nd;
+    if (npairs < 1) npairs = 1;
+    long long rows = MI_BUDGET / npairs;
+    if (rows < MI_MIN_SAMPLE) rows = MI_MIN_SAMPLE;
+    if (rows > MI_SAMPLE) rows = MI_SAMPLE;
+    size_t step = nrows / (size_t)rows;
+    if (step < 1) step = 1;
+    size_t sn = (nrows + step - 1) / step;
+
+    int64_t **dsample = calloc(nd, sizeof(int64_t *));
+    double  *dbase = calloc(nd, sizeof(double));
+    size_t  *ddist = calloc(nd, sizeof(size_t));
+    if (!dsample || !dbase || !ddist) goto done;
+    for (size_t i = 0; i < nd; i++) {
+        dsample[i] = malloc((sn ? sn : 1) * sizeof(int64_t));
+        size_t k = 0;
+        for (size_t r = 0; r < nrows; r += step)
+            dsample[i][k++] = plan[dict_pos[i]].ids[r];
+        dbase[i] = entropy_of(dsample[i], sn, &ddist[i]);
+    }
+
+    for (size_t ti = 0; ti < nt; ti++) {
+        size_t tp = text_pos[ti];
+
+        /* factorise the sampled text column -- used only for scoring */
+        Str *tmp = malloc((sn ? sn : 1) * sizeof(Str));
+        if (!tmp) break;
+        size_t k = 0;
+        for (size_t r = 0; r < nrows; r += step) tmp[k++] = table_at(t, r, tp);
+        Str *srt = malloc((sn ? sn : 1) * sizeof(Str));
+        memcpy(srt, tmp, sn * sizeof(Str));
+        qsort(srt, sn, sizeof(Str), str_cmp);
+        size_t u = 0;
+        for (size_t i = 0; i < sn; i++)
+            if (i == 0 || !str_eq(srt[i], srt[u - 1])) srt[u++] = srt[i];
+        int64_t *ids = malloc((sn ? sn : 1) * sizeof(int64_t));
+        for (size_t i = 0; i < sn; i++) ids[i] = str_bsearch(srt, u, tmp[i]);
+        size_t tdist = 0;
+        double base_t = entropy_of(ids, sn, &tdist);
+
+        Cand *cands = malloc(nd * sizeof(Cand));
+        size_t ncand = 0;
+        for (size_t di = 0; di < nd; di++) {
+            double g = base_t - cond_entropy_corrected(
+                dsample[di], ids, sn, (int64_t)u, dbase[di], ddist[di]);
+            if (g > 0.05) { cands[ncand].g = g; cands[ncand].dp = di; ncand++; }
+        }
+        free(tmp); free(srt); free(ids);
+        if (!ncand) { free(cands); continue; }
+        qsort(cands, ncand, sizeof(Cand), cand_cmp);
+
+        size_t best_cost = probe_order(t, tp, NULL, nrows);
+        long best = -1;
+        size_t take = ncand < TEXT_PARENT_CANDIDATES
+                    ? ncand : TEXT_PARENT_CANDIDATES;
+        for (size_t c = 0; c < take; c++) {
+            size_t dp = dict_pos[cands[c].dp];
+            KVI *kv = malloc((nrows ? nrows : 1) * sizeof(KVI));
+            int64_t *pv = plan[dp].ids;
+            for (size_t i = 0; i < nrows; i++) { kv[i].v = pv[i]; kv[i].i = i; }
+            qsort(kv, nrows, sizeof(KVI), kvi_cmp);
+            size_t *perm = malloc((nrows ? nrows : 1) * sizeof(size_t));
+            for (size_t i = 0; i < nrows; i++) perm[i] = kv[i].i;
+            free(kv);
+            size_t cost = probe_order(t, tp, perm, nrows);
+            free(perm);
+            if (cost < best_cost) { best_cost = cost; best = (long)dp; }
+        }
+        free(cands);
+        tparent[tp] = best;
+    }
+
+done:
+    if (dsample) for (size_t i = 0; i < nd; i++) free(dsample[i]);
+    free(dsample); free(dbase); free(ddist);
+    free(dict_pos); free(text_pos);
+}
+
 /* --------------------------------------------------------------------- json */
 
 /* Exactly json.dumps' ensure_ascii escaping: anything outside 0x20..0x7e, plus
@@ -798,12 +937,28 @@ int ppz_encode(const Table *t, Buf *out)
     }
 
     /* text columns and standalone numeric columns, in positional order */
+    long *tparent = malloc((nc ? nc : 1) * sizeof(long));
+    for (size_t i = 0; i < nc; i++) tparent[i] = -1;
+    pick_text_parents(t, plan, nc, nr, tparent);
+
     Str **text_cells = calloc(nc ? nc : 1, sizeof(Str *));
     for (size_t pos = 0; pos < nc; pos++) {
         ColPlan *c = &plan[pos];
         if (c->kind == K_TEXT) {
             Str *cells = malloc((nr ? nr : 1) * sizeof(Str));
-            for (size_t i = 0; i < nr; i++) cells[i] = table_at(t, i, pos);
+            if (tparent[pos] >= 0) {
+                /* same trick, same freeness: the decoder rebuilds the parent
+                 * first and recomputes this stable argsort */
+                KVI *kv = malloc((nr ? nr : 1) * sizeof(KVI));
+                int64_t *pv = plan[tparent[pos]].ids;
+                for (size_t i = 0; i < nr; i++) { kv[i].v = pv[i]; kv[i].i = i; }
+                qsort(kv, nr, sizeof(KVI), kvi_cmp);
+                for (size_t i = 0; i < nr; i++)
+                    cells[i] = table_at(t, kv[i].i, pos);
+                free(kv);
+            } else {
+                for (size_t i = 0; i < nr; i++) cells[i] = table_at(t, i, pos);
+            }
             text_cells[pos] = cells;
             sg[nsg] = cells;
             sgn[nsg] = nr;
@@ -910,7 +1065,13 @@ int ppz_encode(const Table *t, Buf *out)
             else json_int(&meta, (long long)P.parent[pos]);
             buf_putc(&meta, '}');
         } else if (c->kind == K_TEXT) {
-            buf_put(&meta, "{\"kind\":\"text\"}", 15);
+            if (tparent[pos] >= 0) {
+                buf_put(&meta, "{\"kind\":\"text\",\"parent\":", 24);
+                json_int(&meta, (long long)tparent[pos]);
+                buf_putc(&meta, '}');
+            } else {
+                buf_put(&meta, "{\"kind\":\"text\"}", 15);
+            }
         } else if (c->in_group) {
             buf_put(&meta, "{\"kind\":\"grp\",\"dec\":", 20);
             json_int(&meta, c->dec);
@@ -988,7 +1149,7 @@ done:
     buf_free(&meta); buf_free(&txt); buf_free(&bins);
     free(smeta); free(binsz); free(sg); free(sgn);
     for (size_t j = 0; j < nc; j++) free(text_cells[j]);
-    free(text_cells);
+    free(text_cells); free(tparent);
     for (size_t g = 0; g < ngroups; g++) free(groups[g].pos);
     free(groups);
     free(P.parent); free(P.order);

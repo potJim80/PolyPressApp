@@ -362,7 +362,19 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     for (size_t pos = 0; pos < ncols; pos++) {
         const Js *sp = &jcols->items[pos];
         const Js *jk = js_get(sp, "kind");
-        if (!jk || jk->kind != JS_STR) continue;
+        if (!jk || jk->kind != JS_STR) goto fail_ids;
+
+        /* An unrecognised column kind means this archive was written by a
+         * newer encoder. Silently skipping it would leave that column empty
+         * and hand back a table that looks fine and is wrong -- the worst
+         * possible outcome for a decoder. Refuse the file instead. */
+        if (strcmp(jk->str, "text") && strcmp(jk->str, "num") &&
+            strcmp(jk->str, "dict") && strcmp(jk->str, "grp")) {
+            fprintf(stderr, "polypress: archive uses column kind '%s', which "
+                            "this build does not know -- refusing rather than "
+                            "returning a wrong table\n", jk->str);
+            goto fail_ids;
+        }
 
         if (!strcmp(jk->str, "text")) {
             Str *src = sgroup[ti];
@@ -373,6 +385,20 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             for (size_t i = 0; i < nrows; i++) {
                 if (i < cnt) cells[i] = src[i];
                 else { cells[i].p = ""; cells[i].n = 0; }
+            }
+            /* a text column may carry a parent, exactly like a dictionary
+             * column; invert the same stable argsort */
+            const Js *jtp = js_get(sp, "parent");
+            if (jtp && jtp->kind == JS_NUM) {
+                size_t par = (size_t)js_i64(jtp, -1);
+                if (par >= ncols || !ids_by_pos[par]) { free(cells); goto fail_ids; }
+                size_t *perm = stable_argsort(ids_by_pos[par], nrows);
+                if (!perm) { free(cells); goto fail_ids; }
+                Str *fixed = malloc((nrows ? nrows : 1) * sizeof(Str));
+                if (!fixed) { free(perm); free(cells); goto fail_ids; }
+                for (size_t i = 0; i < nrows; i++) fixed[perm[i]] = cells[i];
+                free(perm); free(cells);
+                cells = fixed;
             }
             cols[pos].cells = cells;
         } else if (!strcmp(jk->str, "num")) {

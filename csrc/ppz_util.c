@@ -298,6 +298,23 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out)
  */
 #define PPZ_MAX_PLAIN ((size_t)4 << 30)
 
+size_t ppz_lzma_probe_len(const uint8_t *in, size_t n)
+{
+    lzma_options_lzma opt;
+    if (lzma_lzma_preset(&opt, 1)) return (size_t)-1;
+    lzma_filter filters[2] = {
+        { LZMA_FILTER_LZMA2, &opt },
+        { LZMA_VLI_UNKNOWN, NULL },
+    };
+    size_t cap = n + n / 2 + 4096;
+    uint8_t *tmp = malloc(cap);
+    if (!tmp) return (size_t)-1;
+    size_t pos = 0;
+    lzma_ret r = lzma_raw_buffer_encode(filters, NULL, in, n, tmp, &pos, cap);
+    free(tmp);
+    return r == LZMA_OK ? pos : (size_t)-1;
+}
+
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out)
 {
     lzma_options_lzma opt;
