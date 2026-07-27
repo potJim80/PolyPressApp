@@ -1,3 +1,0 @@
-#!/bin/bash
-# Errors before Tk is up would otherwise vanish silently.
-exec "/usr/bin/python3" "/Users/mahdiakbarin/Desktop/ideas/txt_compressor/gui.py" 2>>"$HOME/Library/Logs/TableZip.log"
