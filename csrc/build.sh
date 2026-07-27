@@ -43,7 +43,8 @@ fi
 echo "cc $CFLAGS $INC ... $LIB"
 # shellcheck disable=SC2086
 cc $CFLAGS $INC \
-    "$here/ppz_util.c" "$here/ppz_decode.c" "$here/ppz_main.c" \
+    "$here/ppz_util.c" "$here/ppz_decode.c" "$here/ppz_encode.c" \
+    "$here/ppz_main.c" \
     -o "$out" $LIB
 
 echo "built $out"

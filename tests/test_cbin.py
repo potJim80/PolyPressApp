@@ -118,9 +118,21 @@ def main() -> int:
           "free text {} with, comma and \"quote\"".format(i)]
          for i in range(1500)])
 
+    # Column NAMES are the only strings that reach the JSON metadata, and the
+    # metadata is compared byte for byte -- so the escaping has to match
+    # json.dumps exactly. Cell contents go in the text blob and never exercise
+    # this. Covers BMP escapes, a non-BMP codepoint (surrogate pair), and the
+    # literal escapes.
+    cases["_json_escapes"] = dtz.Table(
+        ["éü中文", "emoji_🎉_col", "quote\"col", "back\\slash", "tab\tcol", "p"],
+        [[str(i % 7), "x{}".format(i % 3), "y", "z", "w", str(i)]
+         for i in range(60)])
+
     tmp = tempfile.mkdtemp(prefix="ppz-cbin-")
     failures = []
     kinds = {}
+    identical = 0
+    encodable = 0
     try:
         for name, table in sorted(cases.items()):
             arc = os.path.join(tmp, name + ".ppz")
@@ -145,6 +157,42 @@ def main() -> int:
             msg = compare(name, table, got)
             if msg:
                 failures.append(msg)
+
+            # --- the encoder: byte-identity, not just equivalence ---
+            # Compared against _encode_plan, not encode: the C encoder always
+            # writes the modelled container, while Python may swap in a plain
+            # fallback when no trick fired. The modelled bytes are the thing
+            # that has to match.
+            src = os.path.join(tmp, name + ".src.csv")
+            with open(src, "w", newline="", encoding="utf-8") as fh:
+                import csv as _csv
+                w = _csv.writer(fh, lineterminator="\n")
+                w.writerow(table.columns)
+                w.writerows(table.rows)
+
+            # The C binary reads its own CSV, so only compare where the CSV
+            # round-trips to the same logical table -- otherwise a difference
+            # is the reader's, not the encoder's.
+            if dtz.read_any(src).rows != table.rows:
+                continue
+            encodable += 1
+            carc = os.path.join(tmp, name + ".c.ppz")
+            proc = subprocess.run([BINARY, "compress", src, "-o", carc],
+                                  capture_output=True)
+            if proc.returncode != 0:
+                failures.append("{}: C compress exit {} -- {}".format(
+                    name, proc.returncode,
+                    proc.stderr.decode(errors="replace").strip()))
+                continue
+            want, _fired = fast._encode_plan(table)
+            with open(carc, "rb") as fh:
+                have = fh.read()
+            if have == want:
+                identical += 1
+            else:
+                failures.append(
+                    "{}: C encoder differs -- {} B vs Python's {} B".format(
+                        name, len(have), len(want)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -152,6 +200,8 @@ def main() -> int:
     print("containers exercised: {}".format(", ".join(
         "{} x{}".format(k.decode("ascii", "replace"), v)
         for k, v in sorted(kinds.items()))))
+    print("encoder: {}/{} byte-identical to Python".format(
+        identical, encodable))
     if failures:
         print("\nFAILURES:")
         for f in failures:

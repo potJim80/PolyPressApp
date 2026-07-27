@@ -103,4 +103,11 @@ long      js_int(const Js *j, long fallback);
 /* Decode any Polypress container into `out`. Returns 0 on success. */
 int ppz_decode(const uint8_t *blob, size_t n, Table *out);
 
+/* --------------------------------------------------------------- encoding */
+
+/* Encode a table into the modelled container. Byte-identical to fast.encode's
+ * modelled path -- the plain-fallback candidates are the Python CLI's job for
+ * now, so this always writes PPZ1. */
+int ppz_encode(const Table *t, Buf *out);
+
 #endif /* PPZ_H */

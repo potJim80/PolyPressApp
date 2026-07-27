@@ -114,27 +114,53 @@ attic/          superseded work, kept for the record
 ## The standalone binary
 
 ```bash
-./csrc/build.sh                        # -> csrc/polypress
-./csrc/polypress restore data.csv.ppz  # no Python, no numpy
-./csrc/polypress info    data.csv.ppz
+./csrc/build.sh                         # -> csrc/polypress
+./csrc/polypress compress data.csv      # no Python, no numpy
+./csrc/polypress restore  data.csv.ppz
+./csrc/polypress info     data.csv.ppz
 ```
 
-**Reading an archive needs nothing installed.** That is the point of it. The
-Python codec needs Python 3.9+, numpy, and ideally a compiler; a researcher
-sent a `.ppz` should not have to build an environment to open it.
+**Using it needs nothing installed.** That is the point. The Python codec
+needs Python 3.9+, numpy, and ideally a compiler; a researcher sent a `.ppz`
+should not have to build an environment to open it.
 
-It is a **reader only so far** — writing archives is still `tzip.py compress`.
-Decode was ported first because it is what a recipient needs, and because
-every archive the Python encoder produces is a test case with a known answer.
+**The C encoder is byte-identical to the Python one.** Not "equivalent" —
+the same bytes, verified on every case in `tests/test_cbin.py` (36/36,
+including 421-column real NHANES data). That is the strongest correctness
+signal available: any divergence is a bug with a known location, and the
+Python implementation stays usable as the oracle.
+
+Getting there required three things that are not obvious, and each is
+commented where it lives:
+
+- **Summation order.** The parent search compares entropies, and `np.sum` is
+  pairwise, not left-to-right. A different last bit flips a `>`, picks a
+  different parent, and changes every byte after it. `pairwise_sum()`
+  reproduces numpy's algorithm, block size and all.
+- **Tie-breaking.** `pick_parents` used a Python `set`, so which of two
+  equally-good parents won was an artefact of CPython's hash table. It is a
+  list in both languages now — lowest column index wins. An encoder whose
+  output can shift with an interpreter's internals is not one to build a
+  format on, so this is a fix regardless of the port.
+- **JSON.** The metadata is compared byte for byte, so the emitter matches
+  `json.dumps(..., separators=(",",":"))` exactly, including `ensure_ascii`
+  escaping and surrogate pairs above the BMP.
+
+Speed is a side effect, not the reason. Compress is ~1.4x faster on NHANES,
+restore ~1.3x. Profiling puts liblzma at 62–100% of encode time, so there was
+never much to win: the Python around it was not the bottleneck.
+
 `tests/test_cbin.py` runs the shared corpus plus cases that force each piece
 of machinery — the parent permutation, the 2D group reconstruction, undiff at
-orders 1 to 3, the 8-byte varint tail — through the binary and compares cell
-for cell against Python. All three container types are covered.
+orders 1 to 3, the 8-byte varint tail, and JSON escaping via non-ASCII column
+names — and checks both directions: bytes out of the encoder, cells out of
+the decoder. All three container types are covered.
 
-Speed is a side effect, not the reason: restore runs 1.3x faster on the
-421-column NHANES table and 2.9x on a 60k-row survey. Encoding would gain
-little — profiling puts liblzma at 62–100% of encode time, so the Python
-around it is not the bottleneck on the tables where the compression win lives.
+One gap: the C encoder always writes the modelled container. It does not yet
+try the plain xz/bzip2 fallbacks, so on a table where no trick fires it can
+produce a larger file than `tzip.py compress` would. It never produces a
+*wrong* one — compression verifies the round trip in memory before writing,
+same as the Python CLI.
 
 Needs `liblzma` and `libbz2` headers (`brew install xz`, or
 `apt install liblzma-dev libbz2-dev`). The build script finds them via

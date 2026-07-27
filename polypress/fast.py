@@ -302,7 +302,17 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
     root = min(dict_pos, key=lambda p: base[p])
     placed, order = {root}, [root]
     parent: Dict[int, Optional[int]] = {root: None}
-    remaining = set(dict_pos) - placed
+
+    # `remaining` is a list in column order, not a set. Two candidate pairs can
+    # have exactly equal gain -- duplicated or near-duplicated columns are
+    # common in survey extracts -- and the winner is whichever the loop reaches
+    # first, because the comparison is strictly `>`. With a set, "first" is an
+    # artefact of CPython's hash table, so the bytes of the archive depended on
+    # it. A list makes the tie-break explicit and reproducible: lowest column
+    # index wins. That matters for the C port, which has to reproduce this
+    # exactly, and it is worth having regardless -- an encoder whose output can
+    # shift with an interpreter's internals is not one to build a format on.
+    remaining = [p for p in dict_pos if p != root]
     while remaining:
         best = None
         for b in remaining:
@@ -317,7 +327,7 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
             parent[b] = a
         placed.add(b)
         order.append(b)
-        remaining.discard(b)
+        remaining.remove(b)
     return parent, order
 
 

@@ -78,6 +78,71 @@ static int cmd_restore(int argc, char **argv)
     return 0;
 }
 
+static int cmd_compress(int argc, char **argv)
+{
+    const char *src = NULL, *dst = NULL;
+    int verify = 1;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "-o") && i + 1 < argc) { dst = argv[++i]; continue; }
+        if (!strcmp(argv[i], "--no-verify")) { verify = 0; continue; }
+        if (!src) src = argv[i];
+    }
+    if (!src) { fprintf(stderr, "usage: polypress compress FILE [-o OUT]\n"); return 2; }
+
+    Table t;
+    if (table_read_csv(&t, src)) { fprintf(stderr, "cannot read %s\n", src); return 1; }
+
+    Buf blob;
+    buf_init(&blob);
+    if (ppz_encode(&t, &blob)) {
+        fprintf(stderr, "polypress: encode failed\n");
+        table_free(&t); buf_free(&blob);
+        return 1;
+    }
+
+    /* Same contract as tzip.py: decode the blob back and compare every cell
+     * before anything is written. A compressor that can silently lose a cell
+     * is not one to hand a researcher. */
+    if (verify) {
+        Table back;
+        if (ppz_decode(blob.data, blob.len, &back)) {
+            fprintf(stderr, "verification FAILED (undecodable) -- nothing written\n");
+            table_free(&t); buf_free(&blob);
+            return 1;
+        }
+        int ok = back.nrows == t.nrows && back.ncols == t.ncols;
+        for (size_t j = 0; ok && j < t.ncols; j++)
+            if (strcmp(back.names[j], t.names[j])) ok = 0;
+        for (size_t i = 0; ok && i < t.nrows; i++)
+            for (size_t j = 0; j < t.ncols; j++) {
+                Str a = table_at(&t, i, j), b = table_at(&back, i, j);
+                if (a.n != b.n || (a.n && memcmp(a.p, b.p, a.n))) { ok = 0; break; }
+            }
+        table_free(&back);
+        if (!ok) {
+            fprintf(stderr, "verification FAILED -- nothing written\n");
+            table_free(&t); buf_free(&blob);
+            return 1;
+        }
+    }
+
+    char derived[4096];
+    if (!dst) {
+        snprintf(derived, sizeof(derived), "%s.ppz", src);
+        dst = derived;
+    }
+    FILE *f = fopen(dst, "wb");
+    if (!f) { fprintf(stderr, "cannot write %s\n", dst); table_free(&t); buf_free(&blob); return 1; }
+    size_t w = fwrite(blob.data, 1, blob.len, f);
+    fclose(f);
+    if (w != blob.len) { fprintf(stderr, "short write to %s\n", dst); table_free(&t); buf_free(&blob); return 1; }
+
+    printf("%zu rows x %zu cols -> %zu B   %s\n", t.nrows, t.ncols, blob.len, dst);
+    table_free(&t);
+    buf_free(&blob);
+    return 0;
+}
+
 static int cmd_info(int argc, char **argv)
 {
     if (argc < 1) { fprintf(stderr, "usage: polypress info FILE\n"); return 2; }
@@ -114,13 +179,15 @@ int main(int argc, char **argv)
     if (argc < 2) {
         fprintf(stderr,
                 "polypress -- lossless compression for data tables\n\n"
-                "  polypress restore FILE [-o OUT]   .ppz -> csv\n"
-                "  polypress info    FILE            what is inside\n\n"
-                "Writing archives is still the Python CLI: tzip.py compress\n");
+                "  polypress compress FILE [-o OUT]  csv -> .ppz\n"
+                "  polypress restore  FILE [-o OUT]  .ppz -> csv\n"
+                "  polypress info     FILE           what is inside\n\n"
+                "Compression verifies the round trip in memory before writing.\n");
         return 2;
     }
-    if (!strcmp(argv[1], "restore")) return cmd_restore(argc - 2, argv + 2);
-    if (!strcmp(argv[1], "info"))    return cmd_info(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "compress")) return cmd_compress(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "restore"))  return cmd_restore(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "info"))     return cmd_info(argc - 2, argv + 2);
     fprintf(stderr, "polypress: unknown command %s\n", argv[1]);
     return 2;
 }
