@@ -57,6 +57,55 @@ def compare(name: str, table, got) -> str:
     return ""
 
 
+def check_corrupt(tmp: str) -> list:
+    """A decoder reads files other people made, so it must survive bad ones.
+
+    Truncations and bit-flips, checked for two things: it must exit cleanly
+    with an error rather than crashing, and it must not sit there allocating.
+    An earlier version grew its output buffer and retried on ANY decompression
+    failure -- but corrupt data never decodes at any size, so it doubled its
+    way toward a terabyte. Fuzzing hit that on 132 of 199 mutated inputs; this
+    keeps it from coming back.
+    """
+    import random
+    bad = []
+    rnd = random.Random(3)
+    table = dtz.Table(
+        ["a", "b", "c"],
+        [[str(i), ["x", "y", "z"][i % 3], "{:.2f}".format(i * 1.5)]
+         for i in range(800)])
+    good = fast.encode(table)
+    arc = os.path.join(tmp, "fuzz.ppz")
+    out = os.path.join(tmp, "fuzz.out")
+
+    cases = []
+    step = max(1, len(good) // 25)
+    for n in range(0, len(good), step):
+        cases.append(good[:n])
+    for _ in range(60):
+        b = bytearray(good)
+        b[rnd.randrange(len(b))] = rnd.randrange(256)
+        cases.append(bytes(b))
+    cases.append(b"")
+    cases.append(b"PPZ1")
+
+    for i, data in enumerate(cases):
+        with open(arc, "wb") as fh:
+            fh.write(data)
+        try:
+            proc = subprocess.run([BINARY, "restore", arc, "-o", out],
+                                  capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            bad.append("corrupt input {} hung (>60s)".format(i))
+            continue
+        # 0 = it happened to still be valid, 1 = rejected cleanly.
+        # Anything else is a crash or an unhandled signal.
+        if proc.returncode not in (0, 1):
+            bad.append("corrupt input {} exited {} (crash?)".format(
+                i, proc.returncode))
+    return bad
+
+
 def main() -> int:
     if not os.path.exists(BINARY):
         print("csrc/polypress not built -- skipping.")
@@ -193,6 +242,11 @@ def main() -> int:
                 failures.append(
                     "{}: C encoder differs -- {} B vs Python's {} B".format(
                         name, len(have), len(want)))
+        corrupt_bad = check_corrupt(tmp)
+        failures.extend(corrupt_bad)
+        if not corrupt_bad:
+            print("corrupt archives: rejected cleanly, no crash, no runaway "
+                  "allocation")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
