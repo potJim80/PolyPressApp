@@ -84,19 +84,28 @@ typedef enum {
 
 typedef struct Js Js;
 struct Js {
-    JsKind kind;
-    double num;
-    int    boolean;
-    char  *str;        /* decoded, NUL-terminated */
-    Js    *items;      /* array elements / object values */
-    char **keys;       /* object keys */
-    size_t count;
+    JsKind  kind;
+    double  num;
+    int64_t inum;      /* exact value when `is_int`; `num` cannot be trusted */
+    int     is_int;    /* the token was a plain integer, parsed with strtoll */
+    int     boolean;
+    char   *str;       /* decoded, NUL-terminated */
+    Js     *items;     /* array elements / object values */
+    char  **keys;      /* object keys */
+    size_t  count;
 };
 
+/* A double holds only 53 bits of mantissa, and this metadata carries int64
+ * warm-start values that routinely exceed that. Reading them back through a
+ * double silently rounded 74884171959489212 to ...216 -- a decoder that
+ * returns wrong numbers rather than failing. Integer tokens are therefore
+ * kept exactly, and js_i64 is the accessor to use for anything that is a
+ * value rather than a small count. */
 Js  *js_parse(const char *text, size_t len);
 void js_free(Js *j);
 const Js *js_get(const Js *obj, const char *key);   /* NULL if absent */
 long      js_int(const Js *j, long fallback);
+int64_t   js_i64(const Js *j, int64_t fallback);
 
 /* --------------------------------------------------------------- decoding */
 

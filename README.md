@@ -380,6 +380,7 @@ python3 tests/test_fast.py            # 29 fidelity cases, C path and fallback
 python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
 python3 tests/test_stream.py          # 180 checks: block counts and every output format
 python3 tests/test_cbin.py            # the C binary must agree with Python on every case
+python3 tests/test_fuzz.py [n] [seed] # random adversarial tables through both implementations
 python3 benchmarks/bench.py data.csv  # size and speed vs the binaries AND Parquet
 python3 benchmarks/make_hostile.py d/ # generate the adversarial suite
 python3 app/gui.py --selftest         # compile every AppleScript the app can emit
@@ -401,6 +402,23 @@ resident. Use `stream-compress` for anything larger.
 malformed AppleScript only surfaces when the user clicks something, so it is
 checked at build time -- an earlier version shipped a file-type list joined
 with spaces where AppleScript wanted commas, and the first click failed.
+
+`test_fuzz.py` builds tables out of deliberately awful cells -- int64
+boundaries, ragged decimals, embedded quotes and newlines, non-BMP characters,
+empty headers -- and checks both that the table round-trips and that the two
+implementations emit the same bytes. It found three real bugs on its first
+run: a JSON parser storing int64 values in a double (74884171959489212 decoded
+as ...216), an `a <= 8*b` test that overflowed int64 and silently refused
+every large numeric group, and an overflow check in `tcz.c` placed *after* the
+multiply, so `INT64_MIN` was accepted as numeric while the numpy fallback
+rejected it -- the same file compressing differently depending on whether a
+compiler was present.
+
+The C binary is also fuzzed against corrupt input, because reading an archive
+means reading a file somebody else made. That found the worst bug of the
+lot: both decompression wrappers grew their buffer and retried on *any*
+failure, and corrupt data never decodes at any size, so they doubled from
+64 KB toward a terabyte. 132 of 199 mutated inputs hit it.
 
 `test_fast.py` runs every case twice -- once through the C accelerator and
 once through the numpy fallback -- because an accelerator that disagrees with

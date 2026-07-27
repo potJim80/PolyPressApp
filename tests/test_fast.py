@@ -28,6 +28,20 @@ EXTRA = {
     "big_ints": dtz.Table(
         ["n"], [[str(2 ** 62 - 1)], [str(-(2 ** 62) + 1)], ["0"]]),
     "huge_ints": dtz.Table(["n"], [["9" * 40], ["1"], ["2"]]),
+
+    # The 2^62 acceptance boundary, from both sides and both signs. This is
+    # where the C accelerator and the numpy reference used to disagree: the C
+    # parser checked for overflow *after* multiplying, and signed overflow
+    # wraps negative, so INT64_MIN sailed past a limit of 2^62. The
+    # accelerator accepted it as numeric; numpy rejected it. Same file, two
+    # different plans, depending only on whether a compiler was available.
+    "int64_min": dtz.Table(["n"], [["-9223372036854775808"], ["1"], ["2"]]),
+    "int64_max": dtz.Table(["n"], [["9223372036854775807"], ["1"], ["2"]]),
+    "limit_edge": dtz.Table(
+        ["lo", "hi"],
+        [[str(-(2 ** 62) + 1), str(2 ** 62 - 1)],
+         [str(2 ** 62), str(-(2 ** 62))],
+         ["0", "1"]]),
     "mixed_sign": dtz.Table(
         ["v"], [["-0.01"], ["0.00"], ["0.01"], ["-99999.99"]]),
     "varint_escape": dtz.Table(

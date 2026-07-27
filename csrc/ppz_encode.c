@@ -235,10 +235,21 @@ static int parse_fixed_cell(Str s, int dec, int64_t *out)
     size_t p = 0;
     int neg = 0, seen = 0, used = 0;
     int64_t v = 0;
+    /* Check before multiplying, not after. `v >= INT_LIMIT` following
+     * `v = v*10 + d` never fires when the multiply already overflowed --
+     * signed overflow is undefined and wraps negative in practice. Same fix
+     * as tcz.c; the two must agree or the accelerated and unaccelerated
+     * Python paths disagree about which columns are numeric. */
+    #define ACC_DIGIT(d)                                                     \
+        do {                                                                 \
+            int dgt_ = (d);                                                  \
+            if (v > (INT_LIMIT - 1 - dgt_) / 10) return -1;                  \
+            v = v * 10 + dgt_;                                               \
+        } while (0)
+
     if (p < s.n && s.p[p] == '-') { neg = 1; p++; }
     while (p < s.n && s.p[p] >= '0' && s.p[p] <= '9') {
-        v = v * 10 + (s.p[p] - '0');
-        if (v >= INT_LIMIT) return -1;
+        ACC_DIGIT(s.p[p] - '0');
         p++; seen = 1;
     }
     if (!seen) return -1;
@@ -246,8 +257,7 @@ static int parse_fixed_cell(Str s, int dec, int64_t *out)
         p++;
         while (p < s.n && s.p[p] >= '0' && s.p[p] <= '9') {
             if (used < dec) {
-                v = v * 10 + (s.p[p] - '0');
-                if (v >= INT_LIMIT) return -1;
+                ACC_DIGIT(s.p[p] - '0');
                 used++;
             }
             p++;
@@ -255,10 +265,10 @@ static int parse_fixed_cell(Str s, int dec, int64_t *out)
     }
     if (p != s.n) return -1;
     while (used < dec) {
-        v *= 10;
-        if (v >= INT_LIMIT) return -1;
+        ACC_DIGIT(0);
         used++;
     }
+    #undef ACC_DIGIT
     *out = neg ? -v : v;
     return 0;
 }
@@ -400,6 +410,20 @@ static ColPlan *classify(const Table *t)
 
 typedef struct { size_t *pos; size_t n; } Group;
 
+/* `a <= 8*b` without overflowing.
+ *
+ * This codec accepts magnitudes up to 2^62, and 8 * 2^62 does not fit in an
+ * int64 -- the product wraps negative and the comparison silently says "not
+ * commensurable". Python never had to think about it because its ints are
+ * arbitrary precision, so the bug existed only on this side, and it cost
+ * real compression: every group of large numeric columns was refused, and
+ * the archive came out bigger than the Python one for no visible reason.
+ * For positive integers, a <= 8b is exactly ceil(a/8) <= b. */
+static int le_times8(int64_t a, int64_t b)
+{
+    return (a + 7) / 8 <= b;
+}
+
 static Group *find_2d_groups(ColPlan *plan, size_t nc, size_t nrows,
                              size_t *ngroups)
 {
@@ -435,7 +459,8 @@ static Group *find_2d_groups(ColPlan *plan, size_t nc, size_t nrows,
         }
         if (!hi_a) hi_a = 1;
         if (!hi_b) hi_b = 1;
-        if (prev->dec == plan[p].dec && hi_a <= 8 * hi_b && hi_b <= 8 * hi_a) {
+        if (prev->dec == plan[p].dec &&
+            le_times8(hi_a, hi_b) && le_times8(hi_b, hi_a)) {
             run[rn++] = p;
         } else {
             FLUSH();

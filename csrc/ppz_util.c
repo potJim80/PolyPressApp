@@ -10,6 +10,7 @@
 #include "ppz.h"
 
 #include <bzlib.h>
+#include <errno.h>
 #include <lzma.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -555,11 +556,36 @@ static Js *jp_value(Jp *j)
         return js_new(JS_NULL);
     }
     {
+        /* Integers are kept exactly. A double carries 53 bits of mantissa and
+         * this metadata holds int64 warm-start values well above that, so
+         * going through a double silently rounds them -- which decodes to a
+         * wrong number rather than an error. Only fall back to strtod for
+         * tokens that are genuinely not integers. */
+        const char *start = j->p + j->i;
+        const char *scan = start;
+        const char *end_lim = j->p + j->n;
+        if (scan < end_lim && (*scan == '-' || *scan == '+')) scan++;
+        int is_int = scan < end_lim && *scan >= '0' && *scan <= '9';
+        while (scan < end_lim && *scan >= '0' && *scan <= '9') scan++;
+        if (scan < end_lim && (*scan == '.' || *scan == 'e' || *scan == 'E'))
+            is_int = 0;
+
         char *end = NULL;
-        double d = strtod(j->p + j->i, &end);
-        if (!end || end == j->p + j->i) { j->bad = 1; return js_new(JS_NULL); }
-        j->i = (size_t)(end - j->p);
         Js *v = js_new(JS_NUM);
+        if (is_int) {
+            errno = 0;
+            long long iv = strtoll(start, &end, 10);
+            if (end != start && errno != ERANGE) {
+                j->i = (size_t)(end - j->p);
+                v->inum = (int64_t)iv;
+                v->is_int = 1;
+                v->num = (double)iv;
+                return v;
+            }
+        }
+        double d = strtod(start, &end);
+        if (!end || end == start) { j->bad = 1; v->kind = JS_NULL; return v; }
+        j->i = (size_t)(end - j->p);
         v->num = d;
         return v;
     }
@@ -603,7 +629,15 @@ const Js *js_get(const Js *obj, const char *key)
 long js_int(const Js *j, long fallback)
 {
     if (!j) return fallback;
-    if (j->kind == JS_NUM) return (long)j->num;
+    if (j->kind == JS_NUM) return j->is_int ? (long)j->inum : (long)j->num;
+    if (j->kind == JS_BOOL) return j->boolean;
+    return fallback;
+}
+
+int64_t js_i64(const Js *j, int64_t fallback)
+{
+    if (!j) return fallback;
+    if (j->kind == JS_NUM) return j->is_int ? j->inum : (int64_t)j->num;
     if (j->kind == JS_BOOL) return j->boolean;
     return fallback;
 }

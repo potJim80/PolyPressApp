@@ -86,10 +86,23 @@ int32_t parse_fixed(const char *buf, int64_t len, int32_t dec,
         int64_t v = 0;
         int seen = 0;
 
+        /* Overflow has to be caught BEFORE it happens. Checking `v >= LIMIT`
+         * after `v = v*10 + d` is too late: signed overflow is undefined, and
+         * in practice it wraps negative, so the guard never fires. That let
+         * "-9223372036854775808" through as a valid value even though the
+         * documented limit is 2^62 -- and the numpy fallback rejected it, so
+         * the accelerator and the reference disagreed about what a column
+         * even was. Rearranged, the test is exact and never overflows. */
+        #define ACC_DIGIT(d)                                                 \
+            do {                                                             \
+                int dgt_ = (d);                                              \
+                if (v > (LIMIT - 1 - dgt_) / 10) return -1;                  \
+                v = v * 10 + dgt_;                                           \
+            } while (0)
+
         if (p < end && buf[p] == '-') { neg = 1; p++; }
         while (p < end && buf[p] >= '0' && buf[p] <= '9') {
-            v = v * 10 + (buf[p] - '0');
-            if (v >= LIMIT) return -1;
+            ACC_DIGIT(buf[p] - '0');
             p++; seen = 1;
         }
         if (!seen) return -1;
@@ -99,8 +112,7 @@ int32_t parse_fixed(const char *buf, int64_t len, int32_t dec,
             p++;
             while (p < end && buf[p] >= '0' && buf[p] <= '9') {
                 if (used < dec) {
-                    v = v * 10 + (buf[p] - '0');
-                    if (v >= LIMIT) return -1;
+                    ACC_DIGIT(buf[p] - '0');
                     used++;
                 }
                 p++;
@@ -108,10 +120,10 @@ int32_t parse_fixed(const char *buf, int64_t len, int32_t dec,
         }
         if (p != end) return -1;
         while (used < dec) {                     /* pad to the column scale */
-            v *= 10;
-            if (v >= LIMIT) return -1;
+            ACC_DIGIT(0);
             used++;
         }
+        #undef ACC_DIGIT
         out[k++] = neg ? -v : v;
 
         if (i >= len) break;

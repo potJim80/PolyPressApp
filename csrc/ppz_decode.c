@@ -333,7 +333,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
 
         const Js *jp = js_get(sp, "parent");
         if (jp && jp->kind == JS_NUM) {
-            size_t par = (size_t)jp->num;
+            size_t par = (size_t)js_i64(jp, -1);
             if (par >= ncols || !ids_by_pos[par]) { free(ids); goto fail_ids; }
             size_t *perm = stable_argsort(ids_by_pos[par], nrows);
             if (!perm) { free(ids); goto fail_ids; }
@@ -387,7 +387,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                 const Js *jwarm = js_get(sp, "warm");
                 int64_t warm[8] = { 0 };
                 for (int i = 0; i < k && jwarm && (size_t)i < jwarm->count; i++)
-                    warm[i] = (int64_t)jwarm->items[i].num;
+                    warm[i] = js_i64(&jwarm->items[i], 0);
                 d = undiff(d, want, warm, k, &an);
                 if (!d) goto fail_ids;
             }
