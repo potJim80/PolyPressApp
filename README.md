@@ -204,29 +204,39 @@ equivalent table, not identical bytes.
 
 Six real datasets is not a claim, and every one of them was a table this codec
 was designed for. So `benchmarks/make_hostile.py` generates ten tables built to
-break specific assumptions in it. Four of them do:
+break specific assumptions in it. Four of them did. Here is what happened next:
 
-| hostile case | vs best other | what it breaks |
-|---|---|---|
-| `single_wide_row` | **1.11x LARGER** | 5,000 columns, 1 row. Per-column overhead with nothing to amortise it over — and encode collapses to **0.5 MB/s**, decode to 3.6 MB/s. |
-| `high_precision` | **1.03x LARGER** | Decimal places that vary per row, so no fixed scale fits and the numeric parser cannot hold a column together. |
-| `base64_blob` | **1.02x LARGER** | Already-compressed bytes. Nothing to find; we pay container overhead for the privilege. |
-| `random_text` | **1.01x LARGER** | No structure at all. This is the floor, and near-parity here is the correct result. |
+| hostile case | was | now | what changed |
+|---|---|---|---|
+| `single_wide_row` | 1.11x LARGER | **1.17x smaller** | The planar predictor was forming "groups" on a 1-row table — pure bookkeeping that reduced nothing. It is now refused below 3 rows. |
+| `high_precision` | 1.03x LARGER | **tie, 4 bytes** | bzip2 fallback wins outright; the 4 bytes are the container magic. |
+| `base64_blob` | 1.02x LARGER | **0.6% behind** | bzip2 fallback. Only brotli still beats it. |
+| `random_text` | 1.01x LARGER | **0.8% behind** | Unchanged — it already beat both xz and bzip2; only brotli is ahead. |
 
-The six it still wins on are the informative half. `anticorrelated` — a
+**The guarantee is now: never worse than xz or bzip2 on any table**, because
+both are carried as candidates and the smaller wins. It is not "never worse
+than anything" — brotli still takes two of these by under 1%, on data that is
+incompressible by construction. Carrying a brotli candidate would mean a
+non-stdlib dependency and linking libbrotli into the C port, which is a bad
+trade for 0.8% on random noise. That is a decision, not an oversight.
+
+Two costs, stated plainly:
+
+- **Unstructured tables now encode 3–5x slower.** When none of the three ideas
+  fire, the fallbacks run, and they are a second and third pass over the data.
+  `shuffled_cats` went from 12.5 to 2.6 MB/s. Tables where any trick fires —
+  which is every real dataset here — are untouched, because the fallback is
+  skipped entirely.
+- **The fallback is refused if it cannot round-trip.** Canonical CSV is not
+  lossless for every conceivable cell, so a candidate is parsed back and
+  compared before it is allowed to win. Losing on size beats corrupting data.
+
+The six it wins on are the informative half. `anticorrelated` — a
 high-cardinality numeric column that a naive conditional-entropy score would
 happily adopt as a parent — comes out **4.24x** ahead, which is the
 Miller-Madow correction earning its place. `wide_random` (200 mutually
 independent numeric columns) wins by only 1.02x, and that is the honest result:
 the O(columns²) parent search does its maximum work for almost no reward.
-
-Two things worth taking from this:
-
-- **The losses are small and they are graceful.** Three of the four are within
-  3% of the best alternative. Nothing here degrades catastrophically on size.
-- **`single_wide_row` is a genuine defect, not a tie.** Losing 11% is
-  survivable; encoding at 0.5 MB/s is not. Extremely wide, shallow tables are
-  the one shape to fix.
 
 Full numbers, every contender, in `benchmarks/hostile-results.txt`.
 

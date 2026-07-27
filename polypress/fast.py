@@ -25,6 +25,7 @@ Fidelity: the logical table round-trips exactly, cell for cell.
 
 from __future__ import annotations
 
+import bz2
 import json
 import lzma
 import math
@@ -48,6 +49,29 @@ XZ = dict(format=lzma.FORMAT_RAW,
 ESCAPE = 255
 MAGIC = b"PPZ1"            # Polypress container
 MAGIC_V0 = b"FAST"         # pre-rename archives still open
+# Fallback magics are 4 bytes with the codec baked in rather than 4 + a method
+# byte. That one byte matters: the fallback exists to tie a general compressor
+# that we would otherwise lose to, and the tie is measured against its bare
+# output stream. Every byte of container is a byte of deficit.
+MAGIC_RAW_XZ = b"PPZX"
+MAGIC_RAW_BZ = b"PPZB"
+
+# Fallback codecs. stdlib only, deliberately. An adversarial suite found four
+# tables where the modelling lost to a plain general-purpose compressor -- by
+# 0.8% to 11% -- because this codec always finishes with xz and xz is not
+# always the best finisher. Carrying xz and bzip2 candidates makes it
+# impossible to lose to either. brotli won two of those four by under 1% and
+# is NOT carried: it is not in the standard library and would mean linking
+# libbrotli into the C port, which is a poor trade for <1% on data that is
+# incompressible anyway.
+# Sorting cannot create useful runs in a handful of rows, and the parent
+# search is O(columns^2). Below this row count, skip it entirely.
+MIN_ROWS_FOR_PARENTS = 8
+# The planar predictor differences down the rows, so it needs rows to work
+# with. On a 1-row table a "group" is pure bookkeeping: it restructures the
+# payload, reduces nothing, and -- because it counted as a trick that fired --
+# used to suppress the fallback on exactly the table that needed it most.
+MIN_ROWS_FOR_2D = 3
 
 
 # ------------------------------------------------------------------ packing
@@ -174,7 +198,9 @@ def classify(table) -> List[dict]:
     return plan
 
 
-def find_2d_groups(plan) -> List[List[int]]:
+def find_2d_groups(plan, nrows: int = 1 << 30) -> List[List[int]]:
+    if nrows < MIN_ROWS_FOR_2D:
+        return []
     groups, run = [], []
     for pos, col in enumerate(plan):
         if col["kind"] != "num" or col["ints"].size == 0:
@@ -249,7 +275,7 @@ def _entropy(ys: np.ndarray) -> float:
 
 def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
     dict_pos = [p for p, c in enumerate(plan) if c["kind"] == "dict"]
-    if nrows == 0 or len(dict_pos) < 2:
+    if nrows < MIN_ROWS_FOR_PARENTS or len(dict_pos) < 2:
         return {p: None for p in dict_pos}, list(dict_pos)
 
     # Parent search is O(columns^2) pairs. A wide table has a lot of them --
@@ -349,12 +375,83 @@ def _unpack_strings(data: bytes, metas, length_bins) -> List[List[str]]:
     return out
 
 
+# --------------------------------------------------------------- fallbacks
+
+def _canonical_bytes(table) -> bytes:
+    """The table as canonical CSV -- the form a general compressor would see.
+
+    Deliberately the same shape as the input file rather than some private
+    layout, because the fallback only earns its place if it matches what
+    `xz file.csv` would have produced. A private layout that compresses worse
+    than the user's own CSV would be a fallback that does not fall back.
+    """
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(table.columns)
+    w.writerows(table.rows)
+    return buf.getvalue().encode("utf-8")
+
+
+def _from_canonical(data: bytes):
+    import csv
+    import io
+    rows = list(csv.reader(io.StringIO(data.decode("utf-8"), newline="")))
+    if not rows:
+        return dtz.Table([], [])
+    return dtz.Table(rows[0], rows[1:])
+
+
+def _raw_candidates(table, limit: int) -> Optional[bytes]:
+    """Smallest standard-codec encoding of the whole table, or None.
+
+    Returns None unless it beats `limit`, and also unless it round-trips --
+    CSV quoting is not lossless for every conceivable cell, so the candidate
+    is parsed back and compared before it is allowed to win. A fallback that
+    corrupts data is worse than losing by 11%.
+    """
+    canon = _canonical_bytes(table)
+    try:
+        if _from_canonical(canon).rows != table.rows:
+            return None
+        if _from_canonical(canon).columns != table.columns:
+            return None
+    except Exception:
+        return None
+
+    best = None
+    for magic, blob in ((MAGIC_RAW_XZ, lzma.compress(canon, **XZ)),
+                        (MAGIC_RAW_BZ, bz2.compress(canon, 9))):
+        cand = magic + blob
+        if len(cand) < limit and (best is None or len(cand) < len(best)):
+            best = cand
+    return best
+
+
 # ------------------------------------------------------------------- codec
 
 def encode(table) -> bytes:
+    """Smallest of the modelled encoding and the plain fallbacks.
+
+    The fallbacks are not run unconditionally -- they roughly double encode
+    time, since the entropy stage dominates. They are run only when none of
+    the three modelling tricks fired, which is precisely the case where this
+    codec has degenerated into "split into columns, then xz" and a different
+    finisher may well beat it. When any trick fired, the modelled output wins
+    by a margin no general compressor closes, and the extra work is skipped.
+    """
+    blob, fired = _encode_plan(table)
+    if fired:
+        return blob
+    alt = _raw_candidates(table, len(blob))
+    return alt if alt is not None else blob
+
+
+def _encode_plan(table) -> Tuple[bytes, int]:
     plan = classify(table)
     nrows = len(table.rows)
-    groups = find_2d_groups(plan)
+    groups = find_2d_groups(plan, nrows)
     in_group = {pos: gi for gi, g in enumerate(groups) for pos in g}
     parent, order = pick_parents(plan, nrows)
 
@@ -405,12 +502,25 @@ def encode(table) -> bytes:
                            **XZ)
     bin_b = lzma.compress(b"".join(bins), **XZ)
     txt_b = lzma.compress(txt_data, **XZ)
-    return (MAGIC + len(meta_b).to_bytes(4, "big")
+    blob = (MAGIC + len(meta_b).to_bytes(4, "big")
             + len(bin_b).to_bytes(4, "big") + len(txt_b).to_bytes(4, "big")
             + meta_b + bin_b + txt_b)
 
+    # Did any of the three ideas actually do something? A parent-sorted
+    # column, a column whose differences packed smaller than its values, or a
+    # 2D group. If none did, this run was just "columns, then xz".
+    fired = (sum(1 for s in specs if s and s["kind"] == "dict"
+                 and s["parent"] is not None)
+             + sum(1 for s in specs if s and s["kind"] == "num" and s["k"])
+             + len(groups))
+    return blob, fired
+
 
 def decode(blob: bytes):
+    if blob[:4] == MAGIC_RAW_XZ:
+        return _from_canonical(lzma.decompress(blob[4:], **XZ))
+    if blob[:4] == MAGIC_RAW_BZ:
+        return _from_canonical(bz2.decompress(blob[4:]))
     if blob[:4] not in (MAGIC, MAGIC_V0):
         raise ValueError("not a Polypress archive")
     ml = int.from_bytes(blob[4:8], "big")

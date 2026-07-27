@@ -47,31 +47,32 @@ def _rows(n, fn):
     return [fn(i) for i in range(n)]
 
 
+N = 120     # rows in the bulk cases; see BLOCKS for why it is not larger
+
 CASES = {
     # the shape the reordering is built for: a child column determined by a
     # parent, which only collapses if both land in the same block
     "parent_child": dtz.Table(
         ["zip", "city", "n"],
-        _rows(600, lambda i: [["98101", "98402", "98501"][i % 3],
-                              ["Seattle", "Tacoma", "Olympia"][i % 3],
-                              str(i)])),
+        _rows(N, lambda i: [["98101", "98402", "98501"][i % 3],
+                            ["Seattle", "Tacoma", "Olympia"][i % 3],
+                            str(i)])),
 
     # commensurable numeric columns -> 2D grouping inside each block
     "numeric_2d": dtz.Table(
         ["a", "b", "c"],
-        _rows(400, lambda i: ["{:.2f}".format(1.0 + i * 0.01 + j * 0.05)
-                              for j in range(3)])),
+        _rows(N, lambda i: ["{:.2f}".format(1.0 + i * 0.01 + j * 0.05)
+                            for j in range(3)])),
 
     # awkward cells: embedded delimiters, quotes, newlines, unicode
     "awkward": dtz.Table(
         ["text", "n"],
-        _rows(150, lambda i: ['a,b"c\nd éü中文 {}'.format(i),
-                              str(i)])),
+        _rows(N, lambda i: ['a,b"c\nd éü中文 {}'.format(i), str(i)])),
 
     # empty strings and whitespace, which the numeric parser must reject
     "empties": dtz.Table(
         ["a", "b"],
-        _rows(120, lambda i: ["" if i % 3 == 0 else "  ", str(i)])),
+        _rows(N, lambda i: ["" if i % 3 == 0 else "  ", str(i)])),
 
     # single row, and a table narrower than any grouping rule
     "single_row": dtz.Table(["x", "y"], [["1", "2"]]),
@@ -80,9 +81,13 @@ CASES = {
     "no_rows": dtz.Table(["a", "b"], []),
 }
 
-# rows-per-block values; 600 exercises "block size divides row count exactly",
-# which is the case that produced the spurious empty block
-BLOCKS = [1, 7, 100, 600, 10_000]
+# 40 and 120 both divide N exactly -- that is the case that produced the
+# spurious empty block, so it must stay covered. 1 is kept because a
+# one-row-per-block archive is the extreme boundary, but it is why N is 120
+# rather than 600: every block is a separate encode, and a block that fires
+# none of the modelling tricks now also pays for the fallback candidates, so
+# 600 single-row blocks turned this suite into a multi-minute run.
+BLOCKS = [1, 7, 40, 120, 10_000]
 
 
 def _write_csv(table, path):

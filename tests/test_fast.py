@@ -83,6 +83,76 @@ def check(name: str, table) -> bool:
     return True
 
 
+def check_fallback() -> list:
+    """The fallback container: correctness first, then that it earns its place.
+
+    encode() now returns whichever is smaller of the modelled encoding and the
+    whole table under a plain standard codec. That introduces two new archive
+    shapes and a new way to be wrong -- picking a fallback that does not
+    actually round-trip -- so each is checked directly rather than inferred
+    from the size going down.
+    """
+    import random
+    import string
+    bad = []
+    rnd = random.Random(4)
+    al = string.ascii_letters + string.digits
+
+    # unstructured: no parent survives, no column differences usefully, no
+    # commensurable group. This is the shape that must reach the fallback.
+    noise = dtz.Table(
+        ["a", "b"],
+        [["".join(rnd.choice(al) for _ in range(24)),
+          "".join(rnd.choice(al) for _ in range(24))] for _ in range(3000)])
+
+    blob, fired = fast._encode_plan(noise)
+    if fired:
+        bad.append("noise table fired {} tricks; expected 0".format(fired))
+    chosen = fast.encode(noise)
+    if len(chosen) > len(blob):
+        bad.append("encode() returned {} B, worse than the plan's {} B"
+                   .format(len(chosen), len(blob)))
+    if fast.decode(chosen).rows != noise.rows:
+        bad.append("chosen encoding did not round-trip")
+
+    # both fallback containers must decode, whether or not encode picks them
+    for magic, name in ((fast.MAGIC_RAW_XZ, "xz"), (fast.MAGIC_RAW_BZ, "bz2")):
+        import bz2 as _bz2
+        import lzma as _lzma
+        canon = fast._canonical_bytes(noise)
+        body = (_lzma.compress(canon, **fast.XZ) if magic == fast.MAGIC_RAW_XZ
+                else _bz2.compress(canon, 9))
+        back = fast.decode(magic + body)
+        if back.rows != noise.rows or back.columns != noise.columns:
+            bad.append("{} fallback container did not round-trip".format(name))
+
+    # cells that stress the canonical CSV round trip, since a fallback that
+    # corrupts data is worse than losing on size
+    nasty = dtz.Table(
+        ["t", "u"],
+        [['has,comma', 'has"quote'], ['has\nnewline', 'has\ttab'],
+         ['', '   '], ['éü中文', 'trailing '], ['\r', 'a\r\nb']])
+    if fast._canonical_bytes(nasty) and \
+            fast._from_canonical(fast._canonical_bytes(nasty)).rows != nasty.rows:
+        # not a failure in itself -- _raw_candidates must simply refuse it
+        if fast._raw_candidates(nasty, 1 << 30) is not None:
+            bad.append("offered a fallback for cells it cannot round-trip")
+    if fast.decode(fast.encode(nasty)).rows != nasty.rows:
+        bad.append("nasty-cell table did not round-trip")
+
+    # a structured table must NOT pay for the fallback, and must be unchanged
+    structured = dtz.Table(
+        ["zip", "city"],
+        [[["98101", "98402", "98501"][i % 3],
+          ["Seattle", "Tacoma", "Olympia"][i % 3]] for i in range(2000)])
+    sblob, sfired = fast._encode_plan(structured)
+    if not sfired:
+        bad.append("structured table fired no tricks")
+    if fast.encode(structured) != sblob:
+        bad.append("structured table was diverted to a fallback")
+    return bad
+
+
 def main() -> int:
     cases = dict(BASE_CASES)
     cases.update(EXTRA)
@@ -105,6 +175,15 @@ def main() -> int:
             failed += ["fallback:" + n for n in fallback]
         else:
             print("numpy fallback agrees on all cases")
+
+    fb = check_fallback()
+    if fb:
+        print("\nfallback failures:")
+        for f in fb:
+            print("  " + f)
+        failed += ["fallback-container"]
+    else:
+        print("fallback container: correct, and only used when it wins")
 
     if failed:
         print("\nFAILED {} of {}: {}".format(
