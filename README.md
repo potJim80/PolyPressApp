@@ -175,6 +175,15 @@ both tables larger than 86k rows), and the strategy-selection container was
 **not** "never worse than the best standard tool" — it had no brotli
 candidate, and brotli beat it outright.
 
+## The results write-up
+
+`Polypress-Results.pdf` is a four-page summary of every measurement here,
+including a page stating plainly what is not done. Regenerate it with:
+
+```bash
+python3 report.py Polypress-Results.pdf
+```
+
 ## Tests and benchmarks
 
 ```bash
