@@ -49,6 +49,40 @@ dictionary columns were sorted by a parent**. Survey columns predict each
 other heavily, and no columnar format exploits that — Parquet compresses
 each column chunk independently.
 
+### Reproducible on real survey data, from scratch
+
+The NHAMCS file above is 278 MB and cannot be committed, so the survey claim
+used to be unverifiable without a manual download. It no longer is:
+
+```bash
+python3 benchmarks/fetch_nhanes.py nhanes_real.csv   # real CDC microdata
+python3 benchmarks/bench.py nhanes_real.csv
+```
+
+That pulls 17 NHANES 2017-2018 questionnaire files from CDC, joins them on
+respondent ID, and gives **9,254 rows x 421 columns** — wider than NHAMCS.
+No credentials, no manual step. Measured 2026-07-27:
+
+| codec | bytes | ratio |
+|---|---|---|
+| **Polypress** | **516,601** | **12.02x** |
+| `xz -9e` | 707,784 | 8.77x |
+| `bzip2 -9` | 712,418 | 8.72x |
+| `brotli -q 11` | 717,274 | 8.66x |
+| `parquet+brotli` | 1,003,563 | 6.19x |
+| `parquet+zstd` | 1,049,961 | 5.91x |
+
+**1.37x smaller than the best general compressor, 1.94x smaller than the best
+Parquet** — and on this file Parquet did *not* reproduce the exact printed
+text, so part of even that gap is discarded formatting rather than
+compression.
+
+Two things this exposes that the curated six did not. Encode runs at **1.3
+MB/s** here, an order of magnitude off the headline figures, because 421
+columns is 176,820 ordered pairs for the parent search. And the win is
+narrower than the 1.49x NHAMCS row — real breadth moves numbers down, which
+is the point of measuring it.
+
 Against the *specialised* numeric codecs on the yield curve — the comparison
 that actually matters, since general-purpose tools were never the competition
 for numeric tables:
@@ -216,6 +250,29 @@ Full numbers, every contender, in `benchmarks/hostile-results.txt`.
   (Ibarria et al., 2003, used in fpzip and SZ); MED is JPEG-LS. What is not
   standard is the table-specific front end: commensurable-group detection and
   the reordering trick.
+- **The reordering trick is not unprecedented either, and the honest claim is
+  narrower than "new".** Reordering rows to compress better is a studied
+  problem — Lemire, Kaser and Gutarra, *Reordering Rows for Better
+  Compression: Beyond the Lexicographic Order*, ACM TODS 37(3), 2012, and
+  column-store sorted projections before it. Exploiting functional
+  dependencies between columns appears in database patents. "SortComp" sorts
+  each column and compresses the sorted table alongside an explicit
+  permutation table.
+
+  Two things here differ from all of those, and they are the only novelty
+  worth claiming. **(1) The ordering is per-column, not global** — every
+  dictionary column is stored under a permutation derived from *its own*
+  parent, so a 421-column table can carry hundreds of different orderings at
+  once, where the prior work picks one order for the whole table. **(2) The
+  permutation is neither stored nor imposed on the output** — SortComp stores
+  it, global-sort approaches change the row order you get back. Here the
+  decoder re-derives each permutation from a parent it has already rebuilt,
+  and the restored table is in the original row order, cell for cell.
+
+  That combination was not found in a search of the obvious literature. That
+  is *not* the same as it being novel, and no claim of priority is made here:
+  the search was a few hours, not a review, and the ingredients are all
+  individually well known.
 
 ## What else is in here, and what it proved
 
