@@ -15,22 +15,34 @@ Measured against real binaries on real files from data.gov:
 | WA EV population | 289,564 x 16 | 2,258,862 | 3,917,084 `xz -9e` | **1.73x** | 30.5 | 121 |
 | EPA supply-chain GHG | 18,288 x 8 | 79,009 | 116,900 `xz -9e` | **1.48x** | 14.5 | 178 |
 | LA crime (200k slice) | 200,000 x 28 | 3,537,591 | 4,739,732 `xz -9e` | **1.34x** | 11.6 | 125 |
-| NHAMCS survey (CDC) | 96,539 x 209 | 3,956,941 | see below | **73.65x raw** | 11.9 | 174 |
+| NHAMCS survey (CDC) | 96,539 x 209 | 3,956,941 | 5,881,047 `parquet+brotli` | **1.49x** | 11.9 | 174 |
 
 The NHAMCS row is the widest table tested — 209 columns, 200 of them
-categorical — and gives the largest ratio by far. Its industry comparison was
-measured on a 5,000-row slice rather than the full 278 MB file:
+categorical — and gives the largest ratio by far. Full 278 MB file, every
+contender measured:
 
-| codec | slice bytes | ratio |
-|---|---|---|
-| **ours** | **234,208** | **64.79x** |
-| `xz -9e` | 355,280 | 42.71x |
-| `brotli -q 11` | 370,934 | 40.91x |
-| `zstd -19` | 383,027 | 39.62x |
-| `bzip2 -9` | 416,249 | 36.46x |
+| codec | bytes | ratio | time |
+|---|---|---|---|
+| **Polypress** | **3,956,941** | **73.65x** | 25s |
+| `parquet+brotli` | 5,881,047 | 49.55x | 25s |
+| `parquet+zstd` | 5,984,000 | 48.70x | 21s |
+| `zstd --ultra -22` | 6,178,417 | 47.17x | 90s |
+| `xz -9e` | 6,432,356 | 45.31x | 28s |
+| `brotli -q 11` | 7,132,152 | 40.86x | 141s |
+| `parquet+gzip` | 7,854,508 | 37.10x | 1s |
+| `bzip2 -9` | 8,989,156 | 32.42x | 33s |
+| `parquet+snappy` | 16,445,675 | 17.72x | 0s |
+| `gzip -9` | 18,781,409 | 15.52x | 3s |
 
-so **1.52x smaller than the best general-purpose tool** on the shape this
-codec is built for: many correlated categorical columns.
+**1.49x smaller than Parquet**, which is the honest competitor here — nobody
+stores a 209-column survey as compressed CSV. And the comparison is clean:
+Parquet reproduced the printed text of all 209 columns exactly on this file,
+so none of its size comes from discarding formatting.
+
+`tzip.py info` explains where the win comes from: **172 of the 200
+dictionary columns were sorted by a parent**. Survey columns predict each
+other heavily, and no columnar format exploits that — Parquet compresses
+each column chunk independently.
 
 Against the *specialised* numeric codecs on the yield curve — the comparison
 that actually matters, since general-purpose tools were never the competition
