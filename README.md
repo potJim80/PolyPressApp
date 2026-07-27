@@ -76,12 +76,14 @@ into C instead of a Python loop.
 ## Use
 
 ```bash
-python3 -c "
-import dtz, fast
-t = dtz.read_any('data.csv')
-open('data.tcz','wb').write(fast.encode(t))
-"
+python3 tzip.py compress data.csv          # -> data.csv.tcz
+python3 tzip.py restore  data.csv.tcz      # -> data.csv
+python3 tzip.py restore  data.csv.tcz -o out.parquet
+python3 tzip.py info     data.csv.tcz      # plan, shape, how much was reordered
 ```
+
+Restoring writes whatever format the output extension asks for, so it doubles
+as a converter.
 
 Or the Mac app:
 
@@ -90,9 +92,18 @@ Or the Mac app:
 open ~/Applications/TableZip.app
 ```
 
-Right-click its Dock icon → Options → Keep in Dock. Pick a file, get a
-`.tcz`; pick a `.tcz`, get the table back. Nothing is written until the
-compressed blob has been decoded in memory and compared to the original.
+Three ways to use it:
+
+- **launch it** — pick any table, get a `.tcz`
+- **double-click a `.tcz`** — restores it; the bundle registers the extension
+- **drop files on the Dock icon** — same thing
+
+Right-click the Dock icon → Options → Keep in Dock. Nothing is written until
+the compressed blob has been decoded in memory and compared to the original.
+
+The app is an AppleScript droplet rather than a shell wrapper for one
+reason: only an applet receives the `on open` Apple Event Finder sends when
+you double-click a document. A plain launcher never sees the path.
 
 Needs Python 3.9+ and numpy. `cc` is optional — `caccel.py` compiles
 `tcz.c` on first import and falls back to numpy if there is no compiler.

@@ -69,12 +69,16 @@ def _activate() -> str:
 # joined with spaces where AppleScript wanted commas.
 
 def _script_choose_file() -> str:
-    types = ", ".join('"{}"'.format(e) for e in TABLE_EXT + ("tcz",))
+    """No `of type` filter on purpose.
+
+    AppleScript resolves that list through UTIs, and `.tcz` is an extension
+    macOS has never heard of -- so filtering by it greys out exactly the
+    files you need in order to restore anything. The extension is checked in
+    Python after the pick instead."""
     return (_activate() +
             'set f to choose file with prompt '
-            '"Choose a table to compress, or a .tcz to restore:" '
-            'of type {{{}}}\n'
-            'POSIX path of f'.format(types))
+            '"Choose a table to compress, or a .tcz file to restore:"\n'
+            'POSIX path of f')
 
 
 def _script_choose_save(default_name: str, prompt: str) -> str:
@@ -233,9 +237,12 @@ def restore(src: str) -> str:
 
 
 def main() -> None:
+    # A path on the command line comes from double-clicking or dropping a
+    # file on the app; use it once, then fall back to the picker.
+    pending = [a for a in sys.argv[1:] if not a.startswith("-")]
     while True:
         try:
-            src = choose_file()
+            src = pending.pop(0) if pending else choose_file()
             if src.lower().endswith(PACKED_EXT):
                 text = restore(src)
             else:
