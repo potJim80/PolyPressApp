@@ -7,3 +7,5 @@ dist/
 *.dtz
 *.tcz
 .DS_Store
+csrc/polypress
+csrc/*.o

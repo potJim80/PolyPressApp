@@ -102,6 +102,7 @@ for numeric tables:
 ```
 polypress/      the codec: fast (single-shot), stream (bounded memory),
                 dtz (table I/O), codec, caccel + tcz.c (C accelerator)
+csrc/           the standalone C binary -- reads archives with nothing installed
 tzip.py         command line entry point
 app/            the Mac app: gui.py, build_app.sh, make_icon.py
 tests/          fidelity suites
@@ -109,6 +110,37 @@ benchmarks/     size and speed against real binaries
 docs/           the results PDF and the script that generates it
 attic/          superseded work, kept for the record
 ```
+
+## The standalone binary
+
+```bash
+./csrc/build.sh                        # -> csrc/polypress
+./csrc/polypress restore data.csv.ppz  # no Python, no numpy
+./csrc/polypress info    data.csv.ppz
+```
+
+**Reading an archive needs nothing installed.** That is the point of it. The
+Python codec needs Python 3.9+, numpy, and ideally a compiler; a researcher
+sent a `.ppz` should not have to build an environment to open it.
+
+It is a **reader only so far** — writing archives is still `tzip.py compress`.
+Decode was ported first because it is what a recipient needs, and because
+every archive the Python encoder produces is a test case with a known answer.
+`tests/test_cbin.py` runs the shared corpus plus cases that force each piece
+of machinery — the parent permutation, the 2D group reconstruction, undiff at
+orders 1 to 3, the 8-byte varint tail — through the binary and compares cell
+for cell against Python. All three container types are covered.
+
+Speed is a side effect, not the reason: restore runs 1.3x faster on the
+421-column NHANES table and 2.9x on a 60k-row survey. Encoding would gain
+little — profiling puts liblzma at 62–100% of encode time, so the Python
+around it is not the bottleneck on the tables where the compression win lives.
+
+Needs `liblzma` and `libbz2` headers (`brew install xz`, or
+`apt install liblzma-dev libbz2-dev`). The build script finds them via
+pkg-config. liblzma 5.4.3 and 5.8.3 were both verified to emit byte-identical
+output to Python's `lzma` module for this filter chain, which is what makes a
+byte-identical port possible at all.
 
 ## The three ideas
 
@@ -321,6 +353,7 @@ python3 docs/report.py docs/Polypress-Results.pdf
 python3 tests/test_fast.py            # 29 fidelity cases, C path and fallback
 python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
 python3 tests/test_stream.py          # 180 checks: block counts and every output format
+python3 tests/test_cbin.py            # the C binary must agree with Python on every case
 python3 benchmarks/bench.py data.csv  # size and speed vs the binaries AND Parquet
 python3 benchmarks/make_hostile.py d/ # generate the adversarial suite
 python3 app/gui.py --selftest         # compile every AppleScript the app can emit
