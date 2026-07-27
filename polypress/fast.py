@@ -243,13 +243,48 @@ def _counts_entropy(counts: np.ndarray, n: int) -> float:
     return float(-np.sum(p * np.log2(p)))
 
 
-def _cond_entropy_corrected(xs: np.ndarray, ys: np.ndarray, ny: int) -> float:
+# Above this many joint bins, counting by bincount would allocate more than
+# it saves and np.unique's sort is the better trade. Real survey columns have
+# cardinalities in the tens, so the product is tiny and this never trips.
+JOINT_BINCOUNT_MAX = 1 << 20
+
+
+def _joint_counts(xs: np.ndarray, ys: np.ndarray, ny: int) -> np.ndarray:
+    """Counts of each distinct (x, y) pair, ascending by combined key.
+
+    np.unique sorts, which is O(n log n) and was the single largest cost in
+    encoding a wide table. When the combined key space is small -- which is
+    the normal case for categorical columns -- bincount does it in one pass.
+
+    Both branches return counts in ascending key order, which matters for more
+    than tidiness: the caller sums them, np.sum is pairwise, and a different
+    order would give a different last bit, a different parent, and a different
+    archive. The two paths are interchangeable only because the order matches.
+    """
+    key = xs * ny + ys
+    if key.size:
+        hi = int(key.max())
+        if hi < JOINT_BINCOUNT_MAX:
+            c = np.bincount(key)
+            return c[c > 0]
+    _, jc = np.unique(key, return_counts=True)
+    return jc
+
+
+def _cond_entropy_corrected(xs: np.ndarray, ys: np.ndarray, ny: int,
+                            hx: float, mx_size: int) -> float:
     """H(Y|X) with a Miller-Madow correction.
 
     Computed as H(X,Y) - H(X) from one combined key, so it is two numpy
     passes instead of two Python Counters. That mattered: on a 209-column
     survey table this function was 94% of encode time, called once per
     ordered column pair -- 38,220 times.
+
+    `hx` and `mx_size` describe X alone. They used to be recomputed inside
+    here, once for every Y -- 420 times per column on a 421-column table, for
+    a value that never changed. They are now hoisted to the caller. The
+    arithmetic is written in the same shape as before so the result is the
+    same double, not merely the same number.
 
     The correction is not optional. A parent with many distinct values scores
     near-zero conditional entropy purely because each of its values is seen a
@@ -258,19 +293,27 @@ def _cond_entropy_corrected(xs: np.ndarray, ys: np.ndarray, ny: int) -> float:
     n = xs.size
     if n == 0:
         return 0.0
-    _, jc = np.unique(xs * ny + ys, return_counts=True)
-    mc = np.bincount(xs)
-    mc = mc[mc > 0]
-    h = _counts_entropy(jc, n) - _counts_entropy(mc, n)
-    return h + (jc.size - mc.size) / (2.0 * n * math.log(2))
+    jc = _joint_counts(xs, ys, ny)
+    h = _counts_entropy(jc, n) - hx
+    return h + (jc.size - mx_size) / (2.0 * n * math.log(2))
+
+
+def _entropy_and_distinct(ys: np.ndarray) -> Tuple[float, int]:
+    """H(Y) and the number of distinct values, from one bincount.
+
+    Both are needed per column and both come from the same counts, so taking
+    them together halves the work and guarantees they agree.
+    """
+    n = ys.size
+    if n == 0:
+        return 0.0, 0
+    counts = np.bincount(ys)
+    counts = counts[counts > 0]
+    return _counts_entropy(counts, n), int(counts.size)
 
 
 def _entropy(ys: np.ndarray) -> float:
-    n = ys.size
-    if n == 0:
-        return 0.0
-    counts = np.bincount(ys)
-    return _counts_entropy(counts[counts > 0], n)
+    return _entropy_and_distinct(ys)[0]
 
 
 def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
@@ -287,15 +330,20 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
     step = max(1, nrows // rows)
     sample = {p: np.ascontiguousarray(plan[p]["ids"][::step]) for p in dict_pos}
     sizes = {p: len(plan[p]["alpha"]) for p in dict_pos}
-    base = {p: _entropy(sample[p]) for p in dict_pos}
+    base, distinct = {}, {}
+    for p in dict_pos:
+        base[p], distinct[p] = _entropy_and_distinct(sample[p])
 
     gain = defaultdict(dict)
     for a in dict_pos:
+        # H(X) and X's distinct count are the same for every b, so they are
+        # computed once per a rather than once per pair
+        ha, ma = base[a], distinct[a]
         for b in dict_pos:
             if a == b:
                 continue
             g = base[b] - _cond_entropy_corrected(sample[a], sample[b],
-                                                  sizes[b])
+                                                  sizes[b], ha, ma)
             if g > 0.05:
                 gain[b][a] = g
 

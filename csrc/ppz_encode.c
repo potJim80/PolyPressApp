@@ -498,33 +498,39 @@ static int64_t *value_counts(const int64_t *v, size_t n, size_t *out_n)
     return c;
 }
 
-static double entropy_of(const int64_t *ys, size_t n)
+/* H(Y) and the distinct count from one pass -- both are needed per column. */
+static double entropy_of(const int64_t *ys, size_t n, size_t *distinct)
 {
-    if (n == 0) return 0.0;
+    if (n == 0) { if (distinct) *distinct = 0; return 0.0; }
     size_t nc = 0;
     int64_t *c = value_counts(ys, n, &nc);
-    if (!c) return 0.0;
+    if (!c) { if (distinct) *distinct = 0; return 0.0; }
     double h = counts_entropy(c, nc, n);
     free(c);
+    if (distinct) *distinct = nc;
     return h;
 }
 
+/* `hx` and `mx` describe X alone and are hoisted by the caller -- they used
+ * to be recomputed for every Y, which on 421 columns meant 420 identical
+ * recomputations per column. The arithmetic keeps the same shape so the
+ * result is the same double, not merely the same number. */
 static double cond_entropy_corrected(const int64_t *xs, const int64_t *ys,
-                                     size_t n, int64_t ny)
+                                     size_t n, int64_t ny,
+                                     double hx, size_t mx)
 {
     if (n == 0) return 0.0;
     int64_t *joint = malloc(n * sizeof(int64_t));
     if (!joint) return 0.0;
     for (size_t i = 0; i < n; i++) joint[i] = xs[i] * ny + ys[i];
-    size_t jn = 0, mn = 0;
+    size_t jn = 0;
     int64_t *jc = value_counts(joint, n, &jn);
-    int64_t *mc = value_counts(xs, n, &mn);
     free(joint);
-    if (!jc || !mc) { free(jc); free(mc); return 0.0; }
-    double h = counts_entropy(jc, jn, n) - counts_entropy(mc, mn, n);
-    double corr = (double)((int64_t)jn - (int64_t)mn)
+    if (!jc) return 0.0;
+    double h = counts_entropy(jc, jn, n) - hx;
+    double corr = (double)((int64_t)jn - (int64_t)mx)
                 / (2.0 * (double)n * log(2.0));
-    free(jc); free(mc);
+    free(jc);
     return h + corr;
 }
 
@@ -563,27 +569,29 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
 
     int64_t **sample = calloc(nd, sizeof(int64_t *));
     double  *base    = calloc(nd, sizeof(double));
-    if (!sample || !base) { free(sample); free(base); free(dict_pos);
-                            free(parent); free(order); return R; }
+    size_t  *distinct = calloc(nd, sizeof(size_t));
+    if (!sample || !base || !distinct) {
+        free(sample); free(base); free(distinct); free(dict_pos);
+        free(parent); free(order); return R; }
     for (size_t i = 0; i < nd; i++) {
         sample[i] = malloc((sn ? sn : 1) * sizeof(int64_t));
         size_t k = 0;
         for (size_t r = 0; r < nrows; r += step) sample[i][k++] = plan[dict_pos[i]].ids[r];
-        base[i] = entropy_of(sample[i], sn);
+        base[i] = entropy_of(sample[i], sn, &distinct[i]);
     }
 
     /* gain[b][a] for a != b, stored dense; -1 means "no usable gain" */
     double *gain = malloc(nd * nd * sizeof(double));
     if (!gain) { for (size_t i = 0; i < nd; i++) free(sample[i]);
-                 free(sample); free(base); free(dict_pos); free(parent);
-                 free(order); return R; }
+                 free(sample); free(base); free(distinct); free(dict_pos);
+                 free(parent); free(order); return R; }
     for (size_t i = 0; i < nd * nd; i++) gain[i] = -1.0;
     for (size_t ai = 0; ai < nd; ai++) {
         for (size_t bi = 0; bi < nd; bi++) {
             if (ai == bi) continue;
             double g = base[bi] - cond_entropy_corrected(
                 sample[ai], sample[bi], sn,
-                (int64_t)plan[dict_pos[bi]].nalpha);
+                (int64_t)plan[dict_pos[bi]].nalpha, base[ai], distinct[ai]);
             if (g > 0.05) gain[bi * nd + ai] = g;
         }
     }
@@ -639,7 +647,8 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
     }
 
     for (size_t i = 0; i < nd; i++) free(sample[i]);
-    free(sample); free(base); free(gain); free(placed); free(remaining);
+    free(sample); free(base); free(distinct);
+    free(gain); free(placed); free(remaining);
     free(dict_pos);
     R.parent = parent; R.order = order; R.norder = no;
     return R;
