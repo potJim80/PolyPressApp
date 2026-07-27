@@ -12,7 +12,23 @@ Measured against real binaries on real files from data.gov:
 | Treasury + dates | 7,003 x 9 | 26,542 | 50,572 `xz -9e` | **1.91x** | 20.1 | 89 |
 | WA EV population | 289,564 x 16 | 2,258,862 | 3,917,084 `xz -9e` | **1.73x** | 30.5 | 121 |
 | EPA supply-chain GHG | 18,288 x 8 | 79,009 | 116,900 `xz -9e` | **1.48x** | 14.5 | 178 |
-| LA crime (200k slice) | 200,000 x 28 | 3,537,591 | 4,739,732 `xz -9e` | **1.34x** | 8.9 | 125 |
+| LA crime (200k slice) | 200,000 x 28 | 3,537,591 | 4,739,732 `xz -9e` | **1.34x** | 11.6 | 125 |
+| NHAMCS survey (CDC) | 96,539 x 209 | 3,956,941 | see below | **73.65x raw** | 11.9 | 174 |
+
+The NHAMCS row is the widest table tested — 209 columns, 200 of them
+categorical — and gives the largest ratio by far. Its industry comparison was
+measured on a 5,000-row slice rather than the full 278 MB file:
+
+| codec | slice bytes | ratio |
+|---|---|---|
+| **ours** | **234,208** | **64.79x** |
+| `xz -9e` | 355,280 | 42.71x |
+| `brotli -q 11` | 370,934 | 40.91x |
+| `zstd -19` | 383,027 | 39.62x |
+| `bzip2 -9` | 416,249 | 36.46x |
+
+so **1.52x smaller than the best general-purpose tool** on the shape this
+codec is built for: many correlated categorical columns.
 
 Against the *specialised* numeric codecs on the yield curve — the comparison
 that actually matters, since general-purpose tools were never the competition
@@ -98,8 +114,14 @@ equivalent table, not identical bytes.
   nowhere near the fast tier — `zstd -3` encodes at 173 MB/s and always will.
 - **The 2x cases are matrix-shaped tables.** The 1.3–1.5x cases are the more
   typical result.
-- **Five datasets.** Not yet a claim. It needs census panels, NOAA grids, and
+- **Six datasets.** Not yet a claim. It needs census panels, NOAA grids, and
   tables that are hostile to it.
+- **Parent search is O(columns^2).** Every ordered pair of dictionary columns
+  is scored, so a 209-column table means 38,220 pairs. The sample depth is
+  traded against the pair count (`MI_BUDGET`) to keep that bounded; without
+  it, encoding the NHAMCS file took two and a half minutes instead of 25
+  seconds. A genuinely wide table -- thousands of columns -- would need a
+  smarter candidate search, not a smaller sample.
 - **The predictors are prior art.** The planar predictor is Lorenzo
   (Ibarria et al., 2003, used in fpzip and SZ); MED is JPEG-LS. What is not
   standard is the table-specific front end: commensurable-group detection and

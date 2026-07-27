@@ -38,7 +38,9 @@ import codec
 import dtz
 
 DICT_MAX = 1 << 16
-MI_SAMPLE = 40000
+MI_SAMPLE = 40000          # ceiling on rows sampled for column correlation
+MI_MIN_SAMPLE = 1500       # floor, so a very wide table still measures something
+MI_BUDGET = 150_000_000    # cap on (column pairs x sampled rows)
 MIN_2D_GROUP = 3
 INT_LIMIT = 1 << 62
 XZ = dict(format=lzma.FORMAT_RAW,
@@ -208,27 +210,39 @@ def diff_order(a: np.ndarray) -> int:
 
 # ------------------------------------------------- cross-column conditioning
 
-def _cond_entropy_corrected(xs, ys) -> float:
-    """H(Y|X) with a Miller-Madow correction. Without it, a parent with many
-    distinct values scores near-zero entropy purely because each of its values
-    is seen a handful of times -- which is how the first version of this
-    picked nonsense parents."""
-    n = len(xs)
-    if n == 0:
-        return 0.0
-    joint = Counter(zip(xs, ys))
-    marg = Counter(xs)
-    h = 0.0
-    for (x, y), c in joint.items():
-        h -= (c / n) * math.log2(c / marg[x])
-    return h + (len(joint) - len(marg)) / (2.0 * n * math.log(2))
+def _counts_entropy(counts: np.ndarray, n: int) -> float:
+    p = counts / n
+    return float(-np.sum(p * np.log2(p)))
 
 
-def _entropy(ys) -> float:
-    n = len(ys)
+def _cond_entropy_corrected(xs: np.ndarray, ys: np.ndarray, ny: int) -> float:
+    """H(Y|X) with a Miller-Madow correction.
+
+    Computed as H(X,Y) - H(X) from one combined key, so it is two numpy
+    passes instead of two Python Counters. That mattered: on a 209-column
+    survey table this function was 94% of encode time, called once per
+    ordered column pair -- 38,220 times.
+
+    The correction is not optional. A parent with many distinct values scores
+    near-zero conditional entropy purely because each of its values is seen a
+    handful of times, which is how an earlier version picked nonsense parents.
+    """
+    n = xs.size
     if n == 0:
         return 0.0
-    return sum(-(c / n) * math.log2(c / n) for c in Counter(ys).values())
+    _, jc = np.unique(xs * ny + ys, return_counts=True)
+    mc = np.bincount(xs)
+    mc = mc[mc > 0]
+    h = _counts_entropy(jc, n) - _counts_entropy(mc, n)
+    return h + (jc.size - mc.size) / (2.0 * n * math.log(2))
+
+
+def _entropy(ys: np.ndarray) -> float:
+    n = ys.size
+    if n == 0:
+        return 0.0
+    counts = np.bincount(ys)
+    return _counts_entropy(counts[counts > 0], n)
 
 
 def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
@@ -236,8 +250,15 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
     if nrows == 0 or len(dict_pos) < 2:
         return {p: None for p in dict_pos}, list(dict_pos)
 
-    step = max(1, nrows // MI_SAMPLE)
-    sample = {p: plan[p]["ids"][::step].tolist() for p in dict_pos}
+    # Parent search is O(columns^2) pairs. A wide table has a lot of them --
+    # 209 columns is 38,220 -- so trade sample depth against pair count and
+    # keep the total work bounded. Narrow tables are unaffected: they hit the
+    # MI_SAMPLE ceiling instead.
+    npairs = max(1, len(dict_pos) * (len(dict_pos) - 1))
+    rows = min(MI_SAMPLE, max(MI_MIN_SAMPLE, MI_BUDGET // npairs))
+    step = max(1, nrows // rows)
+    sample = {p: np.ascontiguousarray(plan[p]["ids"][::step]) for p in dict_pos}
+    sizes = {p: len(plan[p]["alpha"]) for p in dict_pos}
     base = {p: _entropy(sample[p]) for p in dict_pos}
 
     gain = defaultdict(dict)
@@ -245,7 +266,8 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
         for b in dict_pos:
             if a == b:
                 continue
-            g = base[b] - _cond_entropy_corrected(sample[a], sample[b])
+            g = base[b] - _cond_entropy_corrected(sample[a], sample[b],
+                                                  sizes[b])
             if g > 0.05:
                 gain[b][a] = g
 
