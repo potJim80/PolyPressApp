@@ -33,6 +33,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+import caccel
 import codec
 import dtz
 
@@ -56,7 +57,9 @@ def unzigzag(u: np.ndarray) -> np.ndarray:
 
 
 def pack_ints(res: np.ndarray) -> bytes:
-    """One byte per small value, escape + 4 bytes for the rest. Vectorised."""
+    """One byte per small value, escape + 4 bytes for the rest."""
+    if caccel.HAVE_C:
+        return caccel.pack(res)
     u = zigzag(res.astype(np.int64)).astype(np.uint64)
     small = u < ESCAPE
     head = np.full(u.size, ESCAPE, dtype=np.uint8)
@@ -66,6 +69,8 @@ def pack_ints(res: np.ndarray) -> bytes:
 
 
 def unpack_ints(buf: bytes, n: int) -> np.ndarray:
+    if caccel.HAVE_C:
+        return caccel.unpack(buf, n)
     head = np.frombuffer(buf[:n], dtype=np.uint8).astype(np.uint64)
     big = head == ESCAPE
     nbig = int(big.sum())
@@ -82,6 +87,10 @@ def ints_to_cells(a: np.ndarray, dec: int) -> List[str]:
     Equivalent to codec.int_to_cell per element, but the digit formatting
     happens inside numpy instead of a Python loop -- this was over half of
     decode time."""
+    if a.size == 0:
+        return []
+    if caccel.HAVE_C:
+        return caccel.cells_from_ints(a, dec)
     if dec == 0:
         return list(map(str, a.tolist()))
     scale = 10 ** dec
@@ -105,16 +114,29 @@ def packed_len(res: np.ndarray) -> int:
 
 # ----------------------------------------------------------------- analysis
 
+def _numeric(cells):
+    """Scaled-integer view of a column, or None. C first, numpy fallback."""
+    if not cells:
+        return None
+    if caccel.HAVE_C:
+        return caccel.parse_column(cells)
+    num = codec.as_numeric_column(cells)
+    if num is None or not num[0]:
+        return None
+    if max(abs(min(num[0])), abs(max(num[0]))) >= INT_LIMIT:
+        return None
+    return np.array(num[0], dtype=np.int64), num[1]
+
+
 def classify(table) -> List[dict]:
     nrows = len(table.rows)
     plan = []
     for j in range(len(table.columns)):
         cells = table.column(j)
-        num = codec.as_numeric_column(cells) if cells else None
-        if num is not None and num[0] and \
-                max(abs(min(num[0])), abs(max(num[0]))) < INT_LIMIT:
-            plan.append({"kind": "num", "ints": np.array(num[0], dtype=np.int64),
-                         "dec": num[1], "j": j})
+        num = _numeric(cells)
+        if num is not None:
+            plan.append({"kind": "num", "ints": num[0], "dec": num[1],
+                         "j": j})
             continue
         uniq = sorted(set(cells))
         if len(uniq) <= DICT_MAX and len(uniq) * 2 <= max(nrows, 2):
