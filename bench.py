@@ -7,7 +7,7 @@ without the clock next to it. Every tool here is timed the same way: bytes in
 from a file, bytes out to a pipe, then the reverse.
 """
 import os, subprocess, sys, time
-sys.path.insert(0, "/Users/mahdiakbarin/Desktop/ideas/txt_compressor")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dtz, fast
 
 TOOLS = [
