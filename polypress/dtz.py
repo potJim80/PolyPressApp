@@ -49,7 +49,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-import codec  # the polynomial-predictor bit codec from this project
+from . import codec  # the polynomial-predictor bit codec
 
 MAGIC = b"DTZ1"
 XZ_FILTERS = None

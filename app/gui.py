@@ -19,10 +19,15 @@ import sys
 import time
 import traceback
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# Works from both layouts: app/gui.py in the repo, where the package sits in
+# the parent directory, and Resources/gui.py in the app bundle, where the
+# package is copied alongside.
+for _p in (_HERE, os.path.dirname(_HERE)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-import dtz
-import fast
+from polypress import dtz, fast
 
 PACKED_EXT = ".ppz"
 LEGACY_EXT = ".tcz"      # archives written before the rename

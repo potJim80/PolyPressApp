@@ -29,7 +29,7 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
-import dtz
+from polypress import dtz
 
 OURS = ("poly", "colmajor", "fd.")          # strategy prefixes we contributed
 

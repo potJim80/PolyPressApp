@@ -33,9 +33,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-import caccel
-import codec
-import dtz
+from . import caccel
+from . import codec
+from . import dtz
 
 DICT_MAX = 1 << 16
 MI_SAMPLE = 40000          # ceiling on rows sampled for column correlation

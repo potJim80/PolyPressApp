@@ -21,6 +21,7 @@
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 DEST="${DEST:-$HOME/Applications}"
 APP="$DEST/Polypress.app"
 PY="${PYTHON:-/usr/bin/python3}"
@@ -62,11 +63,13 @@ APPLET
 osacompile -o "$APP" "$TMP/applet.applescript"
 
 # ---- payload ---------------------------------------------------------------
-cp "$HERE"/gui.py "$HERE"/fast.py "$HERE"/caccel.py "$HERE"/dtz.py \
-   "$HERE"/codec.py "$HERE"/tzip.py "$HERE"/tcz.c "$RES/"
+cp "$HERE"/gui.py "$ROOT"/tzip.py "$RES/"
+cp -R "$ROOT"/polypress "$RES/"
+rm -f "$RES"/polypress/libtcz.so
 
 if command -v cc >/dev/null; then
-  cc -O3 -shared -fPIC -o "$RES/libtcz.so" "$HERE/tcz.c" 2>/dev/null || true
+  cc -O3 -shared -fPIC -o "$RES/polypress/libtcz.so" \
+     "$ROOT/polypress/tcz.c" 2>/dev/null || true
 fi
 
 cat > "$RES/run.sh" <<'RUN'

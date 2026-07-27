@@ -10,11 +10,13 @@ reordering, and the varint escape path.
 
 from __future__ import annotations
 
+import os
 import sys
 
-import dtz
-import fast
-import caccel
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
+from polypress import dtz, fast, caccel
 from test_dtz import CASES as BASE_CASES
 
 EXTRA = {

@@ -12,7 +12,10 @@ import sys
 import tempfile
 from typing import Tuple
 
-import dtz
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
+from polypress import dtz
 
 CASES = {
     "simple": dtz.Table(["a", "b"], [["1", "2"], ["3", "4"]]),

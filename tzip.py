@@ -21,8 +21,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import dtz
-import fast
+from polypress import dtz, fast
 
 PACKED_EXT = ".ppz"
 LEGACY_EXT = ".tcz"      # archives written before the rename

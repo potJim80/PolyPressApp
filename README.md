@@ -2,7 +2,7 @@
 
 A lossless compressor for data tables.
 
-`fast.py` compresses data tables smaller than xz, zstd, brotli, Parquet, and
+`polypress/fast.py` compresses data tables smaller than xz, zstd, brotli, Parquet, and
 the specialised numeric codecs in ClickHouse — on every table tested so far —
 and encodes several times faster than the max-level general compressors.
 
@@ -58,6 +58,19 @@ for numeric tables:
 | ClickHouse `Gorilla + ZSTD(22)` | 141,642 |
 | fpzip lossless (float64) | 255,606 |
 
+## Layout
+
+```
+polypress/      the codec: fast (single-shot), stream (bounded memory),
+                dtz (table I/O), codec, caccel + tcz.c (C accelerator)
+tzip.py         command line entry point
+app/            the Mac app: gui.py, build_app.sh, make_icon.py
+tests/          fidelity suites
+benchmarks/     size and speed against real binaries
+docs/           the results PDF and the script that generates it
+attic/          superseded work, kept for the record
+```
+
 ## The three ideas
 
 **1. Local function building.** Fit a low-degree polynomial to the last few
@@ -102,7 +115,7 @@ as a converter.
 Or the Mac app:
 
 ```bash
-./build_app.sh          # installs to ~/Applications/Polypress.app
+./app/build_app.sh      # installs to ~/Applications/Polypress.app
 open ~/Applications/Polypress.app
 ```
 
@@ -159,10 +172,10 @@ These are kept because the negative results are the useful part.
 
 | file | verdict |
 |---|---|
-| `exact_interp.py` | **Exact polynomial interpolation cannot compress.** Storing the interpolating polynomial's coefficients costs *more* than the values, and gets worse with more points (6.8x worse at n=24). Interpolation is an invertible linear map — n values in, n coefficients out. |
-| `smart.py`, `rc.py` | A working adaptive binary range coder with cross-column context modelling. **Superseded**: reordering plus xz beat it on both size and speed. Kept as the reference implementation. |
-| `dtz.py` | The earlier "try every strategy and keep the smallest" container. Its apparent 1% win over `xz -9e` turned out to be **CSV quote-stripping, not compression** — feeding xz the same canonicalised bytes matched it to within 68 bytes. |
-| `codec.py` | Rice coding and the original fixed-order predictors. The predictor idea survived into `fast.py`; Rice coding did not — it cannot spend fractional bits. |
+| `attic/exact_interp.py` | **Exact polynomial interpolation cannot compress.** Storing the interpolating polynomial's coefficients costs *more* than the values, and gets worse with more points (6.8x worse at n=24). Interpolation is an invertible linear map — n values in, n coefficients out. |
+| `attic/smart.py`, `attic/rc.py` | A working adaptive binary range coder with cross-column context modelling. **Superseded**: reordering plus xz beat it on both size and speed. Kept as the reference implementation. |
+| `polypress/dtz.py` | The earlier "try every strategy and keep the smallest" container. Its apparent 1% win over `xz -9e` turned out to be **CSV quote-stripping, not compression** — feeding xz the same canonicalised bytes matched it to within 68 bytes. |
+| `polypress/codec.py` | Rice coding and the original fixed-order predictors. The predictor idea survived into `fast.py`; Rice coding did not — it cannot spend fractional bits. |
 
 The exploratory scripts from the functional-dependency work (`fd_probe*.py`,
 `real_fd.py`, `gap_probe.py`, `skew.py`, `scaling.py`, `sensitivity.py`,
@@ -177,21 +190,20 @@ candidate, and brotli beat it outright.
 
 ## The results write-up
 
-`Polypress-Results.pdf` is a four-page summary of every measurement here,
+`docs/Polypress-Results.pdf` is a four-page summary of every measurement here,
 including a page stating plainly what is not done. Regenerate it with:
 
 ```bash
-python3 report.py Polypress-Results.pdf
+python3 docs/report.py docs/Polypress-Results.pdf
 ```
 
 ## Tests and benchmarks
 
 ```bash
-python3 test_fast.py                 # 29 fidelity cases, C path and fallback
-python3 test_dtz.py                  # 18 fidelity cases for the table I/O
-python3 bench.py data.csv            # size and speed, both directions
-python3 bench_gov.py data.csv        # the older dtz strategy comparison
-python3 gui.py --selftest            # compile every AppleScript the app can emit
+python3 tests/test_fast.py           # 29 fidelity cases, C path and fallback
+python3 tests/test_dtz.py            # 18 fidelity cases for the table I/O
+python3 benchmarks/bench.py data.csv # size and speed, both directions
+python3 app/gui.py --selftest        # compile every AppleScript the app can emit
 ```
 
 `build_app.sh` runs `gui.py --selftest` and refuses to build if it fails. A

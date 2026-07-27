@@ -29,10 +29,11 @@ import sys
 import time
 from typing import Iterator, List, Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 
-import dtz
-import fast
+from . import dtz
+from . import fast
 
 MAGIC = b"PPZS"
 DEFAULT_BUDGET_GB = 1.0
