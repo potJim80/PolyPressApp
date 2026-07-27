@@ -1,9 +1,9 @@
-"""Command line for the codec.
+"""Polypress -- command line for the codec.
 
-    python3 tzip.py compress data.csv              -> data.csv.tcz
-    python3 tzip.py restore  data.csv.tcz          -> data.csv
-    python3 tzip.py restore  data.csv.tcz -o x.parquet
-    python3 tzip.py info     data.csv.tcz
+    python3 tzip.py compress data.csv              -> data.csv.ppz
+    python3 tzip.py restore  data.csv.ppz          -> data.csv
+    python3 tzip.py restore  data.csv.ppz -o x.parquet
+    python3 tzip.py info     data.csv.ppz
 
 Restoring writes whatever format the output extension asks for, so this
 doubles as a converter. Compression verifies the round trip in memory before
@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dtz
 import fast
 
-PACKED_EXT = ".tcz"
+PACKED_EXT = ".ppz"
+LEGACY_EXT = ".tcz"      # archives written before the rename
 
 
 def human(n: float) -> str:
@@ -67,8 +68,11 @@ def cmd_restore(args) -> int:
     if args.output:
         dst = args.output
     else:
-        dst = src[:-len(PACKED_EXT)] if src.lower().endswith(PACKED_EXT) \
-            else src + ".csv"
+        low = src.lower()
+        if low.endswith(PACKED_EXT) or low.endswith(LEGACY_EXT):
+            dst = src[:-4]
+        else:
+            dst = src + ".csv"
         if os.path.abspath(dst) == os.path.abspath(src):
             dst = dst + ".restored.csv"
     blob = open(src, "rb").read()
@@ -87,8 +91,8 @@ def cmd_restore(args) -> int:
 
 def cmd_info(args) -> int:
     blob = open(args.path, "rb").read()
-    if blob[:4] != b"FAST":
-        print("not a .tcz file (bad magic)", file=sys.stderr)
+    if blob[:4] not in (fast.MAGIC, fast.MAGIC_V0):
+        print("not a Polypress archive (bad magic)", file=sys.stderr)
         return 1
     ml = int.from_bytes(blob[4:8], "big")
     meta = json.loads(lzma.decompress(blob[16:16 + ml], **fast.XZ))
@@ -111,23 +115,23 @@ def cmd_info(args) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="tzip", description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="polypress", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    c = sub.add_parser("compress", help="table -> .tcz")
+    c = sub.add_parser("compress", help="table -> .ppz")
     c.add_argument("path")
     c.add_argument("-o", "--output")
     c.add_argument("--no-verify", action="store_true",
                    help="skip the in-memory round-trip check (not advised)")
     c.set_defaults(fn=cmd_compress)
 
-    r = sub.add_parser("restore", help=".tcz -> table")
+    r = sub.add_parser("restore", help=".ppz -> table")
     r.add_argument("path")
     r.add_argument("-o", "--output",
                    help="output path; the extension picks the format")
     r.set_defaults(fn=cmd_restore)
 
-    i = sub.add_parser("info", help="what is inside a .tcz")
+    i = sub.add_parser("info", help="what is inside an archive")
     i.add_argument("path")
     i.set_defaults(fn=cmd_info)
 

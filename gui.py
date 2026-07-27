@@ -1,4 +1,4 @@
-"""TableZip -- the Mac front end, built on native dialogs.
+"""Polypress -- the Mac front end, built on native dialogs.
 
 Not Tkinter. The only Tk on a stock macOS is Apple's 8.5.9 from 2010, and it
 crashes during widget construction on current macOS -- the window opens and
@@ -24,10 +24,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dtz
 import fast
 
-PACKED_EXT = ".tcz"
+PACKED_EXT = ".ppz"
+LEGACY_EXT = ".tcz"      # archives written before the rename
 TABLE_EXT = ("csv", "tsv", "psv", "txt", "dat", "json", "jsonl", "ndjson",
              "parquet")
-APP = "TableZip"
+APP = "Polypress"
 
 
 # ------------------------------------------------------------- applescript
@@ -77,7 +78,7 @@ def _script_choose_file() -> str:
     Python after the pick instead."""
     return (_activate() +
             'set f to choose file with prompt '
-            '"Choose a table to compress, or a .tcz file to restore:"\n'
+            '"Choose a table to compress, or an archive to restore:"\n'
             'POSIX path of f')
 
 
@@ -210,8 +211,8 @@ def compress(src: str) -> str:
 
 def restore(src: str) -> str:
     base = os.path.basename(src)
-    if base.lower().endswith(PACKED_EXT):
-        base = base[:-len(PACKED_EXT)]
+    if base.lower().endswith((PACKED_EXT, LEGACY_EXT)):
+        base = base[:-4]
     dst = choose_save(base, "Save the restored table as:")
     notify("Restoring " + os.path.basename(src))
     blob = open(src, "rb").read()
@@ -243,7 +244,7 @@ def main() -> None:
     while True:
         try:
             src = pending.pop(0) if pending else choose_file()
-            if src.lower().endswith(PACKED_EXT):
+            if src.lower().endswith((PACKED_EXT, LEGACY_EXT)):
                 text = restore(src)
             else:
                 text = compress(src)

@@ -46,6 +46,8 @@ INT_LIMIT = 1 << 62
 XZ = dict(format=lzma.FORMAT_RAW,
           filters=[{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME}])
 ESCAPE = 255
+MAGIC = b"PPZ1"            # Polypress container
+MAGIC_V0 = b"FAST"         # pre-rename archives still open
 
 
 # ------------------------------------------------------------------ packing
@@ -403,13 +405,14 @@ def encode(table) -> bytes:
                            **XZ)
     bin_b = lzma.compress(b"".join(bins), **XZ)
     txt_b = lzma.compress(txt_data, **XZ)
-    return (b"FAST" + len(meta_b).to_bytes(4, "big")
+    return (MAGIC + len(meta_b).to_bytes(4, "big")
             + len(bin_b).to_bytes(4, "big") + len(txt_b).to_bytes(4, "big")
             + meta_b + bin_b + txt_b)
 
 
 def decode(blob: bytes):
-    assert blob[:4] == b"FAST"
+    if blob[:4] not in (MAGIC, MAGIC_V0):
+        raise ValueError("not a Polypress archive")
     ml = int.from_bytes(blob[4:8], "big")
     bl = int.from_bytes(blob[8:12], "big")
     o = 16

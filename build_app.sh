@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build TableZip.app -- a real Mac bundle that shows up in the Dock, and
-# that you can double-click a .tcz onto.
+# Build Polypress.app -- a real Mac bundle that shows up in the Dock, and
+# that you can double-click a .ppz onto.
 #
 # It is an AppleScript applet, not a plain shell wrapper, for one reason:
 # only an applet receives the `on open` Apple Event that Finder sends when
@@ -22,7 +22,7 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST="${DEST:-$HOME/Applications}"
-APP="$DEST/TableZip.app"
+APP="$DEST/Polypress.app"
 PY="${PYTHON:-/usr/bin/python3}"
 RES="$APP/Contents/Resources"
 
@@ -72,7 +72,7 @@ fi
 cat > "$RES/run.sh" <<'RUN'
 #!/bin/bash
 RES="$(cd "$(dirname "$0")" && pwd)"
-LOG="$HOME/Library/Logs/TableZip.log"
+LOG="$HOME/Library/Logs/Polypress.log"
 if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
   exec /usr/bin/arch -arm64 /usr/bin/python3 "$RES/gui.py" "$@" 2>>"$LOG"
 fi
@@ -83,22 +83,24 @@ chmod +x "$RES/run.sh"
 # ---- identity and document types -------------------------------------------
 PL="$APP/Contents/Info.plist"
 PB=/usr/libexec/PlistBuddy
-$PB -c "Set :CFBundleName TableZip" "$PL" 2>/dev/null || \
-  $PB -c "Add :CFBundleName string TableZip" "$PL"
-$PB -c "Add :CFBundleDisplayName string TableZip" "$PL" 2>/dev/null || true
-$PB -c "Set :CFBundleIdentifier local.tablezip" "$PL" 2>/dev/null || \
-  $PB -c "Add :CFBundleIdentifier string local.tablezip" "$PL"
+$PB -c "Set :CFBundleName Polypress" "$PL" 2>/dev/null || \
+  $PB -c "Add :CFBundleName string Polypress" "$PL"
+$PB -c "Add :CFBundleDisplayName string Polypress" "$PL" 2>/dev/null || true
+$PB -c "Set :CFBundleIdentifier local.polypress" "$PL" 2>/dev/null || \
+  $PB -c "Add :CFBundleIdentifier string local.polypress" "$PL"
 $PB -c "Add :NSHighResolutionCapable bool true" "$PL" 2>/dev/null || true
 
-# Tell Finder we own .tcz, so double-click and "Open With" work.
+# Tell Finder we own .ppz (and the pre-rename .tcz), so double-click and
+# "Open With" work for both.
 $PB -c "Delete :CFBundleDocumentTypes" "$PL" 2>/dev/null || true
 $PB -c "Add :CFBundleDocumentTypes array" "$PL"
 $PB -c "Add :CFBundleDocumentTypes:0 dict" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string TableZip Archive" "$PL"
+$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Polypress Archive" "$PL"
 $PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$PL"
 $PB -c "Add :CFBundleDocumentTypes:0:LSHandlerRank string Owner" "$PL"
 $PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions array" "$PL"
-$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions:0 string tcz" "$PL"
+$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions:0 string ppz" "$PL"
+$PB -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions:1 string tcz" "$PL"
 # Second entry: tables we can compress, so "Open With" offers us there too.
 $PB -c "Add :CFBundleDocumentTypes:1 dict" "$PL"
 $PB -c "Add :CFBundleDocumentTypes:1:CFBundleTypeName string Data Table" "$PL"
@@ -115,7 +117,7 @@ done
 if command -v iconutil >/dev/null && command -v sips >/dev/null; then
   "$PY" "$HERE/make_icon.py" "$TMP/icon.png" >/dev/null 2>&1 || true
   if [ -f "$TMP/icon.png" ]; then
-    SET="$TMP/TableZip.iconset"
+    SET="$TMP/Polypress.iconset"
     mkdir -p "$SET"
     for spec in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" \
                 "64 icon_32x32@2x" "128 icon_128x128" "256 icon_128x128@2x" \
@@ -142,6 +144,6 @@ touch "$APP"
 echo "Built $APP"
 echo
 echo "  open '$APP'                  compress or restore via dialogs"
-echo "  double-click any .tcz        restores it"
+echo "  double-click any .ppz        restores it"
 echo "  drop files on the Dock icon  same thing"
 echo "  right-click Dock icon -> Options -> Keep in Dock"

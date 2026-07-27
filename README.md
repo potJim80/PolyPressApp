@@ -1,4 +1,6 @@
-# A lossless compressor for data tables
+# Polypress
+
+A lossless compressor for data tables.
 
 `fast.py` compresses data tables smaller than xz, zstd, brotli, Parquet, and
 the specialised numeric codecs in ClickHouse — on every table tested so far —
@@ -76,10 +78,10 @@ into C instead of a Python loop.
 ## Use
 
 ```bash
-python3 tzip.py compress data.csv          # -> data.csv.tcz
-python3 tzip.py restore  data.csv.tcz      # -> data.csv
-python3 tzip.py restore  data.csv.tcz -o out.parquet
-python3 tzip.py info     data.csv.tcz      # plan, shape, how much was reordered
+python3 tzip.py compress data.csv          # -> data.csv.ppz
+python3 tzip.py restore  data.csv.ppz      # -> data.csv
+python3 tzip.py restore  data.csv.ppz -o out.parquet
+python3 tzip.py info     data.csv.ppz      # plan, shape, how much was reordered
 ```
 
 Restoring writes whatever format the output extension asks for, so it doubles
@@ -88,14 +90,15 @@ as a converter.
 Or the Mac app:
 
 ```bash
-./build_app.sh          # installs to ~/Applications/TableZip.app
-open ~/Applications/TableZip.app
+./build_app.sh          # installs to ~/Applications/Polypress.app
+open ~/Applications/Polypress.app
 ```
 
 Three ways to use it:
 
-- **launch it** — pick any table, get a `.tcz`
-- **double-click a `.tcz`** — restores it; the bundle registers the extension
+- **launch it** — pick any table, get a `.ppz`
+- **double-click a `.ppz`** — restores it; the bundle registers the extension
+  (archives written before the rename, `.tcz`, still open)
 - **drop files on the Dock icon** — same thing
 
 Right-click the Dock icon → Options → Keep in Dock. Nothing is written until
