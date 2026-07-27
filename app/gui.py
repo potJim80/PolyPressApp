@@ -172,7 +172,9 @@ def compress(src: str) -> str:
     kinds: dict = {}
     for c in plan:
         kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
-    groups = fast.find_2d_groups(plan)
+    # nrows matters: the planar predictor is refused below 3 rows, so calling
+    # this without it would report groups the encoder never actually forms.
+    groups = fast.find_2d_groups(plan, rows)
 
     notify("Compressing {:,} rows x {} columns…".format(rows, cols))
     t0 = time.time()
@@ -204,6 +206,15 @@ def compress(src: str) -> str:
     if groups:
         lines.append("2D groups: " + "; ".join(
             ", ".join(table.columns[plan[p]["j"]] for p in g) for g in groups))
+    # encode() returns whichever is smaller of the modelled encoding and the
+    # whole table under a plain codec. If the fallback won, the plan above
+    # describes work that was measured and then discarded -- say so, rather
+    # than leave a summary that implies it was used.
+    if blob[:4] in (fast.MAGIC_RAW_XZ, fast.MAGIC_RAW_BZ):
+        lines.append(
+            "None of the modelling helped on this table, so it was stored "
+            "with plain {} instead -- which came out smaller.".format(
+                "xz" if blob[:4] == fast.MAGIC_RAW_XZ else "bzip2"))
     lines += [
         "",
         "Verified: every cell, column name and row order was",
