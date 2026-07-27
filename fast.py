@@ -49,36 +49,55 @@ ESCAPE = 255
 # ------------------------------------------------------------------ packing
 
 def zigzag(a: np.ndarray) -> np.ndarray:
-    return np.where(a < 0, (-a << 1) - 1, a << 1)
+    """Signed -> unsigned, using the bit trick rather than arithmetic.
+
+    The obvious `(-a << 1) - 1` overflows int64: differences between values
+    near the +/-2^62 limit legitimately reach 2^63, and negating or doubling
+    those in signed arithmetic wraps to nonsense. `(a << 1) ^ (a >> 63)` is
+    exact because it relies on the wraparound instead of fighting it."""
+    a = np.ascontiguousarray(a, dtype=np.int64)
+    with np.errstate(over="ignore"):
+        u = (a << np.int64(1)) ^ (a >> np.int64(63))
+    return u.view(np.uint64)
 
 
 def unzigzag(u: np.ndarray) -> np.ndarray:
-    return np.where(u & 1, -((u + 1) >> 1), u >> 1)
+    u = np.ascontiguousarray(u, dtype=np.uint64)
+    return ((u >> np.uint64(1)).astype(np.int64)
+            ^ -(u & np.uint64(1)).astype(np.int64))
 
 
 def pack_ints(res: np.ndarray) -> bytes:
     """One byte per small value, escape + 4 bytes for the rest."""
     if caccel.HAVE_C:
         return caccel.pack(res)
-    u = zigzag(res.astype(np.int64)).astype(np.uint64)
+    u = zigzag(res)
     small = u < ESCAPE
     head = np.full(u.size, ESCAPE, dtype=np.uint8)
     head[small] = u[small].astype(np.uint8)
-    tail = u[~small].astype("<u4")
-    return head.tobytes() + tail.tobytes()
+    tail = u[~small]
+    if tail.size and int(tail.max()) >= (1 << 32):
+        return b"\x08" + head.tobytes() + tail.astype("<u8").tobytes()
+    return b"\x04" + head.tobytes() + tail.astype("<u4").tobytes()
 
 
 def unpack_ints(buf: bytes, n: int) -> np.ndarray:
     if caccel.HAVE_C:
         return caccel.unpack(buf, n)
-    head = np.frombuffer(buf[:n], dtype=np.uint8).astype(np.uint64)
+    width = buf[0]
+    head = np.frombuffer(buf[1:1 + n], dtype=np.uint8).astype(np.uint64)
     big = head == ESCAPE
     nbig = int(big.sum())
     if nbig:
-        tail = np.frombuffer(buf[n:n + 4 * nbig], dtype="<u4").astype(np.uint64)
+        at = 1 + n
+        if width == 8:
+            tail = np.frombuffer(buf[at:at + 8 * nbig], dtype="<u8")
+        else:
+            tail = np.frombuffer(buf[at:at + 4 * nbig],
+                                 dtype="<u4").astype(np.uint64)
         head = head.copy()
         head[big] = tail
-    return unzigzag(head.astype(np.int64))
+    return unzigzag(head)
 
 
 def ints_to_cells(a: np.ndarray, dec: int) -> List[str]:
@@ -108,8 +127,10 @@ def ints_to_cells(a: np.ndarray, dec: int) -> List[str]:
 
 
 def packed_len(res: np.ndarray) -> int:
-    u = zigzag(res.astype(np.int64))
-    return res.size + 4 * int((u >= ESCAPE).sum())
+    u = zigzag(res)
+    esc = u[u >= ESCAPE]
+    width = 8 if esc.size and int(esc.max()) >= (1 << 32) else 4
+    return 1 + res.size + width * int(esc.size)
 
 
 # ----------------------------------------------------------------- analysis
@@ -193,6 +214,8 @@ def _cond_entropy_corrected(xs, ys) -> float:
     is seen a handful of times -- which is how the first version of this
     picked nonsense parents."""
     n = len(xs)
+    if n == 0:
+        return 0.0
     joint = Counter(zip(xs, ys))
     marg = Counter(xs)
     h = 0.0
@@ -203,12 +226,14 @@ def _cond_entropy_corrected(xs, ys) -> float:
 
 def _entropy(ys) -> float:
     n = len(ys)
+    if n == 0:
+        return 0.0
     return sum(-(c / n) * math.log2(c / n) for c in Counter(ys).values())
 
 
 def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
     dict_pos = [p for p, c in enumerate(plan) if c["kind"] == "dict"]
-    if len(dict_pos) < 2:
+    if nrows == 0 or len(dict_pos) < 2:
         return {p: None for p in dict_pos}, list(dict_pos)
 
     step = max(1, nrows // MI_SAMPLE)
@@ -250,6 +275,56 @@ def _width(n: int) -> str:
     return "<u1" if n <= 256 else ("<u2" if n <= 65536 else "<u4")
 
 
+# Strings are stored as one concatenated UTF-8 blob plus an array of byte
+# lengths. Joining on a separator -- "\n", "\x00", anything -- is wrong,
+# because a cell is allowed to contain that byte. This costs nothing: the
+# lengths compress to almost nothing and the blob compresses exactly as well
+# as the joined form did.
+
+def _pack_strings(groups: List[List[str]]):
+    """Concatenate string groups, paying for length prefixes only where a
+    value actually contains a newline.
+
+    Newline-joining is what xz likes -- the separator sits in the same stream
+    as the content and models well. But a cell may legally contain a newline,
+    which silently split one value into two. So each group records whether it
+    is newline-joined; the rare group that is not carries an explicit length
+    array. On real tables no group needs one, and the joined layout is kept."""
+    parts, metas, length_arrays = [], [], []
+    for g in groups:
+        if any("\n" in s for s in g):
+            blobs = [s.encode("utf-8") for s in g]
+            data = b"".join(blobs)
+            length_arrays.append(np.fromiter((len(b) for b in blobs),
+                                             dtype=np.int64, count=len(blobs)))
+            metas.append({"n": len(g), "b": len(data), "nl": False})
+        else:
+            data = "\n".join(g).encode("utf-8")
+            metas.append({"n": len(g), "b": len(data), "nl": True})
+        parts.append(data)
+    return b"".join(parts), metas, length_arrays
+
+
+def _unpack_strings(data: bytes, metas, length_bins) -> List[List[str]]:
+    out, at, li = [], 0, 0
+    for m in metas:
+        chunk = data[at:at + m["b"]]
+        at += m["b"]
+        if m["n"] == 0:
+            out.append([])
+            continue
+        if m["nl"]:
+            out.append(chunk.decode("utf-8").split("\n"))
+        else:
+            lengths = unpack_ints(length_bins[li], m["n"])
+            li += 1
+            ends = np.cumsum(lengths)
+            starts = ends - lengths
+            out.append([chunk[int(starts[i]):int(ends[i])].decode("utf-8")
+                        for i in range(m["n"])])
+    return out
+
+
 # ------------------------------------------------------------------- codec
 
 def encode(table) -> bytes:
@@ -259,8 +334,8 @@ def encode(table) -> bytes:
     in_group = {pos: gi for gi, g in enumerate(groups) for pos in g}
     parent, order = pick_parents(plan, nrows)
 
-    bins: List[bytes] = []        # binary payloads
-    texts: List[str] = []         # textual payloads
+    bins: List[bytes] = []            # binary payloads
+    sgroups: List[List[str]] = []     # string payloads, length-prefixed
     specs: List[Optional[dict]] = [None] * len(plan)
 
     for pos in order:
@@ -272,13 +347,13 @@ def encode(table) -> bytes:
             ids = ids[perm]
         w = _width(len(col["alpha"]))
         bins.append(ids.astype(w).tobytes())
-        texts.append("\n".join(col["alpha"]))
+        sgroups.append(col["alpha"])
         specs[pos] = {"kind": "dict", "n": len(col["alpha"]), "w": w,
                       "parent": par}
 
     for pos, col in enumerate(plan):
         if col["kind"] == "text":
-            texts.append("\n".join(col["cells"]))
+            sgroups.append(col["cells"])
             specs[pos] = {"kind": "text"}
         elif col["kind"] == "num" and pos in in_group:
             specs[pos] = {"kind": "grp", "dec": col["dec"], "g": in_group[pos]}
@@ -295,13 +370,17 @@ def encode(table) -> bytes:
         side = np.concatenate([M[0], np.diff(M, axis=0)[:, 0]])
         bins.append(pack_ints(np.concatenate([side, D.ravel()])))
 
+    txt_data, smeta, length_arrays = _pack_strings(sgroups)
+    n_before = len(bins)
+    bins.extend(pack_ints(a) for a in length_arrays)   # always last
     meta = {"columns": table.columns, "nrows": nrows, "cols": specs,
             "groups": groups, "order": order,
-            "bins": [len(b) for b in bins]}
+            "bins": [len(b) for b in bins],
+            "smeta": smeta, "nlenbins": len(bins) - n_before}
     meta_b = lzma.compress(json.dumps(meta, separators=(",", ":")).encode(),
                            **XZ)
     bin_b = lzma.compress(b"".join(bins), **XZ)
-    txt_b = lzma.compress("\x00".join(texts).encode(), **XZ)
+    txt_b = lzma.compress(txt_data, **XZ)
     return (b"FAST" + len(meta_b).to_bytes(4, "big")
             + len(bin_b).to_bytes(4, "big") + len(txt_b).to_bytes(4, "big")
             + meta_b + bin_b + txt_b)
@@ -316,14 +395,17 @@ def decode(blob: bytes):
     o += ml
     raw = lzma.decompress(blob[o:o + bl], **XZ)
     o += bl
-    texts = lzma.decompress(blob[o:], **XZ).decode().split("\x00")
+    txt_data = lzma.decompress(blob[o:], **XZ)
 
     nrows, specs = meta["nrows"], meta["cols"]
-    sizes = meta["bins"]
     cuts, at = [], 0
-    for s in sizes:
-        cuts.append(raw[at:at + s])
-        at += s
+    for size in meta["bins"]:
+        cuts.append(raw[at:at + size])
+        at += size
+
+    nlen = meta["nlenbins"]
+    length_bins = cuts[len(cuts) - nlen:] if nlen else []
+    texts = _unpack_strings(txt_data, meta["smeta"], length_bins)
 
     cols: List[Optional[List[str]]] = [None] * len(specs)
     ids_by_pos: Dict[int, np.ndarray] = {}
@@ -331,7 +413,7 @@ def decode(blob: bytes):
 
     for pos in meta["order"]:
         sp = specs[pos]
-        alpha = texts[ti].split("\n") if sp["n"] else []
+        alpha = texts[ti]
         ti += 1
         ids = np.frombuffer(cuts[bi], dtype=sp["w"]).astype(np.int64)
         bi += 1
@@ -342,11 +424,12 @@ def decode(blob: bytes):
             out[perm] = ids
             ids = out
         ids_by_pos[pos] = ids
-        cols[pos] = np.array(alpha, dtype=object)[ids].tolist()
+        cols[pos] = (np.array(alpha, dtype=object)[ids].tolist()
+                     if alpha else [])
 
     for pos, sp in enumerate(specs):
         if sp["kind"] == "text":
-            cols[pos] = texts[ti].split("\n") if nrows else []
+            cols[pos] = list(texts[ti])
             ti += 1
         elif sp["kind"] == "num":
             k = sp["k"]

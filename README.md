@@ -116,17 +116,29 @@ These are kept because the negative results are the useful part.
 | `dtz.py` | The earlier "try every strategy and keep the smallest" container. Its apparent 1% win over `xz -9e` turned out to be **CSV quote-stripping, not compression** — feeding xz the same canonicalised bytes matched it to within 68 bytes. |
 | `codec.py` | Rice coding and the original fixed-order predictors. The predictor idea survived into `fast.py`; Rice coding did not — it cannot spend fractional bits. |
 
+The exploratory scripts from the functional-dependency work (`fd_probe*.py`,
+`real_fd.py`, `gap_probe.py`, `skew.py`, `scaling.py`, `sensitivity.py`,
+`fair_fight.py`, `explain.py`, `benchmark.py`) were removed once that line was
+measured out; they are in git history if ever needed.
+
 Two claims in an earlier version of this README were wrong and are worth
 recording: `colmajor.xz` did **not** "win on most real tables" (it lost on
 both tables larger than 86k rows), and the strategy-selection container was
 **not** "never worse than the best standard tool" — it had no brotli
 candidate, and brotli beat it outright.
 
-## Benchmarks
+## Tests and benchmarks
 
 ```bash
-python3 bench_gov.py data.csv        # dtz vs the general-purpose tools
+python3 test_fast.py                 # 29 fidelity cases, C path and fallback
+python3 test_dtz.py                  # 18 fidelity cases for the table I/O
+python3 bench.py data.csv            # size and speed, both directions
+python3 bench_gov.py data.csv        # the older dtz strategy comparison
 ```
 
-`bench_gov.py` reports which strategy won and says plainly whether it was one
-this project contributed or a repackaged standard tool.
+`test_fast.py` runs every case twice -- once through the C accelerator and
+once through the numpy fallback -- because an accelerator that disagrees with
+the reference is not an accelerator, it is a second codec. It caught three
+real bugs: a 32-bit varint tail that truncated values past 2^31, newline-
+joined text storage that split any cell containing a newline, and a division
+by zero on an empty table.

@@ -51,7 +51,7 @@ def _load() -> None:
     c64 = ctypes.c_int64
     p64 = ctypes.POINTER(ctypes.c_int64)
     pu8 = ctypes.POINTER(ctypes.c_uint8)
-    pu32 = ctypes.POINTER(ctypes.c_uint32)
+    pu64 = ctypes.POINTER(ctypes.c_uint64)
 
     lib.scan_decimals.restype = ctypes.c_int32
     lib.scan_decimals.argtypes = [ctypes.c_char_p, c64, p64]
@@ -60,9 +60,9 @@ def _load() -> None:
     lib.fmt_fixed.restype = c64
     lib.fmt_fixed.argtypes = [p64, c64, ctypes.c_int32, ctypes.c_char_p, c64]
     lib.pack_ints.restype = c64
-    lib.pack_ints.argtypes = [p64, c64, pu8, pu32]
+    lib.pack_ints.argtypes = [p64, c64, pu8, pu64]
     lib.unpack_ints.restype = None
-    lib.unpack_ints.argtypes = [pu8, c64, pu32, p64]
+    lib.unpack_ints.argtypes = [pu8, c64, pu64, p64]
 
     _lib = lib
     HAVE_C = True
@@ -119,23 +119,37 @@ def cells_from_ints(a: np.ndarray, dec: int) -> List[str]:
 # --------------------------------------------------------------- varints
 
 def pack(res: np.ndarray) -> bytes:
+    """Layout: width byte (4 or 8), then one head byte per value, then the
+    escaped values at that width.
+
+    The width is per-array. Escapes always fit in 64 bits, but on real tables
+    they almost always fit in 32 -- a fixed 8-byte tail cost 5% on a table of
+    9-digit vehicle IDs."""
     a = np.ascontiguousarray(res, dtype=np.int64)
     head = np.empty(a.size, dtype=np.uint8)
-    tail = np.empty(a.size, dtype=np.uint32)
+    tail = np.empty(a.size, dtype=np.uint64)
     nbig = _lib.pack_ints(_ptr(a, ctypes.c_int64), a.size,
                           _ptr(head, ctypes.c_uint8),
-                          _ptr(tail, ctypes.c_uint32))
-    return head.tobytes() + tail[:nbig].tobytes()
+                          _ptr(tail, ctypes.c_uint64))
+    tail = tail[:nbig]
+    if nbig and int(tail.max()) >= (1 << 32):
+        return b"\x08" + head.tobytes() + tail.tobytes()
+    return b"\x04" + head.tobytes() + tail.astype("<u4").tobytes()
 
 
 def unpack(buf: bytes, n: int) -> np.ndarray:
-    head = np.frombuffer(buf[:n], dtype=np.uint8)
+    width = buf[0]
+    head = np.ascontiguousarray(np.frombuffer(buf[1:1 + n], dtype=np.uint8))
     nbig = int((head == 255).sum())
-    tail = np.frombuffer(buf[n:n + 4 * nbig], dtype=np.uint32)
+    at = 1 + n
+    if width == 8:
+        tail = np.frombuffer(buf[at:at + 8 * nbig], dtype="<u8")
+    else:
+        tail = np.frombuffer(buf[at:at + 4 * nbig], dtype="<u4").astype(np.uint64)
     tail = np.ascontiguousarray(tail)
     out = np.empty(n, dtype=np.int64)
-    _lib.unpack_ints(_ptr(np.ascontiguousarray(head), ctypes.c_uint8), n,
-                     _ptr(tail, ctypes.c_uint32), _ptr(out, ctypes.c_int64))
+    _lib.unpack_ints(_ptr(head, ctypes.c_uint8), n,
+                     _ptr(tail, ctypes.c_uint64), _ptr(out, ctypes.c_int64))
     return out
 
 

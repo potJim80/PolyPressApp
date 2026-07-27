@@ -1,29 +1,101 @@
-"""TableZip -- a small Mac app for compressing data tables with fast.py.
+"""TableZip -- the Mac front end, built on native dialogs.
 
-Pick a file, get a .tcz. Pick a .tcz, get the table back. The work runs on a
-worker thread so the window stays responsive, and every compression is
-verified by decoding it in memory and comparing before anything is written.
+Not Tkinter. The only Tk on a stock macOS is Apple's 8.5.9 from 2010, and it
+crashes during widget construction on current macOS -- the window opens and
+paints nothing. Rather than make the user install a second Python, this
+drives the real system dialogs through osascript: native look, no
+dependencies, and it works on a clean machine.
+
+Flow: pick a file, pick where to save, watch a notification, read the result.
+Nothing is written until the compressed blob has been decoded in memory and
+compared against the original table.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
-import threading
 import time
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import tkinter as tk
-from tkinter import filedialog, ttk
-
 import dtz
 import fast
 
-TABLE_EXT = (".csv", ".tsv", ".psv", ".txt", ".dat", ".json", ".jsonl",
-             ".ndjson", ".parquet")
 PACKED_EXT = ".tcz"
+TABLE_EXT = ("csv", "tsv", "psv", "txt", "dat", "json", "jsonl", "ndjson",
+             "parquet")
+APP = "TableZip"
+
+
+# ------------------------------------------------------------- applescript
+
+class Cancelled(Exception):
+    pass
+
+
+def _esc(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _osa(script: str) -> str:
+    p = subprocess.run(["osascript", "-e", script],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err = p.stderr.decode()
+    if p.returncode != 0:
+        if "User canceled" in err or "-128" in err:
+            raise Cancelled()
+        raise RuntimeError(err.strip() or "osascript failed")
+    return p.stdout.decode().strip()
+
+
+def _activate() -> str:
+    """Bring our dialogs to the front.
+
+    Wrapped in try/end try on purpose: this needs Automation permission, and
+    if the user has not granted it the dialog must still appear rather than
+    the whole script dying with -1743."""
+    return ('try\n'
+            'tell application "System Events" to set frontmost of '
+            'the first process whose unix id is {} to true\n'
+            'end try\n').format(os.getpid())
+
+
+def choose_file() -> str:
+    types = " ".join('"{}"'.format(e) for e in TABLE_EXT + ("tcz",))
+    return _osa(
+        _activate() +
+        'set f to choose file with prompt '
+        '"Choose a table to compress, or a .tcz to restore:" '
+        'of type {{{}}}\n'
+        'POSIX path of f'.format(types))
+
+
+def choose_save(default_name: str, prompt: str) -> str:
+    return _osa(
+        _activate() +
+        'set f to choose file name with prompt "{}" default name "{}"\n'
+        'POSIX path of f'.format(_esc(prompt), _esc(default_name)))
+
+
+def notify(text: str) -> None:
+    try:
+        _osa('display notification "{}" with title "{}"'.format(
+            _esc(text), APP))
+    except Exception:
+        pass
+
+
+def dialog(text: str, buttons, default: str) -> str:
+    btns = ", ".join('"{}"'.format(b) for b in buttons)
+    return _osa(
+        _activate() +
+        'set r to display dialog "{}" with title "{}" buttons {{{}}} '
+        'default button "{}" with icon note\n'
+        'button returned of r'.format(
+            _esc(text), APP, btns, _esc(default)))
 
 
 def human(n: float) -> str:
@@ -35,200 +107,112 @@ def human(n: float) -> str:
     return str(n)
 
 
-class App:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.path: str | None = None
-        self.busy = False
-        root.title("TableZip")
-        root.geometry("620x460")
-        root.minsize(560, 420)
+# -------------------------------------------------------------------- work
 
-        outer = ttk.Frame(root, padding=18)
-        outer.pack(fill="both", expand=True)
+def compress(src: str) -> str:
+    raw = os.path.getsize(src)
+    dst = choose_save(os.path.basename(src) + PACKED_EXT,
+                      "Save the compressed file as:")
+    notify("Reading " + os.path.basename(src))
+    table = dtz.read_any(src)
+    rows, cols = table.shape
 
-        ttk.Label(outer, text="TableZip",
-                  font=("Helvetica", 22, "bold")).pack(anchor="w")
-        ttk.Label(outer, foreground="#666",
-                  text="Lossless table compression. Verified on every run."
-                  ).pack(anchor="w", pady=(0, 14))
+    plan = fast.classify(table)
+    kinds: dict = {}
+    for c in plan:
+        kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
+    groups = fast.find_2d_groups(plan)
 
-        box = ttk.LabelFrame(outer, text="File", padding=12)
-        box.pack(fill="x")
-        row = ttk.Frame(box)
-        row.pack(fill="x")
-        self.file_label = ttk.Label(row, text="No file selected",
-                                    foreground="#888")
-        self.file_label.pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Choose File…", command=self.choose
-                   ).pack(side="right")
+    notify("Compressing {:,} rows x {} columns…".format(rows, cols))
+    t0 = time.time()
+    blob = fast.encode(table)
+    secs = time.time() - t0
 
-        self.action = ttk.Button(outer, text="Compress", state="disabled",
-                                 command=self.run)
-        self.action.pack(fill="x", pady=14, ipady=6)
+    notify("Verifying…")
+    back = fast.decode(blob)
+    if back.columns != table.columns or back.rows != table.rows:
+        return ("VERIFICATION FAILED.\n\n"
+                "The compressed data did not decode back to the original "
+                "table, so nothing was written.")
 
-        self.bar = ttk.Progressbar(outer, mode="indeterminate")
-        self.bar.pack(fill="x")
+    with open(dst, "wb") as fh:
+        fh.write(blob)
 
-        res = ttk.LabelFrame(outer, text="Result", padding=12)
-        res.pack(fill="both", expand=True, pady=(14, 0))
-        self.out = tk.Text(res, height=11, wrap="word", relief="flat",
-                           font=("Menlo", 11), background="#f7f7f7")
-        self.out.pack(fill="both", expand=True)
-        self.log("Choose a CSV, TSV, JSON or Parquet file to compress,\n"
-                 "or a .tcz file to restore it.\n")
+    lines = [
+        "Compressed {:,} rows x {} columns.".format(rows, cols),
+        "",
+        "Original      {:>12}".format(human(raw)),
+        "Compressed    {:>12}".format(human(len(blob))),
+        "Ratio         {:>11.2f}x".format(raw / max(len(blob), 1)),
+        "Saved         {:>12}".format(human(raw - len(blob))),
+        "Speed         {:>9.1f} MB/s".format(raw / 1e6 / max(secs, 1e-9)),
+        "",
+        "Plan: " + ", ".join("{} {}".format(v, k)
+                             for k, v in sorted(kinds.items())),
+    ]
+    if groups:
+        lines.append("2D groups: " + "; ".join(
+            ", ".join(table.columns[plan[p]["j"]] for p in g) for g in groups))
+    lines += [
+        "",
+        "Verified: every cell, column name and row order was",
+        "reproduced exactly from the compressed file.",
+        "",
+        "Saved to " + dst,
+    ]
+    return "\n".join(lines)
 
-    # ---------------------------------------------------------------- ui
-    def log(self, text: str) -> None:
-        self.out.insert("end", text + "\n")
-        self.out.see("end")
 
-    def clear(self) -> None:
-        self.out.delete("1.0", "end")
-
-    def choose(self) -> None:
-        if self.busy:
-            return
-        p = filedialog.askopenfilename(
-            title="Choose a table or a .tcz file",
-            filetypes=[("Tables and archives",
-                        " ".join("*" + e for e in TABLE_EXT + (PACKED_EXT,))),
-                       ("All files", "*.*")])
-        if not p:
-            return
-        self.path = p
-        size = os.path.getsize(p)
-        self.file_label.config(
-            text="{}   ({})".format(os.path.basename(p), human(size)),
-            foreground="#000")
-        packing = not p.lower().endswith(PACKED_EXT)
-        self.action.config(text="Compress" if packing else "Restore",
-                           state="normal")
-        self.clear()
-        self.log("Ready to {}.".format("compress" if packing else "restore"))
-
-    def run(self) -> None:
-        if self.busy or not self.path:
-            return
-        packing = not self.path.lower().endswith(PACKED_EXT)
-        if packing:
-            out = filedialog.asksaveasfilename(
-                title="Save compressed file",
-                initialfile=os.path.basename(self.path) + PACKED_EXT,
-                defaultextension=PACKED_EXT)
-        else:
-            base = os.path.basename(self.path)
-            if base.lower().endswith(PACKED_EXT):
-                base = base[:-len(PACKED_EXT)]
-            out = filedialog.asksaveasfilename(title="Save restored table",
-                                               initialfile=base)
-        if not out:
-            return
-        self.busy = True
-        self.action.config(state="disabled")
-        self.bar.start(12)
-        self.clear()
-        threading.Thread(target=self._work, args=(self.path, out, packing),
-                         daemon=True).start()
-
-    def done(self) -> None:
-        self.busy = False
-        self.bar.stop()
-        self.action.config(state="normal")
-
-    def post(self, text: str) -> None:
-        self.root.after(0, self.log, text)
-
-    # ------------------------------------------------------------- work
-    def _work(self, src: str, dst: str, packing: bool) -> None:
-        try:
-            if packing:
-                self._compress(src, dst)
-            else:
-                self._restore(src, dst)
-        except Exception:
-            self.post("FAILED\n" + traceback.format_exc())
-        finally:
-            self.root.after(0, self.done)
-
-    def _compress(self, src: str, dst: str) -> None:
-        raw = os.path.getsize(src)
-        self.post("Reading {}…".format(os.path.basename(src)))
-        t = dtz.read_any(src)
-        rows, cols = t.shape
-        self.post("{:,} rows x {} columns".format(rows, cols))
-
-        plan = fast.classify(t)
-        kinds = {}
-        for c in plan:
-            kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
-        groups = fast.find_2d_groups(plan)
-        self.post("Plan: " + ", ".join(
-            "{} {}".format(v, k) for k, v in sorted(kinds.items())))
-        if groups:
-            self.post("2D groups: " + "; ".join(
-                ", ".join(t.columns[plan[p]["j"]] for p in g) for g in groups))
-
-        self.post("Compressing…")
-        t0 = time.time()
-        blob = fast.encode(t)
-        enc = time.time() - t0
-
-        self.post("Verifying…")
-        back = fast.decode(blob)
-        if back.columns != t.columns or back.rows != t.rows:
-            self.post("VERIFICATION FAILED — nothing was written.")
-            return
-
-        with open(dst, "wb") as fh:
-            fh.write(blob)
-        mb = raw / 1e6
-        self.post("")
-        self.post("  original    {:>12}".format(human(raw)))
-        self.post("  compressed  {:>12}".format(human(len(blob))))
-        self.post("  ratio       {:>11.2f}x".format(raw / max(len(blob), 1)))
-        self.post("  saved       {:>12}".format(human(raw - len(blob))))
-        self.post("  speed       {:>9.1f} MB/s".format(mb / max(enc, 1e-9)))
-        self.post("")
-        self.post("Verified: every cell, column name and row order was")
-        self.post("reproduced exactly from the compressed file.")
-        self.post("")
-        self.post("Note: restoring writes canonical CSV, so quoting and line")
-        self.post("endings may differ from the original bytes. The table is")
-        self.post("identical; the file is not byte-for-byte.")
-        self.post("")
-        self.post("Written to " + dst)
-
-    def _restore(self, src: str, dst: str) -> None:
-        self.post("Reading archive…")
-        blob = open(src, "rb").read()
-        t0 = time.time()
-        table = fast.decode(blob)
-        dec = time.time() - t0
-        rows, cols = table.shape
-        self.post("{:,} rows x {} columns".format(rows, cols))
-        dtz.write_any(table, dst)
-        out = os.path.getsize(dst)
-        self.post("")
-        self.post("  archive     {:>12}".format(human(len(blob))))
-        self.post("  restored    {:>12}".format(human(out)))
-        self.post("  speed       {:>9.1f} MB/s".format(
-            out / 1e6 / max(dec, 1e-9)))
-        self.post("")
-        self.post("Written to " + dst)
+def restore(src: str) -> str:
+    base = os.path.basename(src)
+    if base.lower().endswith(PACKED_EXT):
+        base = base[:-len(PACKED_EXT)]
+    dst = choose_save(base, "Save the restored table as:")
+    notify("Restoring " + os.path.basename(src))
+    blob = open(src, "rb").read()
+    t0 = time.time()
+    table = fast.decode(blob)
+    secs = time.time() - t0
+    rows, cols = table.shape
+    dtz.write_any(table, dst)
+    out = os.path.getsize(dst)
+    return "\n".join([
+        "Restored {:,} rows x {} columns.".format(rows, cols),
+        "",
+        "Archive       {:>12}".format(human(len(blob))),
+        "Restored      {:>12}".format(human(out)),
+        "Speed         {:>9.1f} MB/s".format(out / 1e6 / max(secs, 1e-9)),
+        "",
+        "Note: this writes canonical CSV, so quoting and line endings",
+        "may differ from the original file. The table is identical;",
+        "the bytes are not.",
+        "",
+        "Saved to " + dst,
+    ])
 
 
 def main() -> None:
-    root = tk.Tk()
-    try:
-        root.call("tk", "scaling", 2.0)
-    except tk.TclError:
-        pass
-    App(root)
-    root.lift()
-    root.attributes("-topmost", True)
-    root.after(300, lambda: root.attributes("-topmost", False))
-    root.mainloop()
+    while True:
+        try:
+            src = choose_file()
+            if src.lower().endswith(PACKED_EXT):
+                text = restore(src)
+            else:
+                text = compress(src)
+            again = dialog(text, ["Quit", "Do Another"], "Do Another")
+            if again == "Quit":
+                return
+        except Cancelled:
+            return
+        except Exception:
+            try:
+                again = dialog("Something went wrong:\n\n" +
+                               traceback.format_exc()[-900:],
+                               ["Quit", "Try Again"], "Try Again")
+                if again == "Quit":
+                    return
+            except Exception:
+                return
 
 
 if __name__ == "__main__":

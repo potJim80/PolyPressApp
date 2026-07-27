@@ -163,9 +163,11 @@ int64_t fmt_fixed(const int64_t *in, int64_t n, int32_t dec,
 /* ------------------------------------------------------------- varints */
 
 /* Zigzag each value; small ones take a byte, the rest an escape plus a
- * 32-bit tail entry. Returns how many went to the tail. */
+ * 64-bit tail entry. The tail must be 64 bits: a 32-bit tail silently
+ * truncated any value past 2^31, which is well inside the int64 range this
+ * codec accepts. */
 int64_t pack_ints(const int64_t *in, int64_t n,
-                  uint8_t *head, uint32_t *tail)
+                  uint8_t *head, uint64_t *tail)
 {
     int64_t nbig = 0;
     for (int64_t i = 0; i < n; i++) {
@@ -175,14 +177,14 @@ int64_t pack_ints(const int64_t *in, int64_t n,
             head[i] = (uint8_t)u;
         } else {
             head[i] = ESCAPE;
-            tail[nbig++] = (uint32_t)u;
+            tail[nbig++] = u;
         }
     }
     return nbig;
 }
 
 void unpack_ints(const uint8_t *head, int64_t n,
-                 const uint32_t *tail, int64_t *out)
+                 const uint64_t *tail, int64_t *out)
 {
     int64_t nbig = 0;
     for (int64_t i = 0; i < n; i++) {
