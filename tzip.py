@@ -5,6 +5,13 @@
     python3 tzip.py restore  data.csv.ppz -o x.parquet
     python3 tzip.py info     data.csv.ppz
 
+For a file too large to hold in memory, the same three commands in a
+block-at-a-time form, with a settable memory budget:
+
+    python3 tzip.py stream-compress big.csv --budget 1.0
+    python3 tzip.py stream-restore  big.csv.ppz -o back.csv
+    python3 tzip.py stream-info     big.csv.ppz
+
 Restoring writes whatever format the output extension asks for, so this
 doubles as a converter. Compression verifies the round trip in memory before
 writing anything.
@@ -21,7 +28,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from polypress import dtz, fast
+from polypress import dtz, fast, stream
 
 PACKED_EXT = ".ppz"
 LEGACY_EXT = ".tcz"      # archives written before the rename
@@ -133,6 +140,35 @@ def main(argv=None) -> int:
     i = sub.add_parser("info", help="what is inside an archive")
     i.add_argument("path")
     i.set_defaults(fn=cmd_info)
+
+    # The streaming variants share stream.py's implementation rather than
+    # reimplementing it, so there is one code path and one archive format.
+    sc = sub.add_parser("stream-compress",
+                        help="table -> .ppz, one block at a time")
+    sc.add_argument("path")
+    sc.add_argument("-o", "--output")
+    sc.add_argument("--budget", type=float, default=stream.DEFAULT_BUDGET_GB,
+                    help="approximate peak memory in GB (default 1.0)")
+    sc.add_argument("--rows", type=int,
+                    help="rows per block, overrides --budget")
+    sc.add_argument("--no-verify", action="store_true")
+    sc.set_defaults(fn=lambda a: stream.main(
+        ["compress", a.path] + (["-o", a.output] if a.output else [])
+        + ["--budget", str(a.budget)]
+        + (["--rows", str(a.rows)] if a.rows else [])
+        + (["--no-verify"] if a.no_verify else [])))
+
+    sr = sub.add_parser("stream-restore",
+                        help="streamed .ppz -> table, one block at a time")
+    sr.add_argument("path")
+    sr.add_argument("-o", "--output",
+                    help="output path; the extension picks the format")
+    sr.set_defaults(fn=lambda a: stream.main(
+        ["restore", a.path] + (["-o", a.output] if a.output else [])))
+
+    si = sub.add_parser("stream-info", help="blocks and sizes in a stream archive")
+    si.add_argument("path")
+    si.set_defaults(fn=lambda a: stream.main(["info", a.path]))
 
     args = ap.parse_args(argv)
     return args.fn(args)

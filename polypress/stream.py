@@ -13,9 +13,13 @@ The cost is real and worth stating: the cross-column reordering only sees
 correlations *inside* a block, so smaller blocks compress slightly worse.
 Measure with `--rows` before choosing a small one.
 
-    python3 stream.py compress big.csv -o big.ppz --budget 1.0
-    python3 stream.py restore  big.ppz -o back.csv
-    python3 stream.py info     big.ppz
+    python3 tzip.py stream-compress big.csv -o big.ppz --budget 1.0
+    python3 tzip.py stream-restore  big.ppz -o back.csv
+    python3 tzip.py stream-info     big.ppz
+
+Or as a module, which is the same code path:
+
+    python3 -m polypress.stream compress big.csv --budget 1.0
 """
 
 from __future__ import annotations
@@ -94,14 +98,21 @@ def _blocks(path: str, rows_per_block: int) -> Iterator[dtz.Table]:
             return
         width = len(header)
         batch: List[List[str]] = []
+        yielded = False
         for row in rd:
             if len(row) != width:            # ragged rows, same rule as dtz
                 row = (row + [""] * width)[:width]
             batch.append(row)
             if len(batch) >= rows_per_block:
                 yield dtz.Table(list(header), batch)
+                yielded = True
                 batch = []
-        if batch or True:
+        # Only emit a trailing block if it holds rows. The exception is a file
+        # with a header and no rows at all: that still needs one empty block,
+        # or the archive would record no columns. Yielding unconditionally --
+        # as an earlier `if batch or True` did -- appended a wasted ~178-byte
+        # encoding of nothing whenever the row count divided evenly.
+        if batch or not yielded:
             yield dtz.Table(list(header), batch)
     finally:
         fh.close()
@@ -172,23 +183,138 @@ def iter_blocks(src: str) -> Iterator[dtz.Table]:
             yield fast.decode(fh.read(size))
 
 
+# Restoring has to honour the output extension the same way tzip.py does --
+# `restore -o out.parquet` must produce parquet, not a CSV wearing the name.
+# But it cannot call dtz.write_any, which needs the whole table in memory; the
+# entire point here is that the table does not fit. So each format gets a
+# writer that consumes one block at a time and holds nothing else.
+
+class _DelimitedOut:
+    def __init__(self, path, delim):
+        self.fh = open(path, "w", newline="", encoding="utf-8")
+        self.w = csv.writer(self.fh, delimiter=delim, lineterminator="\n")
+        self.first = True
+
+    def block(self, table):
+        if self.first:
+            self.w.writerow(table.columns)
+            self.first = False
+        self.w.writerows(table.rows)
+
+    def close(self):
+        self.fh.close()
+
+
+class _JsonlOut:
+    def __init__(self, path, columns):
+        dtz._require_unique_columns(dtz.Table(list(columns), []), "jsonl")
+        self.columns = columns
+        self.path = path
+        self.fh = open(path, "w", encoding="utf-8")
+        self.rows = 0
+
+    def block(self, table):
+        dump = json.dumps
+        for row in table.rows:
+            self.fh.write(dump(dict(zip(self.columns, row)),
+                               ensure_ascii=False, separators=(",", ":")))
+            self.fh.write("\n")
+            self.rows += 1
+
+    def close(self):
+        self.fh.close()
+        if not self.rows and self.columns:
+            # dtz's contract is that a FormatLimit leaves nothing behind. It
+            # can check up front; we only learn the table was empty after the
+            # last block, so remove the file we opened.
+            os.unlink(self.path)
+            raise dtz.FormatLimit(
+                "jsonl cannot carry column names for a zero-row table; "
+                "write .csv, .json or .parquet instead")
+
+
+class _JsonOut:
+    """A JSON array emitted incrementally, so the records never coexist."""
+
+    def __init__(self, path, columns):
+        dtz._require_unique_columns(dtz.Table(list(columns), []), "json")
+        self.columns = columns
+        self.path = path
+        self.fh = open(path, "w", encoding="utf-8")
+        self.rows = 0
+
+    def block(self, table):
+        dump = json.dumps
+        for row in table.rows:
+            self.fh.write("[\n " if not self.rows else ",\n ")
+            self.fh.write(dump(dict(zip(self.columns, row)),
+                               ensure_ascii=False))
+            self.rows += 1
+
+    def close(self):
+        if self.rows:
+            self.fh.write("\n]")
+            self.fh.close()
+            return
+        # zero rows: a record list cannot carry headers, so use the column
+        # form, exactly as dtz.write_json does
+        self.fh.close()
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump({c: [] for c in self.columns}, fh, ensure_ascii=False)
+
+
+class _ParquetOut:
+    """One row group per block -- the block structure maps straight onto it."""
+
+    def __init__(self, path, columns):
+        if dtz.pq is None:
+            raise RuntimeError("writing parquet needs pyarrow installed")
+        dtz._require_unique_columns(dtz.Table(list(columns), []), "parquet")
+        self.columns = columns
+        # Every cell is a string in a Table, so the schema is fixed up front
+        # and stays identical across blocks -- which is what lets the row
+        # groups append without buffering.
+        self.schema = dtz.pa.schema([(c, dtz.pa.string()) for c in columns])
+        self.writer = dtz.pq.ParquetWriter(path, self.schema,
+                                           compression="zstd")
+
+    def block(self, table):
+        if not table.rows:
+            return
+        arrays = [dtz.pa.array(table.column(i))
+                  for i in range(len(self.columns))]
+        self.writer.write_table(dtz.pa.table(arrays, schema=self.schema))
+
+    def close(self):
+        self.writer.close()
+
+
+def _open_writer(dst: str, columns: List[str]):
+    ext = os.path.splitext(dst)[1].lower()
+    if ext == ".tsv":
+        return _DelimitedOut(dst, "\t")
+    if ext == ".json":
+        return _JsonOut(dst, columns)
+    if ext in (".jsonl", ".ndjson"):
+        return _JsonlOut(dst, columns)
+    if ext in (".parquet", ".pq"):
+        return _ParquetOut(dst, columns)
+    return _DelimitedOut(dst, dtz.EXT_DELIMITER.get(ext, ","))
+
+
 def restore(src: str, dst: str, progress=None) -> dict:
     with open(src, "rb") as fh:
         header = _read_header(fh)
-    ext = os.path.splitext(dst)[1].lower()
-    delim = dtz.EXT_DELIMITER.get(ext, ",")
+    out = _open_writer(dst, header["columns"])
     written = 0
-    with open(dst, "w", newline="", encoding="utf-8") as out:
-        w = csv.writer(out, delimiter=delim, lineterminator="\n")
-        first = True
+    try:
         for table in iter_blocks(src):
-            if first:
-                w.writerow(table.columns)
-                first = False
-            w.writerows(table.rows)
+            out.block(table)
             written += len(table.rows)
             if progress:
                 progress(written)
+    finally:
+        out.close()
     return {"rows": written, "blocks": len(header["blocks"]),
             "bytes": os.path.getsize(dst)}
 

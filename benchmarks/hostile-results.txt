@@ -1,0 +1,220 @@
+
+==============================================================================
+random_text.csv   1,560,006 B
+40,000 rows x 3 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  brotli -q 11        1,163,658   1.34x        2.5       106.0
+  zstd -3             1,165,971   1.34x      157.3       197.0
+  zstd -19            1,167,106   1.34x       21.4       195.4
+  zstd -22 ultra      1,167,106   1.34x       10.4       186.5
+  *** polypress       1,172,566   1.33x        9.2        32.0
+  bzip2 -9            1,177,695   1.32x       22.1        37.9
+  gzip -9             1,178,432   1.32x       39.3       269.1
+  xz -9e              1,180,988   1.32x       10.6        35.9
+  parquet+brotli      1,264,455   1.23x        0.4       378.0
+  parquet+zstd        1,318,694   1.18x       12.7      1253.2
+  parquet+gzip        1,467,039   1.06x       22.2       638.5
+  parquet+snappy      1,937,566   0.81x      289.5      1575.9
+
+  best other: brotli -q 11 at 1,163,658 B -- polypress is 1.01x LARGER
+  parquet reproduced the exact printed text of every column, so the comparison is clean
+
+==============================================================================
+uuid_keys.csv   1,708,897 B
+40,000 rows x 2 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  *** polypress         763,880   2.24x        8.3        47.6
+  brotli -q 11          818,301   2.09x        1.2       120.0
+  xz -9e                820,848   2.08x        7.4        43.1
+  bzip2 -9              875,532   1.95x       21.6        47.0
+  zstd -19              894,466   1.91x        8.9       233.3
+  zstd -22 ultra        894,466   1.91x        6.0       222.4
+  parquet+brotli        899,520   1.90x        0.6       198.4
+  zstd -3               912,474   1.87x      108.4       227.7
+  parquet+zstd          918,455   1.86x        5.6      1046.5
+  gzip -9               965,673   1.77x       35.1       298.2
+  parquet+gzip        1,067,990   1.60x       23.6       316.1
+  parquet+snappy      1,749,554   0.98x      394.2      1127.9
+
+  best other: brotli -q 11 at 818,301 B -- polypress is 1.07x smaller
+  parquet reproduced the exact printed text of every column, so the comparison is clean
+
+==============================================================================
+base64_blob.csv   2,600,005 B
+40,000 rows x 1 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  brotli -q 11        1,959,691   1.33x        2.1       109.0
+  zstd -3             1,960,242   1.33x      154.9       214.5
+  zstd -19            1,961,690   1.33x       19.6       208.4
+  zstd -22 ultra      1,961,690   1.33x       11.4       209.8
+  bzip2 -9            1,972,168   1.32x       20.8        36.0
+  parquet+brotli      1,975,939   1.32x        1.5       281.6
+  gzip -9             1,978,136   1.31x       39.3       257.5
+  parquet+zstd        1,980,193   1.31x       25.7      1211.6
+  xz -9e              1,999,052   1.30x        9.6        36.1
+  *** polypress       1,999,113   1.30x       10.2        34.9
+  parquet+gzip        2,042,548   1.27x       43.4       322.5
+  parquet+snappy      2,749,512   0.95x     2795.5      2359.4
+
+  best other: brotli -q 11 at 1,959,691 B -- polypress is 1.02x LARGER
+  parquet reproduced the exact printed text of every column, so the comparison is clean
+
+==============================================================================
+random_floats.csv   1,726,475 B
+40,000 rows x 3 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  *** polypress         663,029   2.60x       14.2        53.6
+  bzip2 -9              768,307   2.25x       21.0        45.5
+  brotli -q 11          775,248   2.23x        1.5       115.4
+  xz -9e                799,108   2.16x        5.7        56.1
+  zstd -19              822,646   2.10x        7.0       251.7
+  zstd -22 ultra        822,646   2.10x        5.3       255.7
+  gzip -9               866,287   1.99x       31.5       336.9
+  zstd -3               873,050   1.98x       99.3       243.5
+  parquet+brotli        967,777   1.78x        0.5       590.3
+  parquet+zstd        1,111,236   1.55x       44.4      2767.0
+  parquet+gzip        1,141,638   1.51x       66.3      1215.0
+  parquet+snappy      1,201,358   1.44x      459.9      5121.2
+
+  best other: bzip2 -9 at 768,307 B -- polypress is 1.16x smaller
+  NOTE: parquet did NOT reproduce the exact printed text -- part of its size win is discarded formatting, not compression
+
+==============================================================================
+shuffled_cats.csv   1,215,791 B
+40,000 rows x 8 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  *** polypress         231,904   5.24x       12.5        73.5
+  bzip2 -9              240,423   5.06x       21.5        64.1
+  parquet+brotli        241,303   5.04x        2.7      1421.6
+  parquet+gzip          241,709   5.03x      176.1      1348.0
+  parquet+zstd          243,578   4.99x      108.6      1642.8
+  parquet+snappy        244,237   4.98x      269.9      1497.2
+  xz -9e                314,568   3.86x        4.7        87.5
+  brotli -q 11          321,061   3.79x        1.1       172.6
+  zstd -19              326,664   3.72x        5.6       270.0
+  zstd -22 ultra        326,664   3.72x        4.6       261.1
+  gzip -9               374,326   3.25x        9.3       368.2
+  zstd -3               396,449   3.07x      102.0       257.0
+
+  best other: bzip2 -9 at 240,423 B -- polypress is 1.04x smaller
+  parquet reproduced the exact printed text of every column, so the comparison is clean
+
+==============================================================================
+anticorrelated.csv   436,637 B
+40,000 rows x 2 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  *** polypress          11,824  36.93x       33.5        94.1
+  xz -9e                 50,152   8.71x        1.5        84.6
+  brotli -q 11           57,218   7.63x        1.3       133.0
+  zstd -22 ultra         59,117   7.39x        1.1       131.8
+  zstd -19               59,127   7.38x        3.2       132.6
+  parquet+zstd           66,768   6.54x        6.2       894.2
+  parquet+brotli         69,716   6.26x        1.3       411.2
+  gzip -9                76,012   5.74x        8.3       197.5
+  parquet+gzip           79,155   5.52x       49.3       943.0
+  bzip2 -9               82,664   5.28x       29.0        70.0
+  zstd -3                88,991   4.91x       81.9       135.8
+  parquet+snappy        125,502   3.48x      310.8       840.9
+
+  best other: xz -9e at 50,152 B -- polypress is 4.24x smaller
+  parquet reproduced the exact printed text of every column, so the comparison is clean
+
+==============================================================================
+wide_random.csv   5,511,908 B
+4,000 rows x 200 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  *** polypress       2,302,051   2.39x       12.7        48.3
+  bzip2 -9            2,351,798   2.34x       21.2        47.6
+  xz -9e              2,386,440   2.31x        3.4        74.7
+  brotli -q 11        2,388,303   2.31x        1.2       130.4
+  zstd -19            2,525,387   2.18x        3.7       342.3
+  zstd -22 ultra      2,525,387   2.18x        3.4       345.0
+  gzip -9             2,623,068   2.10x       24.8       464.2
+  zstd -3             2,714,268   2.03x      101.2       326.7
+  parquet+brotli      3,619,399   1.52x        0.5       677.3
+  parquet+zstd        3,720,506   1.48x        6.9      1831.2
+  parquet+gzip        4,039,019   1.36x       18.7      1441.8
+  parquet+snappy      5,207,477   1.06x      191.8      2117.5
+
+  best other: bzip2 -9 at 2,351,798 B -- polypress is 1.02x smaller
+  parquet reproduced the exact printed text of every column, so the comparison is clean
+
+==============================================================================
+mixed_types.csv   398,533 B
+40,000 rows x 2 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  *** polypress          85,990   4.63x        8.1        46.4
+  xz -9e                 96,620   4.12x        8.2        49.4
+  zstd -19              115,391   3.45x        8.6       113.2
+  zstd -22 ultra        115,391   3.45x        4.4       114.1
+  brotli -q 11          133,852   2.98x        0.7        82.3
+  parquet+brotli        147,061   2.71x        0.3       181.4
+  bzip2 -9              155,388   2.56x       21.7        45.9
+  parquet+zstd          162,803   2.45x        3.7       690.7
+  zstd -3               163,717   2.43x       66.0       114.0
+  gzip -9               165,391   2.41x       15.7       160.3
+  parquet+gzip          189,704   2.10x       22.2       576.8
+  parquet+snappy        295,515   1.35x      269.6       993.8
+
+  best other: xz -9e at 96,620 B -- polypress is 1.12x smaller
+  NOTE: parquet did NOT reproduce the exact printed text -- part of its size win is discarded formatting, not compression
+
+==============================================================================
+high_precision.csv   791,216 B
+40,000 rows x 2 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  bzip2 -9              337,451   2.34x       20.6        41.3
+  *** polypress         348,824   2.27x        5.8        49.3
+  brotli -q 11          355,444   2.23x        1.6        98.4
+  xz -9e                360,500   2.19x        6.9        48.9
+  zstd -19              370,655   2.13x        7.9       175.3
+  zstd -22 ultra        370,655   2.13x        5.3       170.4
+  zstd -3               390,113   2.03x       82.7       167.5
+  gzip -9               395,717   2.00x       32.4       250.3
+  parquet+brotli        516,256   1.53x        0.3       331.2
+  parquet+zstd          615,564   1.29x       20.6      1694.0
+  parquet+gzip          630,316   1.26x       42.0       652.4
+  parquet+snappy        720,512   1.10x      251.3      2875.7
+
+  best other: bzip2 -9 at 337,451 B -- polypress is 1.03x LARGER
+  NOTE: parquet did NOT reproduce the exact printed text -- part of its size win is discarded formatting, not compression
+
+==============================================================================
+single_wide_row.csv   78,360 B
+1 rows x 5000 columns
+==============================================================================
+  codec                   bytes   ratio    enc MB/s    dec MB/s
+  --------------------------------------------------------------
+  xz -9e                 25,192   3.11x        8.4        23.6
+  zstd -19               25,672   3.05x        4.7        31.1
+  zstd -22 ultra         25,672   3.05x        1.4        29.7
+  *** polypress          27,932   2.81x        0.5         3.6
+  brotli -q 11           29,531   2.65x        1.3        28.2
+  zstd -3                30,081   2.60x       26.2        30.1
+  bzip2 -9               30,569   2.56x       15.8        25.7
+  gzip -9                36,649   2.14x       20.0        42.5
+  parquet+snappy      1,428,959   0.05x        2.1         1.8
+  parquet+brotli      1,448,967   0.05x        0.1         1.8
+  parquet+zstd        1,498,981   0.05x        1.9         1.8
+  parquet+gzip        1,599,334   0.05x        1.3         1.6
+
+  best other: xz -9e at 25,192 B -- polypress is 1.11x LARGER
+  parquet reproduced the exact printed text of every column, so the comparison is clean

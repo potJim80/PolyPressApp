@@ -3,8 +3,13 @@
 A lossless compressor for data tables.
 
 `polypress/fast.py` compresses data tables smaller than xz, zstd, brotli, Parquet, and
-the specialised numeric codecs in ClickHouse — on every table tested so far —
-and encodes several times faster than the max-level general compressors.
+the specialised numeric codecs in ClickHouse — on every *real* table tested so
+far — and encodes several times faster than the max-level general compressors.
+
+It does **not** win on everything. A deliberately adversarial suite
+(`benchmarks/make_hostile.py`) found four tables it loses on; they are listed
+under [Where it loses](#where-it-loses), because a compressor whose failure
+cases are unknown is a compressor nobody should trust with their data.
 
 Measured against real binaries on real files from data.gov:
 
@@ -112,6 +117,21 @@ python3 tzip.py info     data.csv.ppz      # plan, shape, how much was reordered
 Restoring writes whatever format the output extension asks for, so it doubles
 as a converter.
 
+For a file larger than RAM, the same three commands in a block-at-a-time form
+with a settable memory budget:
+
+```bash
+python3 tzip.py stream-compress big.csv --budget 1.0   # ~1 GB peak
+python3 tzip.py stream-restore  big.csv.ppz -o back.csv
+python3 tzip.py stream-info     big.csv.ppz            # blocks and sizes
+```
+
+Blocks are compressed independently, so peak memory is one block rather than
+one file. The cost is real: the cross-column reordering only sees correlations
+*inside* a block, so smaller blocks compress slightly worse. Restoring honours
+the output extension here too — `.parquet` output becomes one row group per
+block, which keeps the write bounded as well.
+
 Or the Mac app:
 
 ```bash
@@ -146,6 +166,36 @@ It does *not* promise byte-identical files, because CSV quoting and line
 endings are not canonical. Read a file and write it back and you get an
 equivalent table, not identical bytes.
 
+## Where it loses
+
+Six real datasets is not a claim, and every one of them was a table this codec
+was designed for. So `benchmarks/make_hostile.py` generates ten tables built to
+break specific assumptions in it. Four of them do:
+
+| hostile case | vs best other | what it breaks |
+|---|---|---|
+| `single_wide_row` | **1.11x LARGER** | 5,000 columns, 1 row. Per-column overhead with nothing to amortise it over — and encode collapses to **0.5 MB/s**, decode to 3.6 MB/s. |
+| `high_precision` | **1.03x LARGER** | Decimal places that vary per row, so no fixed scale fits and the numeric parser cannot hold a column together. |
+| `base64_blob` | **1.02x LARGER** | Already-compressed bytes. Nothing to find; we pay container overhead for the privilege. |
+| `random_text` | **1.01x LARGER** | No structure at all. This is the floor, and near-parity here is the correct result. |
+
+The six it still wins on are the informative half. `anticorrelated` — a
+high-cardinality numeric column that a naive conditional-entropy score would
+happily adopt as a parent — comes out **4.24x** ahead, which is the
+Miller-Madow correction earning its place. `wide_random` (200 mutually
+independent numeric columns) wins by only 1.02x, and that is the honest result:
+the O(columns²) parent search does its maximum work for almost no reward.
+
+Two things worth taking from this:
+
+- **The losses are small and they are graceful.** Three of the four are within
+  3% of the best alternative. Nothing here degrades catastrophically on size.
+- **`single_wide_row` is a genuine defect, not a tie.** Losing 11% is
+  survivable; encoding at 0.5 MB/s is not. Extremely wide, shallow tables are
+  the one shape to fix.
+
+Full numbers, every contender, in `benchmarks/hostile-results.txt`.
+
 ## Honest limitations
 
 - **Pure Python + numpy + a small C library.** Encode is 9–30 MB/s. That
@@ -153,8 +203,9 @@ equivalent table, not identical bytes.
   nowhere near the fast tier — `zstd -3` encodes at 173 MB/s and always will.
 - **The 2x cases are matrix-shaped tables.** The 1.3–1.5x cases are the more
   typical result.
-- **Six datasets.** Not yet a claim. It needs census panels, NOAA grids, and
-  tables that are hostile to it.
+- **Six real datasets.** Still not a claim. The hostile suite above covers the
+  "tables that are hostile to it" half; what is still missing is *real* breadth
+  — census panels, NOAA grids, genomics tables.
 - **Parent search is O(columns^2).** Every ordered pair of dictionary columns
   is scored, so a 209-column table means 38,220 pairs. The sample depth is
   traded against the pair count (`MI_BUDGET`) to keep that bounded; without
@@ -200,11 +251,25 @@ python3 docs/report.py docs/Polypress-Results.pdf
 ## Tests and benchmarks
 
 ```bash
-python3 tests/test_fast.py           # 29 fidelity cases, C path and fallback
-python3 tests/test_dtz.py            # 18 fidelity cases for the table I/O
-python3 benchmarks/bench.py data.csv # size and speed, both directions
-python3 app/gui.py --selftest        # compile every AppleScript the app can emit
+python3 tests/test_fast.py            # 29 fidelity cases, C path and fallback
+python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
+python3 tests/test_stream.py          # 180 checks: block counts and every output format
+python3 benchmarks/bench.py data.csv  # size and speed vs the binaries AND Parquet
+python3 benchmarks/make_hostile.py d/ # generate the adversarial suite
+python3 app/gui.py --selftest         # compile every AppleScript the app can emit
 ```
+
+`bench.py` includes the Parquet lineup, because Parquet is the honest
+competitor and a comparison that only beats gzip has not beaten anything anyone
+uses. It also runs a fidelity check on every dataset and prints the verdict:
+Parquet read with type inference can quietly turn `"1.50"` into `1.5`, and on
+three of the ten hostile datasets it did exactly that. Read the size column
+with that verdict in hand.
+
+`bench.py` refuses inputs over 80 MB by default (`--max-mb` to override).
+`fast.py` expands CSV roughly 8.5x into Python strings and benchmarking holds
+an encoded and a decoded copy at once, so 80 MB is already about 1.4 GB
+resident. Use `stream-compress` for anything larger.
 
 `build_app.sh` runs `gui.py --selftest` and refuses to build if it fails. A
 malformed AppleScript only surfaces when the user clicks something, so it is
