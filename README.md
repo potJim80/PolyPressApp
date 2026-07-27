@@ -77,11 +77,12 @@ Parquet** — and on this file Parquet did *not* reproduce the exact printed
 text, so part of even that gap is discarded formatting rather than
 compression.
 
-Two things this exposes that the curated six did not. Encode runs at **1.3
+Two things this exposes that the curated six did not. Encode runs at **1.9
 MB/s** here, an order of magnitude off the headline figures, because 421
-columns is 176,820 ordered pairs for the parent search. And the win is
-narrower than the 1.49x NHAMCS row — real breadth moves numbers down, which
-is the point of measuring it.
+columns is 176,820 ordered pairs for the parent search — it was 1.3 MB/s
+before H(X) was hoisted out of that loop, and the O(columns²) shape is still
+there underneath. And the win is narrower than the 1.49x NHAMCS row — real
+breadth moves numbers down, which is the point of measuring it.
 
 Against the *specialised* numeric codecs on the yield curve — the comparison
 that actually matters, since general-purpose tools were never the competition
