@@ -134,7 +134,13 @@ python3 test_fast.py                 # 29 fidelity cases, C path and fallback
 python3 test_dtz.py                  # 18 fidelity cases for the table I/O
 python3 bench.py data.csv            # size and speed, both directions
 python3 bench_gov.py data.csv        # the older dtz strategy comparison
+python3 gui.py --selftest            # compile every AppleScript the app can emit
 ```
+
+`build_app.sh` runs `gui.py --selftest` and refuses to build if it fails. A
+malformed AppleScript only surfaces when the user clicks something, so it is
+checked at build time -- an earlier version shipped a file-type list joined
+with spaces where AppleScript wanted commas, and the first click failed.
 
 `test_fast.py` runs every case twice -- once through the C accelerator and
 once through the numpy fallback -- because an accelerator that disagrees with

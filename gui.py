@@ -63,21 +63,32 @@ def _activate() -> str:
             'end try\n').format(os.getpid())
 
 
+# The script builders are separate from the calls that run them so the
+# self-test can validate the exact text that will be executed. An earlier
+# version tested a hand-written approximation instead and shipped a list
+# joined with spaces where AppleScript wanted commas.
+
+def _script_choose_file() -> str:
+    types = ", ".join('"{}"'.format(e) for e in TABLE_EXT + ("tcz",))
+    return (_activate() +
+            'set f to choose file with prompt '
+            '"Choose a table to compress, or a .tcz to restore:" '
+            'of type {{{}}}\n'
+            'POSIX path of f'.format(types))
+
+
+def _script_choose_save(default_name: str, prompt: str) -> str:
+    return (_activate() +
+            'set f to choose file name with prompt "{}" default name "{}"\n'
+            'POSIX path of f'.format(_esc(prompt), _esc(default_name)))
+
+
 def choose_file() -> str:
-    types = " ".join('"{}"'.format(e) for e in TABLE_EXT + ("tcz",))
-    return _osa(
-        _activate() +
-        'set f to choose file with prompt '
-        '"Choose a table to compress, or a .tcz to restore:" '
-        'of type {{{}}}\n'
-        'POSIX path of f'.format(types))
+    return _osa(_script_choose_file())
 
 
 def choose_save(default_name: str, prompt: str) -> str:
-    return _osa(
-        _activate() +
-        'set f to choose file name with prompt "{}" default name "{}"\n'
-        'POSIX path of f'.format(_esc(prompt), _esc(default_name)))
+    return _osa(_script_choose_save(default_name, prompt))
 
 
 def notify(text: str) -> None:
@@ -88,14 +99,44 @@ def notify(text: str) -> None:
         pass
 
 
+def _script_dialog(text: str, buttons, default: str) -> str:
+    btns = ", ".join('"{}"'.format(_esc(b)) for b in buttons)
+    return (_activate() +
+            'set r to display dialog "{}" with title "{}" buttons {{{}}} '
+            'default button "{}" with icon note\n'
+            'button returned of r'.format(
+                _esc(text), APP, btns, _esc(default)))
+
+
 def dialog(text: str, buttons, default: str) -> str:
-    btns = ", ".join('"{}"'.format(b) for b in buttons)
-    return _osa(
-        _activate() +
-        'set r to display dialog "{}" with title "{}" buttons {{{}}} '
-        'default button "{}" with icon note\n'
-        'button returned of r'.format(
-            _esc(text), APP, btns, _esc(default)))
+    return _osa(_script_dialog(text, buttons, default))
+
+
+def selftest() -> int:
+    """Parse every script we can generate, without opening any dialog.
+
+    `if false then ... end if` still forces AppleScript to compile the body,
+    so a malformed list or a bad quote fails here instead of in front of the
+    user."""
+    cases = {
+        "choose_file": _script_choose_file(),
+        "choose_save": _script_choose_save('a "b".csv.tcz', "Save as:"),
+        "dialog": _script_dialog(
+            'multi\nline "quoted" \\ backslash', ["Quit", "Do Another"],
+            "Do Another"),
+        "notify": 'display notification "{}" with title "{}"'.format(
+            _esc('x "y" \\ z'), APP),
+    }
+    bad = 0
+    for name, script in cases.items():
+        p = subprocess.run(["osascript", "-e",
+                            "if false then\n" + script + "\nend if"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ok = p.returncode == 0
+        bad += 0 if ok else 1
+        print("  {:<14} {}".format(
+            name, "OK" if ok else "FAIL " + p.stderr.decode().strip()[:140]))
+    return bad
 
 
 def human(n: float) -> str:
@@ -216,4 +257,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     main()

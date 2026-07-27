@@ -26,6 +26,13 @@ mkdir -p "$DEST"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$RES"
 
+# ---- gate: every AppleScript we can generate must compile ------------------
+# A malformed script only shows up when the user clicks, so check first.
+if ! "$PY" "$HERE/gui.py" --selftest; then
+  echo "gui.py --selftest failed; not building" >&2
+  exit 1
+fi
+
 # ---- payload --------------------------------------------------------------
 cp "$HERE"/gui.py "$HERE"/fast.py "$HERE"/caccel.py "$HERE"/dtz.py \
    "$HERE"/codec.py "$HERE"/tcz.c "$RES/"
