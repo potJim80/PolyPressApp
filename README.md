@@ -84,6 +84,51 @@ before H(X) was hoisted out of that loop, and the O(columns²) shape is still
 there underneath. And the win is narrower than the 1.49x NHAMCS row — real
 breadth moves numbers down, which is the point of measuring it.
 
+### Thirteen real datasets, fetched and measured end to end
+
+`benchmarks/fetch_corpus.py` pulls 13 real files from government open-data
+portals — chosen across *shapes* rather than subjects, since shape is what
+decides whether this codec wins. 353 MB, no credentials, one command:
+
+```bash
+python3 benchmarks/fetch_corpus.py corpus/
+python3 benchmarks/bench.py --reps 1 corpus/*.csv
+```
+
+| dataset | rows x cols | ratio | vs best other |
+|---|---|---|---|
+| CDC notifiable disease | 150,000 x 16 | 173.81x | **2.97x** `parquet+brotli` |
+| Seattle fire 911 | 200,000 x 7 | 20.59x | **1.77x** `xz -9e` |
+| WA EV population | 200,000 x 16 | 35.03x | **1.74x** `xz -9e` |
+| Austin 311 | 150,000 x 19 | 18.71x | 1.40x `xz -9e` |
+| NYC collisions | 150,000 x 29 | 16.23x | 1.37x `xz -9e` |
+| USGS earthquakes 21-22 | 16,707 x 22 | 6.46x | 1.20x `bzip2 -9` |
+| USGS earthquakes 2023 | 16,190 x 22 | 6.09x | 1.19x `bzip2 -9` |
+| NYC baby names | 29,685 x 6 | 26.08x | 1.17x `parquet+brotli` |
+| NYC 311 | 60,000 x 44 | 21.61x | 1.14x `xz -9e` |
+| Chicago crimes | 150,000 x 22 | 11.86x | 1.12x `xz -9e` |
+| NOAA climate, SEA | 79 x 106 | 9.56x | 1.10x `bzip2 -9` |
+| NOAA climate, ORD | 69 x 102 | 8.85x | 1.10x `brotli -q 11` |
+| Chicago permits | 80,000 x 116 | 11.31x | 1.03x `xz -9e` |
+
+**13 of 13 wins, but read the spread, not the headline.** Median 1.19x. Only
+three datasets clear 1.4x. Two independent confirmations are worth noting: WA
+EV population came out at 1.74x against 1.73x in the curated table above,
+measured a year apart from a fresh download, and Parquet failed the
+exact-text check on 8 of the 13 — so its column is flattered on most rows.
+
+**Chicago permits is the informative one.** 116 columns, 106 of them
+dictionary-encoded, 80 successfully sorted by a parent — the machinery fired
+about as hard as it can — and the result was 1.03x. Essentially a tie. The
+reason is that 8 free-text columns hold most of the bytes, and no amount of
+cross-column modelling touches free text. **Width is not the predictor; the
+fraction of the file that is modellable is.** A wide table dominated by a few
+large text fields will tie, and saying "wide tables win" would have been the
+wrong lesson to draw from NHAMCS.
+
+Encode ranged from 28.7 MB/s down to 1.3 MB/s across the corpus, the low end
+being the widest tables.
+
 Against the *specialised* numeric codecs on the yield curve — the comparison
 that actually matters, since general-purpose tools were never the competition
 for numeric tables:
