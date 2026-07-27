@@ -48,7 +48,7 @@ TOOLS = [
 
 PARQUET_CODECS = (("snappy", None), ("gzip", 9), ("brotli", 11), ("zstd", 22))
 
-REPS = 3
+REPS = 3          # overridden by --reps; see main()
 
 # fast.py holds the table as Python strings, roughly 8.5x the CSV bytes, and
 # timing runs encode and decode back to back, so both copies are resident.
@@ -64,7 +64,12 @@ def have(binary: str) -> bool:
 
 def timed(fn):
     """Best of REPS. Best, not mean: we want the tool's speed, not the
-    machine's background noise."""
+    machine's background noise.
+
+    Three passes is right for one file and wrong for a corpus -- it triples a
+    run that is already dominated by brotli -q 11 at about 1 MB/s. --reps 1
+    trades timing precision for finishing, and sizes are unaffected either
+    way."""
     best, out = None, None
     for _ in range(REPS):
         t0 = time.time()
@@ -204,7 +209,12 @@ def main(argv=None) -> int:
     ap.add_argument("--max-mb", type=float, default=DEFAULT_MAX_MB,
                     help="skip inputs larger than this (default {})"
                          .format(DEFAULT_MAX_MB))
+    ap.add_argument("--reps", type=int, default=REPS,
+                    help="timing passes per codec (default {}); use 1 for a "
+                         "corpus run, where sizes matter and the clock is "
+                         "only indicative".format(REPS))
     a = ap.parse_args(argv)
+    globals()["REPS"] = max(1, a.reps)
     for p in a.paths:
         run_one(p, a.max_mb)
     return 0
