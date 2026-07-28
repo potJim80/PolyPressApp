@@ -26,6 +26,7 @@ import argparse
 import json
 import lzma
 import os
+import struct
 import sys
 import time
 
@@ -172,7 +173,68 @@ def main(argv=None) -> int:
     si.set_defaults(fn=lambda a: stream.main(["info", a.path]))
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    return _run(args)
+
+
+# Everything a damaged archive can raise on its way up. lzma and bz2 report
+# corruption through their own exception types, and a header that decompresses
+# into something that is not the JSON we expect surfaces as a KeyError or an
+# IndexError several frames further in. None of these are bugs -- they are the
+# decoder correctly refusing input someone else's disk or mail client mangled.
+_CORRUPT = (ValueError, lzma.LZMAError, EOFError, KeyError, IndexError,
+            TypeError, UnicodeDecodeError, OverflowError, MemoryError,
+            struct.error)
+
+
+def _run(args) -> int:
+    """Dispatch, turning an expected failure into one line instead of a dump.
+
+    `info` already did this by checking the magic itself; `restore` did not,
+    so the same damaged file produced a clean message from one command and a
+    twelve-line traceback from the other. A traceback reads as "this tool is
+    broken" rather than "your file is damaged", which is exactly backwards
+    when the whole point is that the decoder reads files other people made.
+    """
+    path = getattr(args, "path", None)
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        raise
+    except FileNotFoundError:
+        print("polypress: no such file: {}".format(path), file=sys.stderr)
+        return 1
+    except IsADirectoryError:
+        print("polypress: {} is a directory, not a file".format(path),
+              file=sys.stderr)
+        return 1
+    except PermissionError:
+        print("polypress: not allowed to read {}".format(path),
+              file=sys.stderr)
+        return 1
+    except _CORRUPT as exc:
+        if args.cmd in ("compress", "stream-compress"):
+            print("polypress: cannot read {} as a table.".format(path),
+                  file=sys.stderr)
+        else:
+            print("polypress: cannot read {} -- it is not a Polypress "
+                  "archive, or it is damaged.".format(path), file=sys.stderr)
+        print("           ({}: {})".format(type(exc).__name__, exc),
+              file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # bz2 reports a corrupt stream as a plain OSError with no dedicated
+        # class, so a damaged bzip2-fallback archive lands here rather than in
+        # _CORRUPT above. Say what it means for the file the user named.
+        if args.cmd in ("restore", "info", "stream-restore", "stream-info"):
+            print("polypress: cannot read {} -- it is not a Polypress "
+                  "archive, or it is damaged.".format(path), file=sys.stderr)
+            print("           (OSError: {})".format(exc), file=sys.stderr)
+        else:
+            print("polypress: {}".format(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
