@@ -51,7 +51,8 @@ csrc/          the standalone C binary: no Python, no numpy. ppz_encode.c and
                ppz_decode.c mirror fast.py step for step
 tzip.py        shim -> polypress/cli.py (the `polypress` console script)
 app/           the Mac app. build_app.sh, build_app.sh dmg
-tests/         test_fast, test_dtz, test_stream, test_cbin, test_fuzz
+tests/         test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
+               test_hostile
 benchmarks/    bench.py is the one to use; fetch_corpus.py + fetch_nhanes.py
                download real data; make_hostile.py generates adversarial tables
 attic/         superseded work kept for the record
@@ -73,6 +74,8 @@ python3 tests/test_dtz.py       # 1.5s
 python3 tests/test_stream.py    # 2.0s
 python3 tests/test_cbin.py      # C must match Python byte for byte
 python3 tests/test_fuzz.py      # random adversarial tables, both languages
+python3 tests/test_hostile.py   # corrupt stream/ondemand archives, run in a
+                                # memory-capped subprocess (invariant 3)
 python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
                                 # whole menu headless (26 checks). This is
                                 # the build gate in app/build_app.sh.
