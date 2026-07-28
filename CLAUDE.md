@@ -25,11 +25,15 @@ narrow.
 ## Non-negotiable invariants
 
 1. **The C encoder is byte-identical to the Python one.** Not equivalent —
-   identical. `tests/test_cbin.py` enforces it. Any format change must land in
-   `polypress/fast.py` and `csrc/ppz_encode.c` in the *same commit*.
+   identical. `tests/test_cbin.py` enforces it, against `fast.encode` — which
+   means the *container choice* is part of the guarantee, not just the bytes
+   inside a container. Any format change must land in `polypress/fast.py` and
+   `csrc/ppz_encode.c` in the *same commit*.
 2. **Never worse.** A modelled encoding must beat the plain fallback, and a
-   parent must beat no parent, *measured*, not assumed. See "the measured/
-   unmeasured trap" below.
+   parent must beat no parent, *measured*, not assumed. This binds **both**
+   implementations: the C encoder ran without the plain fallbacks until
+   2026-07-27 and quietly wrote larger files than Python on any table where no
+   trick fired. See "the measured/unmeasured trap" below.
 3. **The decoder treats its input as hostile.** It reads files other people
    made. Corrupt input must be refused, never crash, never allocate unbounded.
 4. **Verify before writing.** Both CLIs decode the blob and compare every cell
@@ -124,6 +128,18 @@ for exactly this.
   used to depend on CPython's hash table, so archive bytes did too.
 - **`buf_free` zeroes `len`** — capture the length before freeing if you are
   about to compare against it.
+- **Python's `csv.writer` is not the obvious CSV writer**, and the plain
+  fallback compresses exactly its output, so `table_write_canonical` in
+  `ppz_util.c` has to match it byte for byte. Three rules, all found by
+  *testing* the Python writer rather than reading it:
+  a bare `\r` is **not** quoted (it quotes on characters in the
+  *lineterminator*, which here is `"\n"` alone); an empty field **is** quoted
+  when it is the only field in its row; and a NUL byte forces quoting. Note
+  the first makes Python's own CSV lossy for such a cell — which is why the
+  fallback is round-trip checked before it may win, and why both
+  implementations then refuse it and agree. `table_write_csv` (what `restore`
+  writes) deliberately does **not** follow these rules; do not merge the two.
+  `tests/test_cbin.py::check_canonical` pins all of it.
 
 ## Where the wins actually are
 
@@ -134,7 +150,7 @@ the bytes.
 
 | text blob share | win |
 |---|---|
-| 70.9% (chicago_permits) | 1.11x |
+| 70.9% (chicago_permits) | 1.12x |
 | 7.5% (cdc_nndss) | 3.70x |
 
 Remaining backlog, in value order — see the memory directory for detail:
@@ -147,14 +163,25 @@ Remaining backlog, in value order — see the memory directory for detail:
    `location = "POINT (-87.62 41.89)"` — at different precisions. No general
    compressor can see through it; a table codec can. Most speculative, biggest
    ceiling.
-3. **The C encoder never tries the plain fallbacks**, so on an unstructured
-   table it can write a larger (never wrong) file than `tzip.py compress`.
+3. ~~**The C encoder never tries the plain fallbacks.**~~ **DONE** — it now
+   builds the same canonical CSV, round-trip checks it, and picks the smallest
+   of xz / bzip2 / modelled, exactly as `fast.encode` does. Worth 52.6% across
+   the fidelity case set and up to 13x on a very small table; on real tables
+   only 2 of 15 changed at all, because a trick usually fires. The trap here is
+   that the canonical CSV must match Python's `csv.writer` byte for byte —
+   see "traps that have already bitten".
 4. **Encode is O(columns²)** in the parent search. 1.9 MB/s on 421 columns.
 
 ## Honest status
 
-13 of 13 real datasets beaten. Median **1.31x**, worst **1.09x**, best
-**3.70x**. Excellent on densely-coded administrative data, marginal on numeric
-and text-heavy data. Nobody outside this project has run it yet, and the
-`.dmg` is unsigned — Gatekeeper will call it damaged until someone pays for a
-certificate.
+13 of 13 real datasets beaten. Median **1.31x**, worst **1.11x**, best
+**3.70x**, measured 2026-07-27 and reproduced in
+`benchmarks/corpus-results.txt`. Excellent on densely-coded administrative
+data, marginal on numeric and text-heavy data. Nobody outside this project has
+run it yet, and the `.dmg` is unsigned — Gatekeeper will call it damaged until
+someone pays for a certificate.
+
+**Regenerate the results file whenever the codec changes; never hand-patch the
+README table from a commit message.** Doing that after the parent-guard change
+left five of thirteen rows wrong and the committed results file a whole commit
+behind what the README claimed.

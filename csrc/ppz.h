@@ -64,8 +64,13 @@ Str    table_at(const Table *t, size_t row, size_t col);
 /* CSV. read_csv accepts what dtz accepts: ragged rows are padded or clipped
  * to the header width, which is the same rule the Python reader uses. */
 int  table_read_csv(Table *t, const char *path);
+int  table_parse_csv(Table *t, const uint8_t *data, size_t n);
 int  table_write_csv(const Table *t, const char *path);
 int  table_write_csv_buf(const Table *t, Buf *out);
+
+/* The exact bytes Python's csv.writer(lineterminator="\n") would emit. Only
+ * for the plain fallback -- table_write_csv is what `restore` writes. */
+void table_write_canonical(const Table *t, Buf *out);
 
 /* ------------------------------------------------------------------- lzma */
 
@@ -80,6 +85,7 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);
  * ranks candidates the same way. */
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
+int ppz_bz2_compress(const uint8_t *in, size_t n, Buf *out);
 int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out);
 
 /* ------------------------------------------------------------------- json */
@@ -120,9 +126,12 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out);
 
 /* --------------------------------------------------------------- encoding */
 
-/* Encode a table into the modelled container. Byte-identical to fast.encode's
- * modelled path -- the plain-fallback candidates are the Python CLI's job for
- * now, so this always writes PPZ1. */
+/* Encode a table. Byte-identical to fast.encode, including its choice between
+ * the modelled container and the plain xz/bzip2 fallbacks. */
 int ppz_encode(const Table *t, Buf *out);
+
+/* Just the modelled container (PPZ1), with `*fired` set to the number of times
+ * one of the three ideas actually did something. Mirrors fast._encode_plan. */
+int ppz_encode_modelled(const Table *t, Buf *out, long *fired);
 
 #endif /* PPZ_H */

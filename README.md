@@ -99,35 +99,40 @@ python3 benchmarks/bench.py --reps 1 corpus/*.csv
 |---|---|---|---|
 | CDC notifiable disease | 150,000 x 16 | **3.70x** `parquet+brotli` | 2.97x |
 | Seattle fire 911 | 200,000 x 7 | **1.77x** `xz -9e` | 1.77x |
-| WA EV population | 200,000 x 16 | **1.74x** `xz -9e` | 1.74x |
+| WA EV population | 200,000 x 16 | **1.75x** `xz -9e` | 1.74x |
 | Austin 311 | 150,000 x 19 | **1.61x** `xz -9e` | 1.40x |
-| Chicago crimes | 150,000 x 22 | **1.39x** `xz -9e` | 1.12x |
 | NYC collisions | 150,000 x 29 | **1.44x** `xz -9e` | 1.37x |
+| Chicago crimes | 150,000 x 22 | **1.44x** `xz -9e` | 1.12x |
 | NYC 311 | 60,000 x 44 | **1.31x** `xz -9e` | 1.14x |
-| USGS earthquakes 2023 | 16,190 x 22 | 1.22x `bzip2 -9` | 1.19x |
-| USGS earthquakes 21-22 | 16,707 x 22 | 1.21x `bzip2 -9` | 1.20x |
 | NYC baby names | 29,685 x 6 | **1.26x** `parquet+brotli` | 1.17x |
-| Chicago permits | 80,000 x 116 | **1.11x** `xz -9e` | 1.03x |
-| NOAA climate, ORD | 69 x 102 | 1.10x `brotli -q 11` | 1.10x |
-| NOAA climate, SEA | 79 x 106 | 1.09x `bzip2 -9` | 1.10x |
+| USGS earthquakes 2023 | 16,190 x 22 | **1.25x** `bzip2 -9` | 1.19x |
+| USGS earthquakes 21-22 | 16,707 x 22 | 1.21x `bzip2 -9` | 1.20x |
+| Chicago permits | 80,000 x 116 | **1.12x** `xz -9e` | 1.03x |
+| NOAA climate, SEA | 79 x 106 | **1.11x** `bzip2 -9` | 1.10x |
+| NOAA climate, ORD | 69 x 102 | **1.11x** `brotli -q 11` | 1.10x |
 
-Median **1.31x**, worst case **1.09x**, best **3.70x** -- up from 1.19x / 1.03x
-/ 2.97x. Two changes account for it, and both are the same idea: text columns
+Median **1.31x**, worst case **1.11x**, best **3.70x** -- up from 1.19x / 1.03x
+/ 2.97x. Every row above is reproduced in `benchmarks/corpus-results.txt`,
+which is regenerated from the command in this section rather than edited by
+hand; an earlier version of this table was patched per-dataset after a codec
+change and drifted from the results file on five of the thirteen rows.
+Two changes account for the gain, and both are the same idea: text columns
 started taking a reorder parent, and then parent choices stopped being taken on
 trust. Dictionary parents were being picked by conditional entropy and used
 without checking; making that decision measurable took another fifth off
 `cdc_nndss` alone, which was already the best result here.
 
-**13 of 13 wins, but read the spread, not the headline.** Median 1.19x. Only
-three datasets clear 1.4x. Two independent confirmations are worth noting: WA
-EV population came out at 1.74x against 1.73x in the curated table above,
+**13 of 13 wins, but read the spread, not the headline.** Median 1.31x. Only
+six datasets clear 1.4x. Two independent confirmations are worth noting: WA
+EV population came out at 1.75x against 1.73x in the curated table above,
 measured a year apart from a fresh download, and Parquet failed the
 exact-text check on 8 of the 13 — so its column is flattered on most rows.
 
 **Chicago permits is the informative one.** 116 columns, 106 of them
 dictionary-encoded, 80 successfully sorted by a parent — the machinery fired
-about as hard as it can — and the result was 1.03x. Essentially a tie. The
-reason is that 8 free-text columns hold most of the bytes, and no amount of
+about as hard as it can — and the result is still only 1.12x, and was 1.03x
+before text columns started taking a reorder parent. Nearly a tie either way.
+The reason is that 8 free-text columns hold most of the bytes, and no amount of
 cross-column modelling touches free text. **Width is not the predictor; the
 fraction of the file that is modellable is.** A wide table dominated by a few
 large text fields will tie, and saying "wide tables win" would have been the
@@ -178,8 +183,11 @@ needs Python 3.9+, numpy, and ideally a compiler; a researcher sent a `.ppz`
 should not have to build an environment to open it.
 
 **The C encoder is byte-identical to the Python one.** Not "equivalent" —
-the same bytes, verified on every case in `tests/test_cbin.py` (36/36,
-including 421-column real NHANES data). That is the strongest correctness
+the same bytes, verified on every case in `tests/test_cbin.py` (39/39,
+including 421-column real NHANES data), plus 1,450 randomly generated tables
+through `tests/test_fuzz.py` across five seeds. The comparison is against
+`fast.encode`, so the choice of *which* container to write is covered as well
+as the bytes inside it. That is the strongest correctness
 signal available: any divergence is a bug with a known location, and the
 Python implementation stays usable as the oracle.
 
@@ -209,11 +217,29 @@ orders 1 to 3, the 8-byte varint tail, and JSON escaping via non-ASCII column
 names — and checks both directions: bytes out of the encoder, cells out of
 the decoder. All three container types are covered.
 
-One gap: the C encoder always writes the modelled container. It does not yet
-try the plain xz/bzip2 fallbacks, so on a table where no trick fires it can
-produce a larger file than `tzip.py compress` would. It never produces a
-*wrong* one — compression verifies the round trip in memory before writing,
-same as the Python CLI.
+**The C encoder now makes the same container choice too**, which it did not
+until 2026-07-27. It used to always write the modelled container, so on a
+table where none of the three tricks fired it produced a larger file than
+`tzip.py compress` — never a *wrong* one, but bigger, and that broke the
+"never worse" rule for anyone using the standalone binary. It now builds the
+same canonical CSV, checks it round-trips, and takes the smallest of xz,
+bzip2 and modelled. Across the fidelity case set that is **52.6% off in
+total**, and up to **13x on a very small table** (163 bytes → 12), which is
+exactly the "I tried it on a small file first" case a new user hits.
+
+On real data it changes much less: of 15 real and adversarial tables, only two
+moved at all (`high_precision` 3.3%, `base64_blob` 1.3%), because on real
+tables a trick usually does fire. Both numbers are worth stating — the fix
+matters for the guarantee and for first impressions, not for the headline
+ratios.
+
+The subtle part is that the fallback compresses the table re-serialised as
+canonical CSV, so the C writer has to match Python's `csv.writer` byte for
+byte — including that a bare `\r` is *not* quoted, that an empty field *is*
+quoted when it is alone in its row, and that a NUL forces quoting. The first
+of those makes Python's own CSV lossy for such a cell, so the candidate is
+re-parsed and compared before it is allowed to win, and both implementations
+then decline it and agree. `tests/test_cbin.py` pins nine such cases.
 
 Needs `liblzma` and `libbz2` headers (`brew install xz`, or
 `apt install liblzma-dev libbz2-dev`). The build script finds them via
@@ -455,7 +481,7 @@ python3 docs/report.py docs/Polypress-Results.pdf
 ## Tests and benchmarks
 
 ```bash
-python3 tests/test_fast.py            # 29 fidelity cases, C path and fallback
+python3 tests/test_fast.py            # 32 fidelity cases, C path and fallback
 python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
 python3 tests/test_stream.py          # 180 checks: block counts and every output format
 python3 tests/test_cbin.py            # the C binary must agree with Python on every case

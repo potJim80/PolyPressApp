@@ -106,6 +106,80 @@ def check_corrupt(tmp: str) -> list:
     return bad
 
 
+def check_canonical(tmp: str) -> list:
+    """The quoting rules of the CSV the plain fallback is built from.
+
+    The fallback compresses the table re-serialised as canonical CSV, so the C
+    encoder has to emit byte-for-byte what Python's
+    csv.writer(lineterminator="\\n") emits or the archives differ on exactly
+    the tables where the fallback fires. Three rules are easy to get wrong and
+    were all found by testing the Python writer rather than reading it:
+
+      - a bare '\\r' is NOT quoted, because csv.writer quotes on characters in
+        the *lineterminator* and that is "\\n" alone. Python's own CSV is
+        therefore lossy for such a cell, both sides notice when they re-parse,
+        and both must refuse the fallback and write the modelled container.
+      - an empty field IS quoted when it is the only field in its row.
+      - a NUL byte forces quoting.
+
+    These are driven from hand-written CSV text rather than through the usual
+    Python writer, because the point is to control the input quoting exactly.
+    """
+    bad = []
+    src = os.path.join(tmp, "canon.csv")
+    arc = os.path.join(tmp, "canon.ppz")
+    checks = [
+        # (name, exact file bytes, container both sides must choose)
+        ("bare CR",        b'h\n"a\rb"\n',            b"PPZ1"),
+        ("CR mid-table",   b'a,b\nx,"p\rq"\ny,z\n',   b"PPZ1"),
+        ("empty 1 col",    b'h\n""\nx\n""\n',         b"PPZX"),
+        ("empty 2 col",    b'a,b\n,\n,\n',            b"PPZX"),
+        ("embedded LF",    b'a,b\n"p\nq",z\n',        b"PPZX"),
+        ("embedded comma", b'a,b\n"p,q",z\n',         b"PPZX"),
+        ("embedded quote", b'a,b\n"p""q",z\n',        b"PPZX"),
+        ("CRLF row ends",  b'a,b\r\nx,y\r\n',         b"PPZX"),
+        # A cell holding "\r\n" contains a '\n', so it IS quoted and does
+        # survive the round trip -- unlike the bare '\r' above. The fallback is
+        # legitimately available here. This case is in the list because the
+        # first version of it asserted PPZ1 on the assumption that anything
+        # carrying a '\r' was lossy, and that assumption was wrong.
+        ("quoted CRLF",    b'a,b\n"p\r\nq",z\n',      b"PPZX"),
+    ]
+    for name, data, want_magic in checks:
+        with open(src, "wb") as fh:
+            fh.write(data)
+        try:
+            table = dtz.read_any(src)
+        except Exception as exc:
+            bad.append("canonical/{}: Python could not read it: {}".format(
+                name, exc))
+            continue
+        want = fast.encode(table)
+        proc = subprocess.run([BINARY, "compress", src, "-o", arc],
+                              capture_output=True)
+        if proc.returncode != 0:
+            bad.append("canonical/{}: C compress exit {} -- {}".format(
+                name, proc.returncode,
+                proc.stderr.decode(errors="replace").strip()))
+            continue
+        with open(arc, "rb") as fh:
+            have = fh.read()
+        if have != want:
+            bad.append(
+                "canonical/{}: C wrote {} B {} , Python {} B {}".format(
+                    name, len(have), have[:4].decode("ascii", "replace"),
+                    len(want), want[:4].decode("ascii", "replace")))
+        elif want[:4] != want_magic:
+            bad.append(
+                "canonical/{}: expected the {} container, both chose {}".format(
+                    name, want_magic.decode(),
+                    want[:4].decode("ascii", "replace")))
+    if not bad:
+        print("canonical CSV: {} quoting edge cases, both sides identical "
+              "and both refuse the lossy ones".format(len(checks)))
+    return bad
+
+
 def main() -> int:
     if not os.path.exists(BINARY):
         print("csrc/polypress not built -- skipping.")
@@ -180,6 +254,7 @@ def main() -> int:
     tmp = tempfile.mkdtemp(prefix="ppz-cbin-")
     failures = []
     kinds = {}
+    enc_kinds = {}
     identical = 0
     encodable = 0
     try:
@@ -208,10 +283,12 @@ def main() -> int:
                 failures.append(msg)
 
             # --- the encoder: byte-identity, not just equivalence ---
-            # Compared against _encode_plan, not encode: the C encoder always
-            # writes the modelled container, while Python may swap in a plain
-            # fallback when no trick fired. The modelled bytes are the thing
-            # that has to match.
+            # Compared against encode, not _encode_plan. This used to be
+            # scoped to the modelled path because the C encoder had no plain
+            # fallbacks and so wrote a larger file than Python on any table
+            # where no trick fired -- never wrong, but bigger, and on 28 of
+            # these 39 cases. Now both sides make the same choice, so the
+            # comparison covers the container choice as well as the bytes.
             src = os.path.join(tmp, name + ".src.csv")
             with open(src, "w", newline="", encoding="utf-8") as fh:
                 import csv as _csv
@@ -233,15 +310,18 @@ def main() -> int:
                     name, proc.returncode,
                     proc.stderr.decode(errors="replace").strip()))
                 continue
-            want, _fired = fast._encode_plan(table)
+            want = fast.encode(table)
             with open(carc, "rb") as fh:
                 have = fh.read()
             if have == want:
                 identical += 1
+                enc_kinds[have[:4]] = enc_kinds.get(have[:4], 0) + 1
             else:
                 failures.append(
-                    "{}: C encoder differs -- {} B vs Python's {} B".format(
-                        name, len(have), len(want)))
+                    "{}: C encoder differs -- {} B {} vs Python's {} B {}".format(
+                        name, len(have), have[:4].decode("ascii", "replace"),
+                        len(want), want[:4].decode("ascii", "replace")))
+        failures.extend(check_canonical(tmp))
         corrupt_bad = check_corrupt(tmp)
         failures.extend(corrupt_bad)
         if not corrupt_bad:
@@ -254,8 +334,11 @@ def main() -> int:
     print("containers exercised: {}".format(", ".join(
         "{} x{}".format(k.decode("ascii", "replace"), v)
         for k, v in sorted(kinds.items()))))
-    print("encoder: {}/{} byte-identical to Python".format(
-        identical, encodable))
+    print("encoder: {}/{} byte-identical to Python, container choice included"
+          .format(identical, encodable))
+    print("  the C encoder chose: {}".format(", ".join(
+        "{} x{}".format(k.decode("ascii", "replace"), v)
+        for k, v in sorted(enc_kinds.items()))))
     if failures:
         print("\nFAILURES:")
         for f in failures:

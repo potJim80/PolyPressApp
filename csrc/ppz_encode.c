@@ -913,10 +913,9 @@ static void json_int(Buf *b, long long v)
 
 typedef struct { size_t n, b; int nl; } SMeta;
 
-int ppz_encode(const Table *t, Buf *out);
-
-int ppz_encode(const Table *t, Buf *out)
+int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
 {
+    if (fired) *fired = 0;
     size_t nc = t->ncols, nr = t->nrows;
     ColPlan *plan = classify(t);
     if (!plan) return -1;
@@ -1161,6 +1160,24 @@ int ppz_encode(const Table *t, Buf *out)
     json_int(&meta, (long long)nlenbins);
     buf_putc(&meta, '}');
 
+    /* Did any of the three ideas actually do something? A parent-sorted
+     * dictionary column, a numeric column whose differences packed smaller
+     * than its values, or a 2D group. The same three counts fast.py sums --
+     * note grouped numeric columns are excluded there because their spec is
+     * "grp" rather than "num", and text parents are not counted at all. */
+    if (fired) {
+        long f = (long)ngroups;
+        for (size_t pos = 0; pos < nc; pos++) {
+            if (plan[pos].kind == K_DICT) {
+                if (P.parent[pos] >= 0) f++;
+            } else if (plan[pos].kind == K_NUM && !plan[pos].in_group
+                       && plan[pos].k) {
+                f++;
+            }
+        }
+        *fired = f;
+    }
+
     /* ------------------------------------------------------- container */
     Buf mz, bz, tz;
     buf_init(&mz); buf_init(&bz); buf_init(&tz);
@@ -1190,4 +1207,78 @@ done:
     free(P.parent); free(P.order);
     plan_free(plan, nc);
     return rc;
+}
+
+/* ------------------------------------------------------------- fallbacks */
+
+/* Do the tables hold the same strings? Used to check that the canonical CSV
+ * survives a round trip before the fallback built from it is allowed to win.
+ * CSV quoting is not lossless for every conceivable cell -- a bare '\r' is
+ * the case that actually occurs -- and a fallback that corrupts data would be
+ * far worse than losing by 11%. */
+static int tables_equal(const Table *a, const Table *b)
+{
+    if (a->ncols != b->ncols || a->nrows != b->nrows) return 0;
+    for (size_t j = 0; j < a->ncols; j++)
+        if (strcmp(a->names[j], b->names[j])) return 0;
+    for (size_t i = 0; i < a->nrows; i++) {
+        for (size_t j = 0; j < a->ncols; j++) {
+            Str x = table_at(a, i, j), y = table_at(b, i, j);
+            if (x.n != y.n || memcmp(x.p, y.p, x.n)) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Smallest plain-codec encoding of the whole table, if one beats `limit`.
+ * Mirrors fast._raw_candidates: canonical CSV, round-trip checked, then xz and
+ * bzip2, and the winner must be strictly smaller than the modelled container.
+ * Returns 1 and fills `out` on success, 0 if nothing qualified. */
+static int raw_candidates(const Table *t, size_t limit, Buf *out)
+{
+    Buf canon;
+    buf_init(&canon);
+    table_write_canonical(t, &canon);
+
+    Table back;
+    int ok = table_parse_csv(&back, canon.data, canon.len) == 0
+             && tables_equal(t, &back);
+    table_free(&back);
+    if (!ok) { buf_free(&canon); return 0; }
+
+    int found = 0;
+    Buf cand;
+    buf_init(&cand);
+    const char *magics[2] = { PPZ_MAGIC_RAW_XZ, PPZ_MAGIC_RAW_BZ };
+    for (int which = 0; which < 2; which++) {
+        Buf z;
+        buf_init(&z);
+        int bad = which == 0 ? ppz_lzma_compress(canon.data, canon.len, &z)
+                             : ppz_bz2_compress(canon.data, canon.len, &z);
+        if (!bad && z.len + 4 < limit && (!found || z.len + 4 < cand.len)) {
+            buf_free(&cand);
+            buf_put(&cand, magics[which], 4);
+            buf_put(&cand, z.data, z.len);
+            found = 1;
+        }
+        buf_free(&z);
+    }
+    buf_free(&canon);
+
+    if (found) { buf_free(out); buf_put(out, cand.data, cand.len); }
+    buf_free(&cand);
+    return found;
+}
+
+int ppz_encode(const Table *t, Buf *out)
+{
+    long fired = 0;
+    if (ppz_encode_modelled(t, out, &fired)) return -1;
+    /* Only when none of the three tricks fired -- that is precisely the case
+     * where this codec has degenerated into "split into columns, then xz" and
+     * a different finisher may well beat it. Running the candidates
+     * unconditionally would roughly double encode time for nothing. */
+    if (fired) return 0;
+    raw_candidates(t, out->len, out);
+    return 0;
 }

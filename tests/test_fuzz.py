@@ -102,7 +102,7 @@ def main():
         p = subprocess.run([BINARY, 'compress', src, '-o', arc], capture_output=True, timeout=120)
         if p.returncode != 0:
             c_fail.append((i, p.returncode, p.stderr.decode()[:120])); continue
-        want, _ = fast._encode_plan(t)
+        want = fast.encode(t)
         if open(arc, 'rb').read() != want:
             c_diff.append((i, len(t.rows), len(t.columns)))
     print('%d random tables' % n)

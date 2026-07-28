@@ -11,6 +11,7 @@
 
 #include <bzlib.h>
 #include <errno.h>
+#include <limits.h>
 #include <lzma.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,6 +103,22 @@ int table_read_csv(Table *t, const char *path)
     while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0) buf_put(&src, chunk, got);
     if (f != stdin) fclose(f);
 
+    int rc = table_parse_csv(t, src.data, src.len);
+    buf_free(&src);
+    return rc;
+}
+
+/* The parse proper, over bytes already in memory. Split out from
+ * table_read_csv so the encoder can re-parse its own canonical CSV to check
+ * the plain fallback round-trips before letting it win.
+ *
+ * Reads `data` in place rather than copying it -- the cells it keeps are
+ * copied into the table's own arena, so nothing here outlives the caller's
+ * buffer. Copying first would have put a second full image of the input in
+ * memory beside the arena, which on the largest corpus file is another 77 MB
+ * for nothing. */
+int table_parse_csv(Table *t, const uint8_t *data, size_t n)
+{
     table_init(t);
 
     Span  *spans = NULL;
@@ -153,11 +170,11 @@ int table_read_csv(Table *t, const char *path)
             fields_this_row = 0;                                             \
         } while (0)
 
-    for (size_t i = 0; i < src.len; i++) {
-        char c = (char)src.data[i];
+    for (size_t i = 0; i < n; i++) {
+        char c = (char)data[i];
         if (in_quotes) {
             if (c == '"') {
-                if (i + 1 < src.len && src.data[i + 1] == '"') {
+                if (i + 1 < n && data[i + 1] == '"') {
                     buf_putc(&cell, '"');
                     i++;
                 } else {
@@ -171,7 +188,7 @@ int table_read_csv(Table *t, const char *path)
         if (c == '"' && !field_open) { in_quotes = 1; field_open = 1; continue; }
         if (c == ',') { PUSH_FIELD(); continue; }
         if (c == '\r') {
-            if (i + 1 < src.len && src.data[i + 1] == '\n') continue;
+            if (i + 1 < n && data[i + 1] == '\n') continue;
             PUSH_FIELD(); END_ROW(); continue;
         }
         if (c == '\n') { PUSH_FIELD(); END_ROW(); continue; }
@@ -182,7 +199,6 @@ int table_read_csv(Table *t, const char *path)
     if (cell.len || field_open || fields_this_row) { PUSH_FIELD(); END_ROW(); }
 
     buf_free(&cell);
-    buf_free(&src);
 
     if (nrows == 0 || width == 0) { free(spans); return 0; }
 
@@ -262,6 +278,61 @@ int table_write_csv(const Table *t, const char *path)
     if (f != stdout) fclose(f);
     buf_free(&out);
     return w == want ? 0 : -1;
+}
+
+/* The canonical CSV the plain fallback compresses -- byte-for-byte what
+ * Python's csv.writer(lineterminator="\n") emits, which is NOT the same as
+ * what table_write_csv produces above. Three differences, all of them found
+ * by testing the Python writer rather than by reading it:
+ *
+ *   - a bare '\r' is NOT quoted. csv.writer quotes on characters *in the
+ *     lineterminator*, and the lineterminator here is "\n" alone. (That makes
+ *     Python's own CSV round trip lossy for such a cell, which is exactly why
+ *     the fallback is round-trip checked before it is allowed to win -- both
+ *     implementations then refuse it, and they agree.)
+ *   - an empty field IS quoted when it is the only field in its row.
+ *   - a NUL byte forces quoting.
+ *
+ * Getting any of these wrong produces a fallback that is a few bytes off
+ * Python's, which breaks byte-identity on precisely the tables where the
+ * fallback fires.
+ */
+static int canon_needs_quotes(Str s, size_t ncols)
+{
+    if (s.n == 0) return ncols == 1;
+    for (size_t i = 0; i < s.n; i++) {
+        char c = s.p[i];
+        if (c == ',' || c == '"' || c == '\n' || c == '\0') return 1;
+    }
+    return 0;
+}
+
+static void canon_write_field(Buf *out, Str s, size_t ncols)
+{
+    if (!canon_needs_quotes(s, ncols)) { buf_put(out, s.p, s.n); return; }
+    buf_putc(out, '"');
+    for (size_t i = 0; i < s.n; i++) {
+        if (s.p[i] == '"') buf_putc(out, '"');
+        buf_putc(out, s.p[i]);
+    }
+    buf_putc(out, '"');
+}
+
+void table_write_canonical(const Table *t, Buf *out)
+{
+    for (size_t j = 0; j < t->ncols; j++) {
+        if (j) buf_putc(out, ',');
+        Str s = { t->names[j], strlen(t->names[j]) };
+        canon_write_field(out, s, t->ncols);
+    }
+    buf_putc(out, '\n');
+    for (size_t i = 0; i < t->nrows; i++) {
+        for (size_t j = 0; j < t->ncols; j++) {
+            if (j) buf_putc(out, ',');
+            canon_write_field(out, table_at(t, i, j), t->ncols);
+        }
+        buf_putc(out, '\n');
+    }
 }
 
 /* ------------------------------------------------------------------- lzma */
@@ -353,6 +424,28 @@ done:
     lzma_end(&strm);
     if (rc) buf_free(out);
     return rc;
+}
+
+/* bzip2 at level 9, matching Python's bz2.compress(data, 9) byte for byte --
+ * verified on empty, repetitive, real-CSV and incompressible inputs. Python's
+ * bz2 module calls BZ2_bzCompressInit(level, 0, 0), and workFactor 0 means
+ * the library default, so the one-shot helper below is the same coder. */
+int ppz_bz2_compress(const uint8_t *in, size_t n, Buf *out)
+{
+    /* libbz2's documented worst case is 1% over plus 600 bytes; bzip2 expands
+     * incompressible input, so this is a real bound, not padding. */
+    size_t cap = n + n / 100 + 1024;
+    if (cap > UINT_MAX) return -1;
+    buf_free(out);
+    char *dst = malloc(cap ? cap : 1);
+    if (!dst) return -1;
+    unsigned int outlen = (unsigned int)cap;
+    int r = BZ2_bzBuffToBuffCompress(dst, &outlen, (char *)(uintptr_t)in,
+                                     (unsigned int)n, 9, 0, 0);
+    if (r != BZ_OK) { free(dst); return -1; }
+    buf_put(out, dst, outlen);
+    free(dst);
+    return 0;
 }
 
 int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out)
