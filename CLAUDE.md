@@ -57,6 +57,14 @@ benchmarks/    bench.py is the one to use; fetch_corpus.py + fetch_nhanes.py
 attic/         superseded work kept for the record
 ```
 
+**Branch `ondemand`** carries `polypress/ondemand.py` — a separate container
+(`PPZO`) giving *column random access*: read one column without decoding the
+table, by walking the parent chain (mean 2.78 hops on a 209-column survey).
+Re-forked from master on 2026-07-28. It consumes `fast.py` through
+`classify` / `pick_parents` / `pack_ints` / `diff_order`, so keep those
+signatures stable or it breaks silently. It has **no 2D groups and no text
+reorder parents**, and costs ~15% size against the archival codec.
+
 ## Running things
 
 ```bash
@@ -65,7 +73,9 @@ python3 tests/test_dtz.py       # 1.5s
 python3 tests/test_stream.py    # 2.0s
 python3 tests/test_cbin.py      # C must match Python byte for byte
 python3 tests/test_fuzz.py      # random adversarial tables, both languages
-python3 app/gui.py --selftest
+python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
+                                # whole menu headless (26 checks). This is
+                                # the build gate in app/build_app.sh.
 ./csrc/build.sh                 # needs lzma.h: brew install xz
 ./app/build_app.sh dmg          # -> dist/Polypress.dmg
 ```
@@ -128,6 +138,13 @@ for exactly this.
   used to depend on CPython's hash table, so archive bytes did too.
 - **`buf_free` zeroes `len`** — capture the length before freeing if you are
   about to compare against it.
+- **Tkinter looks available on macOS and is not.** Apple's Tk 8.5.9 imports,
+  constructs every `ttk` widget, and `destroy()`s cleanly — so a probe that
+  builds widgets on a withdrawn window *passes*. It is **mapping** the window
+  that wedges: one `update()` on a shown window never returns, with no error
+  and no window. Re-verified 2026-07-28. This is why `app/gui.py` drives
+  osascript instead; do not "improve" it to Tk on the strength of a widget
+  probe.
 - **Python's `csv.writer` is not the obvious CSV writer**, and the plain
   fallback compresses exactly its output, so `table_write_canonical` in
   `ppz_util.c` has to match it byte for byte. Three rules, all found by
