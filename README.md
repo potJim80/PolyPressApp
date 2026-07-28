@@ -292,9 +292,18 @@ block, which keeps the write bounded as well.
 Or the Mac app:
 
 ```bash
-./app/build_app.sh      # installs to ~/Applications/Polypress.app
+./app/build_app.sh          # installs to ~/Applications/Polypress.app
+./app/build_app.sh dmg      # also writes dist/Polypress.dmg to hand to someone
 open ~/Applications/Polypress.app
 ```
+
+The `dmg` target produces a disk image with the app, an Applications symlink to
+drag it onto, and a plain-language note. **It is unsigned**, so the first time
+anyone opens it macOS will claim it is from an unidentified developer or even
+that it is damaged. That is Gatekeeper's response to every app without a paid
+Apple Developer certificate, not a fault in the build; right-click → Open → Open
+once and it is fine thereafter. The note in the image says exactly that, because
+a download that appears broken on first launch is a download nobody uses.
 
 Three ways to use it:
 

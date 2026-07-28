@@ -12,3 +12,4 @@ csrc/*.o
 build/
 dist/
 *.egg-info/
+dist/

@@ -22,6 +22,10 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
+# Captured up front: the icon-generation loop below uses `set --` to unpack
+# each size spec, which clobbers the script's own positional parameters. By
+# the time the dmg check runs, $1 is "1024".
+ACTION="${1:-}"
 DEST="${DEST:-$HOME/Applications}"
 APP="$DEST/Polypress.app"
 PY="${PYTHON:-/usr/bin/python3}"
@@ -145,6 +149,52 @@ rm -rf "$TMP"
 touch "$APP"
 
 echo "Built $APP"
+
+# ---------------------------------------------------------------- dmg
+# `build_app.sh dmg` also produces a disk image someone can download and
+# drag into Applications, which is the only form of "install" most people
+# will do. Kept in this script rather than a separate one so the thing that
+# ships is always the thing that was just selftested.
+if [ "$ACTION" = "dmg" ]; then
+  OUT="${DMG_OUT:-$ROOT/dist}"
+  mkdir -p "$OUT"
+  STAGE="$(mktemp -d)"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  cat > "$STAGE/READ ME FIRST.txt" <<'NOTE'
+Polypress
+=========
+
+Drag Polypress.app onto the Applications folder shown here.
+
+THE FIRST TIME YOU OPEN IT, macOS WILL REFUSE.
+It will say Polypress "cannot be opened because it is from an unidentified
+developer", or that it is damaged. That is not a problem with the app -- it
+is macOS Gatekeeper, and it says this about every app that is not signed
+with a paid Apple Developer certificate.
+
+To open it anyway:
+
+  Right-click (or Control-click) Polypress.app  ->  Open  ->  Open
+
+You only have to do this once. Afterwards it opens normally.
+
+What it does
+------------
+  * Launch it and pick any table (.csv .tsv .json .jsonl .parquet)
+    -> you get a .ppz, typically 10-70x smaller than the original.
+  * Double-click a .ppz -> it restores the table.
+  * Drop files on the Dock icon -> same thing.
+
+Nothing is ever written until the compressed data has been decompressed
+again in memory and compared against the original, cell for cell.
+NOTE
+  rm -f "$OUT/Polypress.dmg"
+  hdiutil create -volname "Polypress" -srcfolder "$STAGE" -ov \
+      -format UDZO "$OUT/Polypress.dmg" >/dev/null
+  rm -rf "$STAGE"
+  echo "Built $OUT/Polypress.dmg"
+fi
 echo
 echo "  open '$APP'                  compress or restore via dialogs"
 echo "  double-click any .ppz        restores it"
