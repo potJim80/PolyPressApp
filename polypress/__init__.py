@@ -9,4 +9,5 @@ variant for files larger than RAM. `caccel` is an optional C accelerator
 that builds itself on first import and falls back to numpy if it cannot.
 """
 
-__version__ = "0.1.0"
+# Keep in step with pyproject.toml; the app's About screen reads this one.
+__version__ = "0.2.0"

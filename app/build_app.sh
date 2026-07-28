@@ -181,10 +181,27 @@ You only have to do this once. Afterwards it opens normally.
 
 What it does
 ------------
-  * Launch it and pick any table (.csv .tsv .json .jsonl .parquet)
-    -> you get a .ppz, typically 10-70x smaller than the original.
-  * Double-click a .ppz -> it restores the table.
-  * Drop files on the Dock icon -> same thing.
+Launching it gives you a menu with five things:
+
+  Compress a table      any of .csv .tsv .psv .txt .json .jsonl .parquet
+                        -> a .ppz, typically 9-170x smaller than the
+                        original file. You choose normal or low-memory
+                        mode; low-memory handles files bigger than RAM.
+
+  Restore an archive    back to a data file, in whichever of CSV, TSV,
+                        JSON, JSON Lines or Parquet you pick -- it does
+                        not have to be the format you started from.
+
+  Convert a table       between those same formats, with no compression
+                        involved. A CSV-to-Parquet converter, in effect.
+
+  Inspect an archive    how many rows and columns are in it, and how it
+                        was compressed -- without unpacking it.
+
+  About Polypress       what it is and which formats are available.
+
+You can also double-click a .ppz to restore it, or drop files onto the
+Dock icon.
 
 Nothing is ever written until the compressed data has been decompressed
 again in memory and compared against the original, cell for cell.
@@ -196,7 +213,7 @@ NOTE
   echo "Built $OUT/Polypress.dmg"
 fi
 echo
-echo "  open '$APP'                  compress or restore via dialogs"
+echo "  open '$APP'                  menu: compress, restore, convert, inspect"
 echo "  double-click any .ppz        restores it"
 echo "  drop files on the Dock icon  same thing"
 echo "  right-click Dock icon -> Options -> Keep in Dock"
