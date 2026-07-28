@@ -97,22 +97,26 @@ python3 benchmarks/bench.py --reps 1 corpus/*.csv
 
 | dataset | rows x cols | vs best other | was |
 |---|---|---|---|
-| CDC notifiable disease | 150,000 x 16 | **2.97x** `parquet+brotli` | 2.97x |
+| CDC notifiable disease | 150,000 x 16 | **3.70x** `parquet+brotli` | 2.97x |
 | Seattle fire 911 | 200,000 x 7 | **1.77x** `xz -9e` | 1.77x |
 | WA EV population | 200,000 x 16 | **1.74x** `xz -9e` | 1.74x |
-| Austin 311 | 150,000 x 19 | **1.54x** `xz -9e` | 1.40x |
+| Austin 311 | 150,000 x 19 | **1.61x** `xz -9e` | 1.40x |
 | Chicago crimes | 150,000 x 22 | **1.39x** `xz -9e` | 1.12x |
-| NYC collisions | 150,000 x 29 | 1.37x `xz -9e` | 1.37x |
+| NYC collisions | 150,000 x 29 | **1.44x** `xz -9e` | 1.37x |
 | NYC 311 | 60,000 x 44 | **1.31x** `xz -9e` | 1.14x |
 | USGS earthquakes 2023 | 16,190 x 22 | 1.22x `bzip2 -9` | 1.19x |
 | USGS earthquakes 21-22 | 16,707 x 22 | 1.21x `bzip2 -9` | 1.20x |
-| NYC baby names | 29,685 x 6 | 1.17x `parquet+brotli` | 1.17x |
+| NYC baby names | 29,685 x 6 | **1.26x** `parquet+brotli` | 1.17x |
 | Chicago permits | 80,000 x 116 | **1.11x** `xz -9e` | 1.03x |
 | NOAA climate, ORD | 69 x 102 | 1.10x `brotli -q 11` | 1.10x |
 | NOAA climate, SEA | 79 x 106 | 1.09x `bzip2 -9` | 1.10x |
 
-Median **1.31x**, worst case **1.09x** -- up from 1.19x and 1.03x once text
-columns started taking a reorder parent.
+Median **1.31x**, worst case **1.09x**, best **3.70x** -- up from 1.19x / 1.03x
+/ 2.97x. Two changes account for it, and both are the same idea: text columns
+started taking a reorder parent, and then parent choices stopped being taken on
+trust. Dictionary parents were being picked by conditional entropy and used
+without checking; making that decision measurable took another fifth off
+`cdc_nndss` alone, which was already the best result here.
 
 **13 of 13 wins, but read the spread, not the headline.** Median 1.19x. Only
 three datasets clear 1.4x. Two independent confirmations are worth noting: WA
