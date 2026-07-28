@@ -246,10 +246,26 @@ On 40k EV rows this beat an adaptive context-modelling range coder
 2,328 B vs 6,901 B — and it is far faster, because the heavy lifting moves
 into C instead of a Python loop.
 
+## Install
+
+```bash
+pip install polypress          # the codec and the `polypress` command
+pip install 'polypress[parquet]'   # add pyarrow, for reading/writing .parquet
+```
+
+numpy is the only hard requirement. The C accelerator compiles itself on first
+import and falls back to numpy if there is no compiler, so it is never a
+dependency. Or use it straight from a checkout with no install at all --
+`python3 tzip.py ...` still works and calls the same code.
+
+For the standalone binary, which needs no Python at all, see
+[The standalone binary](#the-standalone-binary).
+
 ## Use
 
 ```bash
-python3 tzip.py compress data.csv          # -> data.csv.ppz
+polypress compress data.csv                # -> data.csv.ppz
+python3 tzip.py compress data.csv          # identical, no install needed
 python3 tzip.py restore  data.csv.ppz      # -> data.csv
 python3 tzip.py restore  data.csv.ppz -o out.parquet
 python3 tzip.py info     data.csv.ppz      # plan, shape, how much was reordered

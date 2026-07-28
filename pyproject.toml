@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polypress"
+version = "0.2.0"
+description = "Lossless compression for data tables, smaller than xz, zstd, brotli and Parquet on coded survey and administrative data"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["compression", "csv", "parquet", "columnar", "survey data"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Archiving :: Compression",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+# numpy is the only hard requirement. The C accelerator (tcz.c) builds itself
+# on first import and falls back to numpy when there is no compiler, so it is
+# never a dependency. pyarrow is optional and only needed to read or write
+# .parquet -- the codec itself does not use it.
+dependencies = ["numpy>=1.20"]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=8"]
+
+[project.scripts]
+polypress = "polypress.cli:main"
+
+[tool.setuptools]
+packages = ["polypress"]
+
+# tcz.c ships in the wheel so caccel.py can compile it on first import on the
+# user's machine. Shipping a prebuilt .so instead would mean one wheel per
+# platform for an accelerator that is optional by design.
+[tool.setuptools.package-data]
+polypress = ["tcz.c"]

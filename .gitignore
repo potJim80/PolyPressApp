@@ -9,3 +9,6 @@ dist/
 .DS_Store
 csrc/polypress
 csrc/*.o
+build/
+dist/
+*.egg-info/
