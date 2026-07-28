@@ -8,9 +8,10 @@ change.
 
 Three ideas: predict down a column (finite differences), predict from
 left+above+diagonal on commensurable numeric columns (planar), and **reorder
-rows so a column collapses into runs**. The third is the original one and the
-only novelty claimed — see the novelty note in README.md, which is deliberately
-narrow.
+rows so a column collapses into runs**. The third is the central idea of the
+codec, but it is **prior art**, not novel: US 8,312,026 (Vo, AT&T, 2012, now
+expired) discloses the whole of it, down to the measured-parent rule. Arrived
+at here independently; claim withdrawn — see the prior-art note in README.md.
 
 **Which idea fires depends on the data, and getting this wrong wastes days:**
 
@@ -52,7 +53,7 @@ csrc/          the standalone C binary: no Python, no numpy. ppz_encode.c and
 tzip.py        shim -> polypress/cli.py (the `polypress` console script)
 app/           the Mac app. build_app.sh, build_app.sh dmg
 tests/         test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
-               test_hostile
+               test_hostile, test_encoding
 benchmarks/    bench.py is the one to use; fetch_corpus.py + fetch_nhanes.py
                download real data; make_hostile.py generates adversarial tables
 attic/         superseded work kept for the record
@@ -76,6 +77,7 @@ python3 tests/test_cbin.py      # C must match Python byte for byte
 python3 tests/test_fuzz.py      # random adversarial tables, both languages
 python3 tests/test_hostile.py   # corrupt stream/ondemand archives, run in a
                                 # memory-capped subprocess (invariant 3)
+python3 tests/test_encoding.py  # BOMs, UTF-16, latin-1: read or refuse
 python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
                                 # whole menu headless (26 checks). This is
                                 # the build gate in app/build_app.sh.
@@ -141,6 +143,14 @@ for exactly this.
   used to depend on CPython's hash table, so archive bytes did too.
 - **`buf_free` zeroes `len`** — capture the length before freeing if you are
   about to compare against it.
+- **`errors="replace"` made the round-trip check unable to see corruption.**
+  The readers opened every file that way, so an undecodable byte became
+  U+FFFD *before* the table existed. Verification then compared the decoded
+  table against the already-corrupted one and passed — a latin-1 file lost
+  every accent and reported success. **A check downstream of the damage cannot
+  see the damage.** Decoding is strict now; a BOM is honoured, anything else
+  is refused, and `--encoding` is the only override. Do not reintroduce a
+  guess: chardet-style sniffing is the same bug with better odds.
 - **Tkinter looks available on macOS and is not.** Apple's Tk 8.5.9 imports,
   constructs every `ttk` widget, and `destroy()`s cleanly — so a probe that
   builds widgets on a withdrawn window *passes*. It is **mapping** the window

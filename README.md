@@ -362,6 +362,25 @@ It does *not* promise byte-identical files, because CSV quoting and line
 endings are not canonical. Read a file and write it back and you get an
 equivalent table, not identical bytes.
 
+**Text encoding is read or refused, never guessed.** A byte-order mark is
+honoured, so the UTF-8-with-BOM and UTF-16 files Excel produces are read
+correctly. An unmarked file is decoded as strict UTF-8, and one that is not
+UTF-8 is refused with the offending byte named:
+
+```
+polypress: survey.csv is not valid UTF-8 -- byte 0xFC at offset 11 cannot be decoded.
+If you know the file's encoding, name it: --encoding latin-1 (or cp1252, utf-16, ...).
+```
+
+`--encoding` is the only way to override it, because guessing is what
+corrupts data. This was worth fixing properly: the readers used to open every
+file with `errors="replace"`, which silently turns an undecodable byte into
+U+FFFD. A latin-1 file lost every accented character and reported success —
+and *the round-trip check could not catch it*, because the table was already
+wrong before it was encoded, so the check compared a corrupted table against
+itself. Three of six test encodings destroyed data that way.
+`tests/test_encoding.py` pins all of it.
+
 ## Where it loses
 
 Six real datasets is not a claim, and every one of them was a table this codec
@@ -422,17 +441,18 @@ Full numbers, every contender, in `benchmarks/hostile-results.txt`.
   (Ibarria et al., 2003, used in fpzip and SZ); MED is JPEG-LS. What is not
   standard is the table-specific front end: commensurable-group detection and
   the reordering trick.
-- **The reordering trick is not unprecedented either, and the honest claim is
-  narrower than "new".** Reordering rows to compress better is a studied
-  problem — Lemire, Kaser and Gutarra, *Reordering Rows for Better
-  Compression: Beyond the Lexicographic Order*, ACM TODS 37(3), 2012, and
-  column-store sorted projections before it. Exploiting functional
-  dependencies between columns appears in database patents. "SortComp" sorts
-  each column and compresses the sorted table alongside an explicit
-  permutation table.
+- **The reordering trick is not unprecedented either, and an earlier version
+  of this README claimed novelty for it that it does not have.** Reordering
+  rows to compress better is a studied problem — Lemire, Kaser and Gutarra,
+  *Reordering Rows for Better Compression: Beyond the Lexicographic Order*,
+  ACM TODS 37(3), 2012, and column-store sorted projections before it.
+  Exploiting functional dependencies between columns appears in database
+  patents. "SortComp" sorts each column and compresses the sorted table
+  alongside an explicit permutation table.
 
-  Two things here differ from all of those, and they are the only novelty
-  worth claiming. **(1) The ordering is per-column, not global** — every
+  Two things here differ from *those particular* references, and they used to
+  be described in this README as the novelty. **(1) The ordering is
+  per-column, not global** — every
   dictionary column is stored under a permutation derived from *its own*
   parent, so a 421-column table can carry hundreds of different orderings at
   once, where the prior work picks one order for the whole table. **(2) The
@@ -441,10 +461,48 @@ Full numbers, every contender, in `benchmarks/hostile-results.txt`.
   decoder re-derives each permutation from a parent it has already rebuilt,
   and the restored table is in the original row order, cell for cell.
 
-  That combination was not found in a search of the obvious literature. That
-  is *not* the same as it being novel, and no claim of priority is made here:
-  the search was a few hours, not a review, and the ingredients are all
-  individually well known.
+  **That combination is anticipated in full, and the claim was wrong.** A
+  prior-art search on 2026-07-28 found US 8,312,026 B2, "Compressing massive
+  relational data", Kiem-Phong Vo, assigned to AT&T Intellectual Property I,
+  L.P., filed 2009-12-22 and granted 2012-11-13. It discloses every element
+  above. It defines the transform of a field by the unique stable
+  lexicographic argsort of its predictor field; it notes that the topological
+  order guarantees the predictor is already inverted when it is needed, so the
+  permutation is never stored; its claim 1 recites an optimum branching of the
+  dependency graph plus a topological sort — the parent tree; it requires that
+  a compressed file "always decompress into its exact original state"; and it
+  scores a candidate predictor by the *compressed size* of the transformed
+  field. Earlier still, by the same author: B. D. Vo and K.-P. Vo, "Using
+  column dependency to compress tables", DCC 2004, pp. 92–101, and
+  "Compressing table data with column dependency", *Theoretical Computer
+  Science* 387(3):273–283, 2007, which US 8,312,026 says it generalises.
+  Neither paper has been read here — both are paywalled and could not be
+  obtained. The per-column half is separately claimed in US 8,108,361 B2
+  (Netz, Petculescu and Crivat, Microsoft, priority 2008-07-31, granted
+  2012-01-31), whose claim 9 covers rearranging the row sequence of one column
+  only, in a dictionary-encoded columnar compressor, for the same reason —
+  though it stores the reordering as per-column metadata rather than
+  re-deriving it.
+
+  This codec reached the same design without knowing of any of that, including
+  the rule that a parent must be chosen by measured compressed size and not by
+  an entropy score — which took commit `20dd96e` and 19.7% off `cdc_nndss` to
+  learn. Independent convergence on the same design, twenty years apart, is
+  reasonable evidence the design is right. It is not evidence of priority, and
+  the earlier claim is withdrawn.
+
+  One thing the search did turn up that is worth recording: **almost everyone
+  else stores the permutation.** Amazon's US 11,422,805 B2 ("Sorting by
+  permutation", 2022) is argsort one column and use it to order another, but
+  its claim 1 requires the permutation be kept in a separate mapping table;
+  Oracle's US 7,103,608 puts it in the block header; SortComp keeps a
+  permutation table. Vo is the only exception found. So the "don't store it,
+  re-derive it from a parent the decoder already has" step is rare and it is
+  correct — it is just not first.
+
+  Both patents have expired — US 8,312,026 lapsed 2024-11-13 for unpaid
+  maintenance fees, and US 8,108,361 has likewise expired — so there is no
+  restriction on using this code.
 
 ## What else is in here, and what it proved
 
@@ -483,6 +541,7 @@ python3 docs/report.py docs/Polypress-Results.pdf
 ```bash
 python3 tests/test_fast.py            # 32 fidelity cases, C path and fallback
 python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
+python3 tests/test_encoding.py        # BOMs, UTF-16, latin-1: read or refuse
 python3 tests/test_stream.py          # 180 checks: block counts and every output format
 python3 tests/test_cbin.py            # the C binary must agree with Python on every case
 python3 tests/test_fuzz.py [n] [seed] # random adversarial tables through both implementations

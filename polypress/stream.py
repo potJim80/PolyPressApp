@@ -54,24 +54,46 @@ MAX_ROWS = 2_000_000
 csv.field_size_limit(1 << 31)
 
 
-def _reader(path: str):
+def _decode_guard(rows, path: str, enc: str):
+    """Turn a lazy decode failure into the same refusal dtz raises.
+
+    The single-shot reader decodes the whole file inside one call, so a bad
+    byte surfaces there. Here the file is read block by block, so it surfaces
+    hundreds of rows in -- possibly after several blocks have already been
+    written. Same error, same message, wherever it lands."""
+    try:
+        for row in rows:
+            yield row
+    except UnicodeDecodeError as exc:
+        raise dtz.EncodingRefused(
+            dtz.encoding_error(path, exc, enc)) from None
+
+
+def _reader(path: str, encoding: Optional[str] = None):
     ext = os.path.splitext(path)[1].lower()
-    fh = open(path, newline="", encoding="utf-8", errors="replace")
-    delimiter = dtz.EXT_DELIMITER.get(ext)
-    if delimiter is None:
-        delimiter = dtz._sniff_delimiter(fh.read(65536))
-        fh.seek(0)
-    return fh, csv.reader(fh, delimiter=delimiter)
+    enc = encoding or dtz.sniff_encoding(path)
+    fh = dtz.open_text(path, enc)
+    try:
+        delimiter = dtz.EXT_DELIMITER.get(ext)
+        if delimiter is None:
+            delimiter = dtz._sniff_delimiter(fh.read(65536))
+            fh.seek(0)
+    except UnicodeDecodeError as exc:
+        fh.close()
+        raise dtz.EncodingRefused(
+            dtz.encoding_error(path, exc, enc)) from None
+    return fh, _decode_guard(csv.reader(fh, delimiter=delimiter), path, enc)
 
 
-def plan_rows(path: str, budget_gb: float, verify: bool = True) -> tuple:
+def plan_rows(path: str, budget_gb: float, verify: bool = True,
+              encoding: Optional[str] = None) -> tuple:
     """Rows per block that keep peak memory near the budget.
 
     Estimated from the real average row width of the file rather than a
     guess, because a 209-column survey row and a 5-column sensor row differ
     by two orders of magnitude."""
     size = os.path.getsize(path)
-    fh, rd = _reader(path)
+    fh, rd = _reader(path, encoding)
     try:
         header = next(rd, [])
         n, seen = 0, 0
@@ -90,8 +112,9 @@ def plan_rows(path: str, budget_gb: float, verify: bool = True) -> tuple:
     return rows, per_row, est_blocks, header
 
 
-def _blocks(path: str, rows_per_block: int) -> Iterator[dtz.Table]:
-    fh, rd = _reader(path)
+def _blocks(path: str, rows_per_block: int,
+            encoding: Optional[str] = None) -> Iterator[dtz.Table]:
+    fh, rd = _reader(path, encoding)
     try:
         header = next(rd, None)
         if header is None:
@@ -120,9 +143,9 @@ def _blocks(path: str, rows_per_block: int) -> Iterator[dtz.Table]:
 
 def compress(src: str, dst: str, budget_gb: float = DEFAULT_BUDGET_GB,
              rows: Optional[int] = None, verify: bool = True,
-             progress=None) -> dict:
+             progress=None, encoding: Optional[str] = None) -> dict:
     if rows is None:
-        rows, per_row, est, _ = plan_rows(src, budget_gb, verify)
+        rows, per_row, est, _ = plan_rows(src, budget_gb, verify, encoding)
     else:
         per_row, est = 0.0, 0
     sizes: List[int] = []
@@ -131,7 +154,7 @@ def compress(src: str, dst: str, budget_gb: float = DEFAULT_BUDGET_GB,
 
     with open(dst, "wb") as out:
         out.write(b"\0" * 8)                 # header length patched at the end
-        for i, table in enumerate(_blocks(src, rows)):
+        for i, table in enumerate(_blocks(src, rows, encoding)):
             if not columns:
                 columns = table.columns
             blob = fast.encode(table)
@@ -349,6 +372,9 @@ def main(argv=None) -> int:
                    help="approximate peak memory in GB (default 1.0)")
     c.add_argument("--rows", type=int, help="rows per block, overrides budget")
     c.add_argument("--no-verify", action="store_true")
+    c.add_argument("--encoding",
+                   help="text encoding of the input (default: utf-8, or "
+                        "whatever a byte-order mark says)")
 
     r = sub.add_parser("restore")
     r.add_argument("path")
@@ -369,7 +395,8 @@ def main(argv=None) -> int:
                              .format(nblk, nrows, human(nbytes)))
             sys.stderr.flush()
 
-        st = compress(a.path, dst, a.budget, a.rows, not a.no_verify, prog)
+        st = compress(a.path, dst, a.budget, a.rows, not a.no_verify, prog,
+                      a.encoding)
         sys.stderr.write("\r" + " " * 60 + "\r")
         secs = time.time() - t0
         print("{:,} rows in {} blocks of {:,}   {} -> {}   {:.2f}x   "

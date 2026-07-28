@@ -51,7 +51,7 @@ def cmd_compress(args) -> int:
     raw = os.path.getsize(src)
 
     t0 = time.time()
-    table = dtz.read_any(src)
+    table = dtz.read_any(src, args.encoding)
     blob = fast.encode(table)
     secs = time.time() - t0
 
@@ -131,6 +131,9 @@ def main(argv=None) -> int:
     c.add_argument("-o", "--output")
     c.add_argument("--no-verify", action="store_true",
                    help="skip the in-memory round-trip check (not advised)")
+    c.add_argument("--encoding",
+                   help="text encoding of the input (default: utf-8, or "
+                        "whatever a byte-order mark says)")
     c.set_defaults(fn=cmd_compress)
 
     r = sub.add_parser("restore", help=".ppz -> table")
@@ -154,11 +157,15 @@ def main(argv=None) -> int:
     sc.add_argument("--rows", type=int,
                     help="rows per block, overrides --budget")
     sc.add_argument("--no-verify", action="store_true")
+    sc.add_argument("--encoding",
+                    help="text encoding of the input (default: utf-8, or "
+                         "whatever a byte-order mark says)")
     sc.set_defaults(fn=lambda a: stream.main(
         ["compress", a.path] + (["-o", a.output] if a.output else [])
         + ["--budget", str(a.budget)]
         + (["--rows", str(a.rows)] if a.rows else [])
-        + (["--no-verify"] if a.no_verify else [])))
+        + (["--no-verify"] if a.no_verify else [])
+        + (["--encoding", a.encoding] if a.encoding else [])))
 
     sr = sub.add_parser("stream-restore",
                         help="streamed .ppz -> table, one block at a time")
@@ -203,6 +210,13 @@ def _run(args) -> int:
         return 130
     except BrokenPipeError:
         raise
+    except dtz.EncodingRefused as exc:
+        # Not a damaged archive and not an unreadable table -- the file is
+        # fine, we just will not guess its encoding. The message already says
+        # which byte and what to pass, so print it as-is rather than wrapping
+        # it in the generic "cannot read this" text.
+        print("polypress: {}".format(exc), file=sys.stderr)
+        return 1
     except FileNotFoundError:
         print("polypress: no such file: {}".format(path), file=sys.stderr)
         return 1

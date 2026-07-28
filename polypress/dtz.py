@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import codecs
 import csv
 import datetime
 import decimal
@@ -100,6 +101,78 @@ class Table:
 
 EXT_DELIMITER = {".csv": ",", ".tsv": "\t", ".psv": "|"}
 
+# Byte-order marks, longest first. BOM_UTF32_LE starts with BOM_UTF16_LE, so
+# testing 16 before 32 would read a UTF-32 file as UTF-16 and get nonsense.
+# Python's "utf-16"/"utf-32" codecs consume the BOM themselves and pick the
+# byte order from it; "utf-8-sig" strips a UTF-8 BOM that would otherwise
+# become part of the first column's name.
+_BOMS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+
+class EncodingRefused(ValueError):
+    """The input is not text in the encoding we were told to expect.
+
+    Its own class so the CLI can print the one thing the user can act on --
+    which encoding to name -- rather than a generic parse failure.
+    """
+
+
+def sniff_encoding(path: str) -> str:
+    """Encoding from a byte-order mark, else utf-8.
+
+    Only a BOM is trusted. Guessing an encoding from the bytes is how a file
+    gets silently misread, and this codec's whole promise is that it does not
+    alter data -- so an unmarked file is assumed to be UTF-8 and *refused* if
+    it is not, rather than decoded on a hunch. `--encoding` is how the user
+    tells us the thing we decline to guess.
+    """
+    with open(path, "rb") as fh:
+        head = fh.read(4)
+    for bom, enc in _BOMS:
+        if head.startswith(bom):
+            return enc
+    return "utf-8"
+
+
+def open_text(path: str, encoding: Optional[str] = None, newline=""):
+    """Open a text file strictly -- never with errors="replace".
+
+    This used to be errors="replace", which turns any byte the codec does not
+    recognise into U+FFFD. That is silent data destruction in a lossless
+    compressor: the table is already wrong before it is ever encoded, so the
+    round-trip check compares the corrupted table against itself and passes.
+    A latin-1 file lost every accented character this way and reported
+    success. Refusing is the only honest option, so decoding is strict and a
+    failure is raised as EncodingRefused with the offending byte located.
+    """
+    enc = encoding or sniff_encoding(path)
+    return open(path, newline=newline, encoding=enc, errors="strict")
+
+
+def encoding_error(path: str, exc: UnicodeDecodeError, encoding: str) -> str:
+    """The refusal message. Names the byte, where it is, and what to do."""
+    return ("{} is not valid {} -- byte 0x{:02X} at offset {} cannot be "
+            "decoded.\nIf you know the file's encoding, name it: "
+            "--encoding latin-1 (or cp1252, utf-16, ...).".format(
+                os.path.basename(path), encoding.upper(),
+                exc.object[exc.start], exc.start))
+
+
+def _read_strict(path: str, encoding: Optional[str], fn):
+    """Run `fn(handle)`, turning a decode failure into EncodingRefused."""
+    enc = encoding or sniff_encoding(path)
+    try:
+        with open_text(path, enc) as fh:
+            return fn(fh)
+    except UnicodeDecodeError as exc:
+        raise EncodingRefused(encoding_error(path, exc, enc)) from None
+
 
 def _sniff_delimiter(sample: str) -> str:
     """Only used for extensions that do not name their delimiter.
@@ -115,14 +188,17 @@ def _sniff_delimiter(sample: str) -> str:
         return max(counts, key=counts.get) if max(counts.values()) else ","
 
 
-def read_delimited(path: str) -> Table:
+def read_delimited(path: str, encoding: Optional[str] = None) -> Table:
     ext = os.path.splitext(path)[1].lower()
-    with open(path, newline="", encoding="utf-8", errors="replace") as fh:
+
+    def parse(fh):
         delimiter = EXT_DELIMITER.get(ext)
         if delimiter is None:
             delimiter = _sniff_delimiter(fh.read(65536))
             fh.seek(0)
-        rows = list(csv.reader(fh, delimiter=delimiter))
+        return list(csv.reader(fh, delimiter=delimiter))
+
+    rows = _read_strict(path, encoding, parse)
     if not rows:
         return Table([], [])
     return Table(rows[0], rows[1:]).normalise()
@@ -172,9 +248,8 @@ def _scalar(value) -> str:
         return str(value)
 
 
-def read_json(path: str) -> Table:
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
+def read_json(path: str, encoding: Optional[str] = None) -> Table:
+    data = _read_strict(path, encoding, json.load)
     if isinstance(data, dict):
         # column-oriented {name: [values]}
         columns = list(data.keys())
@@ -185,14 +260,11 @@ def read_json(path: str) -> Table:
     return _from_records(data)
 
 
-def read_jsonl(path: str) -> Table:
-    records = []
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    return _from_records(records)
+def read_jsonl(path: str, encoding: Optional[str] = None) -> Table:
+    def parse(fh):
+        return [json.loads(line) for line in fh if line.strip()]
+
+    return _from_records(_read_strict(path, encoding, parse))
 
 
 def read_parquet(path: str) -> Table:
@@ -216,13 +288,15 @@ READERS = {
 }
 
 
-def read_any(path: str) -> Table:
+def read_any(path: str, encoding: Optional[str] = None) -> Table:
     ext = os.path.splitext(path)[1].lower()
     reader = READERS.get(ext)
     if reader is None:
         # unknown extension: try delimited, it covers most real files
         reader = read_delimited
-    return reader(path)
+    if reader is read_parquet:
+        return reader(path)          # binary container, carries its own text
+    return reader(path, encoding)
 
 
 # ================================================================ writers
