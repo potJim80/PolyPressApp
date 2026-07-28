@@ -95,21 +95,24 @@ python3 benchmarks/fetch_corpus.py corpus/
 python3 benchmarks/bench.py --reps 1 corpus/*.csv
 ```
 
-| dataset | rows x cols | ratio | vs best other |
+| dataset | rows x cols | vs best other | was |
 |---|---|---|---|
-| CDC notifiable disease | 150,000 x 16 | 173.81x | **2.97x** `parquet+brotli` |
-| Seattle fire 911 | 200,000 x 7 | 20.59x | **1.77x** `xz -9e` |
-| WA EV population | 200,000 x 16 | 35.03x | **1.74x** `xz -9e` |
-| Austin 311 | 150,000 x 19 | 18.71x | 1.40x `xz -9e` |
-| NYC collisions | 150,000 x 29 | 16.23x | 1.37x `xz -9e` |
-| USGS earthquakes 21-22 | 16,707 x 22 | 6.46x | 1.20x `bzip2 -9` |
-| USGS earthquakes 2023 | 16,190 x 22 | 6.09x | 1.19x `bzip2 -9` |
-| NYC baby names | 29,685 x 6 | 26.08x | 1.17x `parquet+brotli` |
-| NYC 311 | 60,000 x 44 | 21.61x | 1.14x `xz -9e` |
-| Chicago crimes | 150,000 x 22 | 11.86x | 1.12x `xz -9e` |
-| NOAA climate, SEA | 79 x 106 | 9.56x | 1.10x `bzip2 -9` |
-| NOAA climate, ORD | 69 x 102 | 8.85x | 1.10x `brotli -q 11` |
-| Chicago permits | 80,000 x 116 | 11.31x | 1.03x `xz -9e` |
+| CDC notifiable disease | 150,000 x 16 | **2.97x** `parquet+brotli` | 2.97x |
+| Seattle fire 911 | 200,000 x 7 | **1.77x** `xz -9e` | 1.77x |
+| WA EV population | 200,000 x 16 | **1.74x** `xz -9e` | 1.74x |
+| Austin 311 | 150,000 x 19 | **1.54x** `xz -9e` | 1.40x |
+| Chicago crimes | 150,000 x 22 | **1.39x** `xz -9e` | 1.12x |
+| NYC collisions | 150,000 x 29 | 1.37x `xz -9e` | 1.37x |
+| NYC 311 | 60,000 x 44 | **1.31x** `xz -9e` | 1.14x |
+| USGS earthquakes 2023 | 16,190 x 22 | 1.22x `bzip2 -9` | 1.19x |
+| USGS earthquakes 21-22 | 16,707 x 22 | 1.21x `bzip2 -9` | 1.20x |
+| NYC baby names | 29,685 x 6 | 1.17x `parquet+brotli` | 1.17x |
+| Chicago permits | 80,000 x 116 | **1.11x** `xz -9e` | 1.03x |
+| NOAA climate, ORD | 69 x 102 | 1.10x `brotli -q 11` | 1.10x |
+| NOAA climate, SEA | 79 x 106 | 1.09x `bzip2 -9` | 1.10x |
+
+Median **1.31x**, worst case **1.09x** -- up from 1.19x and 1.03x once text
+columns started taking a reorder parent.
 
 **13 of 13 wins, but read the spread, not the headline.** Median 1.19x. Only
 three datasets clear 1.4x. Two independent confirmations are worth noting: WA
@@ -398,6 +401,7 @@ These are kept because the negative results are the useful part.
 | `attic/smart.py`, `attic/rc.py` | A working adaptive binary range coder with cross-column context modelling. **Superseded**: reordering plus xz beat it on both size and speed. Kept as the reference implementation. |
 | `polypress/dtz.py` | The earlier "try every strategy and keep the smallest" container. Its apparent 1% win over `xz -9e` turned out to be **CSV quote-stripping, not compression** — feeding xz the same canonicalised bytes matched it to within 68 bytes. |
 | `polypress/codec.py` | Rice coding and the original fixed-order predictors. The predictor idea survived into `fast.py`; Rice coding did not — it cannot spend fractional bits. |
+| ragged-decimal numeric columns | **Tried, measured, reverted.** `latitude` is rejected as numeric because its decimal places vary row to row (11–15) and it has 1,153 blanks — and since every modern language prints floats at shortest-round-trip precision, *every* real float column is ragged. Recovering them by storing a per-cell decimal count and a null mask looked obviously right and made things **9–23% worse**. Two reasons. Scaling to the column's maximum decimal count inflates every value to ~4x10^16, so consecutive differences need 8 bytes each — worse than the 18 characters of text xz already handles well. And more importantly, moving a column out of `text` removes it from the text-reordering machinery: `chicago_crimes` gains 19.3% from a text parent, and converting those columns to numbers gave all of it back. A per-column size probe cannot see that, because the loss lands somewhere else. |
 
 The exploratory scripts from the functional-dependency work (`fd_probe*.py`,
 `real_fd.py`, `gap_probe.py`, `skew.py`, `scaling.py`, `sensitivity.py`,
