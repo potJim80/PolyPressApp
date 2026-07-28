@@ -376,6 +376,30 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
         placed.add(b)
         order.append(b)
         remaining.remove(b)
+
+    # Never-worse, the same guard text columns already had.
+    #
+    # This asymmetry was doing real damage. Text parents are chosen by
+    # measurement and can decline; dictionary parents were chosen by
+    # conditional entropy and taken on trust. So every experiment that moved a
+    # column out of `text` -- ragged-decimal numerics, raising the dictionary
+    # threshold -- traded a measured decision for an unmeasured one and lost,
+    # and the loss landed on a different column than the one being changed,
+    # which is why per-column probes never saw it coming.
+    #
+    # Entropy stays as the nominator; it is good at that and cheap. What is
+    # added is the check that the nomination actually pays. A parent is kept
+    # only if permuting by it beats leaving the column alone.
+    for b in order:
+        a = parent.get(b)
+        if a is None:
+            continue
+        ids = plan[b]["ids"]
+        perm = np.argsort(plan[a]["ids"], kind="stable")
+        w = _width(len(plan[b]["alpha"]))
+        if _probe_bytes(ids[perm].astype(w).tobytes()) >= \
+                _probe_bytes(ids.astype(w).tobytes()):
+            parent[b] = None
     return parent, order
 
 
@@ -393,6 +417,10 @@ _PROBE = dict(format=lzma.FORMAT_RAW,
 
 def _probe_len(cells: List[str]) -> int:
     return len(lzma.compress("\n".join(cells).encode("utf-8"), **_PROBE))
+
+
+def _probe_bytes(b: bytes) -> int:
+    return len(lzma.compress(b, **_PROBE))
 
 
 def pick_text_parents(plan, nrows, parent, order) -> Dict[int, Optional[int]]:

@@ -671,6 +671,41 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
             }
     }
 
+    /* Never-worse, the same guard text columns already had.
+     *
+     * Text parents were chosen by measurement and could decline; dictionary
+     * parents were chosen by conditional entropy and taken on trust. That
+     * asymmetry did real damage -- every experiment that moved a column out
+     * of `text` traded a measured decision for an unmeasured one and lost,
+     * and the loss landed on a different column than the one being changed.
+     * Entropy stays as the nominator; this checks the nomination pays. */
+    for (size_t oi = 0; oi < no; oi++) {
+        size_t b = order[oi];
+        long a = parent[b];
+        if (a < 0) continue;
+        size_t alen = plan[b].nalpha;
+        int wb = alen <= 256 ? 1 : (alen <= 65536 ? 2 : 4);
+        KVI *kv = malloc((nrows ? nrows : 1) * sizeof(KVI));
+        int64_t *pv = plan[a].ids;
+        if (!kv) continue;
+        for (size_t i = 0; i < nrows; i++) { kv[i].v = pv[i]; kv[i].i = i; }
+        qsort(kv, nrows, sizeof(KVI), kvi_cmp);
+        uint8_t *flat = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
+        uint8_t *perm = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
+        if (!flat || !perm) { free(kv); free(flat); free(perm); continue; }
+        for (size_t i = 0; i < nrows; i++) {
+            uint32_t v0 = (uint32_t)plan[b].ids[i];
+            uint32_t v1 = (uint32_t)plan[b].ids[kv[i].i];
+            memcpy(flat + i * (size_t)wb, &v0, (size_t)wb);
+            memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
+        }
+        free(kv);
+        size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
+        size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
+        free(flat); free(perm);
+        if (cost_perm >= cost_flat) parent[b] = -1;
+    }
+
     for (size_t i = 0; i < nd; i++) free(sample[i]);
     free(sample); free(base); free(distinct);
     free(gain); free(placed); free(remaining);
