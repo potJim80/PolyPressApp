@@ -104,10 +104,16 @@ static int64_t *undiff(int64_t *d, size_t dn, const int64_t *warm, int k,
         if (j == 0) {
             first = warm[0];
         } else {
-            /* j-th finite difference of warm, first element */
+            /* j-th finite difference of warm, first element.
+             *
+             * `len` used to be `k` unclamped while tmp is eight elements, so a
+             * header claiming k = 2^20 walked a million entries off the end of
+             * a stack array -- a segfault from a well-formed archive. The
+             * caller now refuses k outside 0..4, which is all the encoder can
+             * emit; this clamp is the second line of defence. */
             int64_t tmp[8];
             for (int i = 0; i <= k && i < 8; i++) tmp[i] = warm[i];
-            int len = k;
+            int len = k < 8 ? k : 8;
             for (int r = 0; r < j; r++) {
                 for (int i = 0; i < len - 1; i++) tmp[i] = tmp[i + 1] - tmp[i];
                 len--;
@@ -453,6 +459,10 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         } else if (!strcmp(jk->str, "num")) {
             int k = (int)js_int(js_get(sp, "k"), 0);
             int dec = (int)js_int(js_get(sp, "dec"), 0);
+            /* diff_order only ever emits 0..4, and fmt_fixed_one indexes a
+             * 19-entry POW10 table. Anything outside those was not written by
+             * this encoder, and trusting it reads off the end of an array. */
+            if (k < 0 || k > 4 || dec < 0 || dec > 18) goto fail_ids;
             size_t want = nrows >= (size_t)k ? nrows - (size_t)k : 0;
             if (bi >= nbins) goto fail_ids;
             int64_t *d = unpack_ints(cut[bi], cutlen[bi], want);
@@ -559,6 +569,8 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             size_t pos = (size_t)js_int(&g->items[c], 0);
             if (pos >= ncols) continue;
             int dec = (int)js_int(js_get(&jcols->items[pos], "dec"), 0);
+            /* same POW10 bound as the ungrouped numeric path */
+            if (dec < 0 || dec > 18) { free(M); goto fail_ids; }
             Str *cells = malloc(nrows * sizeof(Str));
             size_t *offs = malloc(nrows * sizeof(size_t));
             size_t *lens = malloc(nrows * sizeof(size_t));
