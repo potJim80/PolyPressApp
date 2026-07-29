@@ -725,7 +725,57 @@ def _width(n: int) -> str:
 # lengths compress to almost nothing and the blob compresses exactly as well
 # as the joined form did.
 
-def _pack_strings(groups: List[List[str]]):
+def _front_code(words: List[str]) -> bytes:
+    """Sorted words as (shared prefix length, remainder).
+
+    A dictionary column's alphabet is stored sorted, so neighbours share long
+    prefixes -- "CHICAGO AVE", "CHICAGO BLVD". Front-coding replaces each word
+    with how much it shares with the previous one plus the rest.
+
+    Worth being sceptical of, because RLE over the same blob was tried here and
+    bought +0.3%: xz already finds adjacent repeats. This is a different shape
+    of redundancy, and measured end to end it is worth -1.19% overall and
+    -7.39% on seattle_fire911 -- but it LOSES on four of thirteen datasets, so
+    it is chosen by measurement rather than applied on principle.
+
+    The prefix length is one byte, capped at 255. Only ever applied to groups
+    with no embedded newline, so no remainder can contain one either and the
+    newline join stays unambiguous.
+
+    The shared prefix is counted in BYTES, not characters. That is not a
+    detail: the C port compares bytes, and if this counted characters the two
+    would produce different archives for any word with a non-ASCII prefix.
+    Cutting a multi-byte character in half is harmless here because the halves
+    are only ever concatenated back together before decoding.
+    """
+    lens = bytearray()
+    rest = []
+    prev = b""
+    for w in words:
+        b = w.encode("utf-8")
+        n = 0
+        m = min(len(prev), len(b), 255)
+        while n < m and prev[n] == b[n]:
+            n += 1
+        lens.append(n)
+        rest.append(b[n:])
+        prev = b
+    return bytes(lens) + b"\n".join(rest)
+
+
+def _un_front_code(chunk: bytes, n: int) -> List[str]:
+    lens = chunk[:n]
+    rest = chunk[n:].split(b"\n")
+    out: List[str] = []
+    prev = b""
+    for i in range(n):
+        w = prev[:lens[i]] + rest[i]
+        out.append(w.decode("utf-8"))
+        prev = w
+    return out
+
+
+def _pack_strings(groups: List[List[str]], nfront: int = 0):
     """Concatenate string groups, paying for length prefixes only where a
     value actually contains a newline.
 
@@ -735,13 +785,16 @@ def _pack_strings(groups: List[List[str]]):
     is newline-joined; the rare group that is not carries an explicit length
     array. On real tables no group needs one, and the joined layout is kept."""
     parts, metas, length_arrays = [], [], []
-    for g in groups:
+    for i, g in enumerate(groups):
         if any("\n" in s for s in g):
             blobs = [s.encode("utf-8") for s in g]
             data = b"".join(blobs)
             length_arrays.append(np.fromiter((len(b) for b in blobs),
                                              dtype=np.int64, count=len(blobs)))
             metas.append({"n": len(g), "b": len(data), "nl": False})
+        elif i < nfront:
+            data = _front_code(g)
+            metas.append({"n": len(g), "b": len(data), "nl": True})
         else:
             data = "\n".join(g).encode("utf-8")
             metas.append({"n": len(g), "b": len(data), "nl": True})
@@ -749,16 +802,20 @@ def _pack_strings(groups: List[List[str]]):
     return b"".join(parts), metas, length_arrays
 
 
-def _unpack_strings(data: bytes, metas, length_bins) -> List[List[str]]:
+def _unpack_strings(data: bytes, metas, length_bins,
+                    nfront: int = 0) -> List[List[str]]:
     out, at, li = [], 0, 0
-    for m in metas:
+    for i, m in enumerate(metas):
         chunk = data[at:at + m["b"]]
         at += m["b"]
         if m["n"] == 0:
             out.append([])
             continue
         if m["nl"]:
-            out.append(chunk.decode("utf-8").split("\n"))
+            if i < nfront:
+                out.append(_un_front_code(chunk, m["n"]))
+            else:
+                out.append(chunk.decode("utf-8").split("\n"))
         else:
             lengths = unpack_ints(length_bins[li], m["n"])
             li += 1
@@ -959,17 +1016,35 @@ def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
         side = np.concatenate([M[0], np.diff(M, axis=0)[:, 0]])
         bins.append(pack_ints(np.concatenate([side, D.ravel()])))
 
+    # Front-coding the dictionary alphabets, measured. The alphabets are the
+    # first len(order) string groups by construction, and they are sorted, so
+    # neighbours share long prefixes. Worth -1.19% overall and -7.39% on
+    # seattle_fire911 -- but it LOSES on four of thirteen datasets, so the
+    # blob is built both ways and the smaller kept.
+    #
+    # This guard is cheap in a way the others are not: it re-compresses only
+    # the text pile, not the whole container. Compare the exceptions guard,
+    # which costs a second full encode.
     txt_data, smeta, length_arrays = _pack_strings(sgroups)
+    txt_b = lzma.compress(txt_data, **XZ)
+    fc = 0
+    if order:
+        alt_data, alt_smeta, _alt_len = _pack_strings(sgroups, len(order))
+        alt_b = lzma.compress(alt_data, **XZ)
+        if len(alt_b) < len(txt_b):
+            txt_b, smeta, fc = alt_b, alt_smeta, 1
+
     n_before = len(bins)
     bins.extend(pack_ints(a) for a in length_arrays)   # always last
     meta = {"columns": table.columns, "nrows": nrows, "cols": specs,
             "groups": groups, "order": order,
             "bins": [len(b) for b in bins],
             "smeta": smeta, "nlenbins": len(bins) - n_before}
+    if fc:
+        meta["fc"] = 1
     meta_b = lzma.compress(json.dumps(meta, separators=(",", ":")).encode(),
                            **XZ)
     bin_b = lzma.compress(b"".join(bins), **XZ)
-    txt_b = lzma.compress(txt_data, **XZ)
     blob = (MAGIC + len(meta_b).to_bytes(4, "big")
             + len(bin_b).to_bytes(4, "big") + len(txt_b).to_bytes(4, "big")
             + meta_b + bin_b + txt_b)
@@ -1009,7 +1084,10 @@ def decode(blob: bytes):
 
     nlen = meta["nlenbins"]
     length_bins = cuts[len(cuts) - nlen:] if nlen else []
-    texts = _unpack_strings(txt_data, meta["smeta"], length_bins)
+    # the dictionary alphabets are the first len(order) groups, and are
+    # front-coded only when the encoder measured that it paid
+    nfront = len(meta["order"]) if meta.get("fc") else 0
+    texts = _unpack_strings(txt_data, meta["smeta"], length_bins, nfront)
 
     cols: List[Optional[List[str]]] = [None] * len(specs)
     ids_by_pos: Dict[int, np.ndarray] = {}

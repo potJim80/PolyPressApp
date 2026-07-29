@@ -291,7 +291,16 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     size_t ngroups_s = jsmeta->count;
     Str  **sgroup = calloc(ngroups_s ? ngroups_s : 1, sizeof(Str *));
     size_t *sgroup_n = calloc(ngroups_s ? ngroups_s : 1, sizeof(size_t));
-    if (!sgroup || !sgroup_n) goto fail_cuts;
+    /* Front-coded words are rebuilt from a prefix plus a remainder, so unlike
+     * every other group they are not slices into the text blob and need
+     * storage of their own. One owned buffer per group keeps the pointers
+     * stable -- appending them all into one arena would invalidate earlier
+     * groups every time it grew. */
+    uint8_t **fcown = calloc(ngroups_s ? ngroups_s : 1, sizeof(uint8_t *));
+    if (!sgroup || !sgroup_n || !fcown) goto fail_cuts;
+    /* the dictionary alphabets are the first `norder` groups, by construction */
+    size_t norder = jorder->count;
+    int fc_on = (int)js_int(js_get(meta, "fc"), 0);
     {
         size_t at = 0, li = 0;
         size_t first_len_bin = nbins - nlen;
@@ -307,7 +316,45 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             if (cnt == 0) { sgroup[g] = NULL; continue; }
             Str *arr = malloc(cnt * sizeof(Str));
             if (!arr) goto fail_sgroup;
-            if (nl) {
+            if (nl && fc_on && g < norder) {
+                /* cnt prefix-length bytes, then newline-joined remainders */
+                if (nb < cnt) { free(arr); goto fail_sgroup; }
+                const unsigned char *pl = (const unsigned char *)chunk;
+                const char *rest = chunk + cnt;
+                size_t restn = nb - cnt;
+                size_t *offs = malloc(cnt * sizeof(size_t));
+                size_t *wl = malloc(cnt * sizeof(size_t));
+                if (!offs || !wl) { free(offs); free(wl); free(arr);
+                                    goto fail_sgroup; }
+                Buf ob, prevw;
+                buf_init(&ob);
+                buf_init(&prevw);
+                size_t start = 0, k = 0;
+                for (size_t i = 0; i <= restn && k < cnt; i++) {
+                    if (i == restn || rest[i] == '\n') {
+                        /* a crafted archive can claim a prefix longer than the
+                         * previous word; clamp rather than read past it */
+                        size_t sh = pl[k];
+                        if (sh > prevw.len) sh = prevw.len;
+                        offs[k] = ob.len;
+                        buf_put(&ob, (const char *)prevw.data, sh);
+                        buf_put(&ob, rest + start, i - start);
+                        wl[k] = sh + (i - start);
+                        prevw.len = 0;
+                        buf_put(&prevw, (const char *)ob.data + offs[k], wl[k]);
+                        k++;
+                        start = i + 1;
+                    }
+                }
+                while (k < cnt) { offs[k] = ob.len; wl[k] = 0; k++; }
+                buf_free(&prevw);
+                for (size_t j = 0; j < cnt; j++) {
+                    arr[j].p = (const char *)ob.data + offs[j];
+                    arr[j].n = wl[j];
+                }
+                fcown[g] = ob.data;      /* ownership moves to fcown */
+                free(offs); free(wl);
+            } else if (nl) {
                 size_t start = 0, k = 0;
                 for (size_t i = 0; i <= nb && k < cnt; i++) {
                     if (i == nb || chunk[i] == '\n') {
@@ -638,8 +685,8 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     }
     free(cols); free(ids_by_pos);
     free(grp_ex_pos); free(grp_ex_val); free(grp_ex_n);
-    for (size_t g = 0; g < ngroups_s; g++) free(sgroup[g]);
-    free(sgroup); free(sgroup_n);
+    for (size_t g = 0; g < ngroups_s; g++) { free(sgroup[g]); free(fcown[g]); }
+    free(sgroup); free(sgroup_n); free(fcown);
     free(cut); free(cutlen);
     js_free(meta);
     buf_free(&metab); buf_free(&rawb); buf_free(&txtb);
@@ -657,8 +704,11 @@ fail_ids:
 fail_cols:
     free(cols);
 fail_sgroup:
-    for (size_t g = 0; g < ngroups_s; g++) free(sgroup[g]);
-    free(sgroup); free(sgroup_n);
+    for (size_t g = 0; g < ngroups_s; g++) {
+        if (sgroup) free(sgroup[g]);
+        if (fcown) free(fcown[g]);
+    }
+    free(sgroup); free(sgroup_n); free(fcown);
 fail_cuts:
     free(cut); free(cutlen);
 fail_meta:

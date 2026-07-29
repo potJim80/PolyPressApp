@@ -1324,6 +1324,98 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
         smeta[g].n = sgn[g];
         smeta[g].b = txt.len - at;
     }
+    /* Front-coding the dictionary alphabets, measured. Mirrors fast.py: the
+     * alphabets are the first P.norder string groups by construction and are
+     * sorted, so neighbours share long prefixes. Worth -1.19% overall and
+     * -7.39% on seattle_fire911, but it LOSES on four of thirteen datasets, so
+     * the blob is built both ways and the smaller kept.
+     *
+     * The shared prefix is counted in BYTES and capped at 255. Python counts
+     * bytes too, deliberately -- counting characters there would produce a
+     * different archive for any word with a non-ASCII prefix.
+     *
+     * Cheap as guards go: this re-compresses only the text pile, where the
+     * exceptions guard costs a second full encode. */
+    /* Declared here rather than at the container, because the text pile is
+     * compressed early: the metadata carries the chosen group sizes, so the
+     * plain-versus-front-coded decision has to be made before meta is built. */
+    Buf mz, bz, tz;
+    buf_init(&mz); buf_init(&bz); buf_init(&tz);
+    int rc = -1;
+
+    Buf txt2;
+    buf_init(&txt2);
+    SMeta *smeta2 = calloc(nsg ? nsg : 1, sizeof(SMeta));
+    int fc_possible = (P.norder > 0) && smeta2 != NULL;
+    if (fc_possible) {
+        for (size_t g = 0; g < nsg; g++) {
+            int has_nl = 0;
+            for (size_t i = 0; i < sgn[g]; i++)
+                if (memchr(sg[g][i].p, '\n', sg[g][i].n)) { has_nl = 1; break; }
+            size_t at = txt2.len;
+            if (!has_nl && g < P.norder) {
+                for (size_t i = 0; i < sgn[g]; i++) {
+                    size_t n = 0;
+                    if (i) {
+                        Str p = sg[g][i - 1], c = sg[g][i];
+                        size_t m = p.n < c.n ? p.n : c.n;
+                        if (m > 255) m = 255;
+                        while (n < m && p.p[n] == c.p[n]) n++;
+                    }
+                    buf_putc(&txt2, (char)(unsigned char)n);
+                }
+                for (size_t i = 0; i < sgn[g]; i++) {
+                    size_t n = 0;
+                    if (i) {
+                        Str p = sg[g][i - 1], c = sg[g][i];
+                        size_t m = p.n < c.n ? p.n : c.n;
+                        if (m > 255) m = 255;
+                        while (n < m && p.p[n] == c.p[n]) n++;
+                        buf_putc(&txt2, '\n');
+                    }
+                    buf_put(&txt2, sg[g][i].p + n, sg[g][i].n - n);
+                }
+                smeta2[g].nl = 1;
+            } else if (has_nl) {
+                for (size_t i = 0; i < sgn[g]; i++)
+                    buf_put(&txt2, sg[g][i].p, sg[g][i].n);
+                smeta2[g].nl = 0;
+            } else {
+                for (size_t i = 0; i < sgn[g]; i++) {
+                    if (i) buf_putc(&txt2, '\n');
+                    buf_put(&txt2, sg[g][i].p, sg[g][i].n);
+                }
+                smeta2[g].nl = 1;
+            }
+            smeta2[g].n = sgn[g];
+            smeta2[g].b = txt2.len - at;
+        }
+    }
+
+    int use_fc = 0;
+    if (ppz_lzma_compress(txt.data, txt.len, &tz)) {
+        buf_free(&txt2); free(smeta2); buf_free(&lenbins); free(lenbinsz);
+        goto done;
+    }
+    if (fc_possible) {
+        Buf tz2;
+        buf_init(&tz2);
+        if (!ppz_lzma_compress(txt2.data, txt2.len, &tz2) && tz2.len < tz.len) {
+            buf_free(&tz);
+            buf_init(&tz);
+            buf_put(&tz, tz2.data, tz2.len);
+            use_fc = 1;
+        }
+        buf_free(&tz2);
+    }
+    if (use_fc) {
+        SMeta *tmp = smeta;
+        smeta = smeta2;
+        smeta2 = tmp;
+    }
+    buf_free(&txt2);
+    free(smeta2);
+
     /* length arrays always go last in the binary payload */
     buf_put(&bins, lenbins.data, lenbins.len);
     for (size_t i = 0; i < nlenbins; i++) binsz[nbins++] = lenbinsz[i];
@@ -1424,6 +1516,9 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     }
     buf_put(&meta, "],\"nlenbins\":", 13);
     json_int(&meta, (long long)nlenbins);
+    /* fast.py sets meta["fc"] on an already-built dict, so it lands last and
+     * the metadata is compared byte for byte */
+    if (use_fc) buf_put(&meta, ",\"fc\":1", 7);
     buf_putc(&meta, '}');
 
     /* Did any of the three ideas actually do something? A parent-sorted
@@ -1445,12 +1540,9 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     }
 
     /* ------------------------------------------------------- container */
-    Buf mz, bz, tz;
-    buf_init(&mz); buf_init(&bz); buf_init(&tz);
-    int rc = -1;
     if (ppz_lzma_compress(meta.data, meta.len, &mz)) goto done;
     if (ppz_lzma_compress(bins.data, bins.len, &bz)) goto done;
-    if (ppz_lzma_compress(txt.data, txt.len, &tz)) goto done;
+    /* tz is already the winner of the plain / front-coded comparison above */
 
     buf_free(out);
     buf_put(out, PPZ_MAGIC, 4);
