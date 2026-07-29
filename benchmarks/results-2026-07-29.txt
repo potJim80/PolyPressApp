@@ -183,3 +183,50 @@ The rest were run as 8 MB slices to stay inside the 1-2 GB budget, so their
 ratios are not directly comparable to the published full-file numbers:
   cdc_nndss 4.94x, chicago_crimes 1.30x, wa_ev_population 1.76x.
 corpus-results.txt remains the canonical full-file record and is unchanged.
+
+================================================================================
+10. THE OTHER TWO ALL-OR-NOTHING SCREENS -- both measured, both stay
+================================================================================
+The numeric gate was all or nothing and one blank cell cost 41% of the yield
+curve. Two screens have the same shape. Both measured end to end over 21
+tables; neither should change.
+
+A. THE 50% DICTIONARY THRESHOLD
+A column is dictionary-encoded only if its distinct count is at most half its
+row count. One row over and it falls to text, which gets the least modelling.
+
+  threshold      0.5 (ships)      0.6         0.75        0.9
+  total            9,710,712   9,719,505   9,850,119   9,948,278
+  vs shipped           0.00%      +0.09%      +1.44%      +2.45%
+
+Raising it loses, and it keeps losing as it rises. This CONFIRMS the earlier
+result (4-14% worse) and, more usefully, DISPROVES the hypothesis attached to
+it. The theory was that raising the threshold failed only because dictionary
+parents were unmeasured, and that fixing that (20dd96e) would unblock it. That
+fix has been in for two sessions and the threshold still loses. The
+prerequisite theory was wrong; drop it.
+
+Per file it is genuinely mixed at 0.6 -- nyc_311 gains 5.0% (376,335 ->
+357,394) and nyc_collisions 0.3%, while chicago_crimes loses 1.4%,
+chicago_permits 1.8% and usgs_quakes 1.0%. So the right threshold is
+file-dependent, and picking it per file would mean another double encode --
+which section 6 has just shown is the most expensive thing in this codec.
+Not worth it for +0.09%.
+
+B. THE EXACT-DECIMAL RULE FOR 2D GROUPS
+A group requires prev.dec == col.dec EXACTLY, so one column quoted to a
+different number of decimals ends the run however similar the quantities are.
+Relaxed to "within one decimal place":
+
+  every table that forms a group at all:  +0 bytes. Total 4,492,243 either way.
+
+It changes nothing. On weather_hourly the looser rule forms 2 groups where the
+strict rule forms 0 -- and the end-to-end guard then rejects both, so the file
+is byte-identical. The strict rule is costing nothing on this data, and the
+guard is visibly doing its job on the one case where the rule was the only
+thing standing in the way.
+
+CONCLUSION: the all-or-nothing lesson does NOT generalise to these two. It was
+specific to the numeric gate, where the discarded column was large, smooth and
+the sole gateway to the planar predictor. Worth having asked; worth writing
+down that the answer was no.
