@@ -622,8 +622,10 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         free(cols[j].cells);
         buf_free(&cols[j].store);
         free(ids_by_pos[j]);
+        free(grp_ex_pos[j]);
     }
     free(cols); free(ids_by_pos);
+    free(grp_ex_pos); free(grp_ex_val); free(grp_ex_n);
     for (size_t g = 0; g < ngroups_s; g++) free(sgroup[g]);
     free(sgroup); free(sgroup_n);
     free(cut); free(cutlen);
