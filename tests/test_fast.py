@@ -119,7 +119,7 @@ def check_fallback() -> list:
         [["".join(rnd.choice(al) for _ in range(24)),
           "".join(rnd.choice(al) for _ in range(24))] for _ in range(3000)])
 
-    blob, fired = fast._encode_plan(noise)
+    blob, fired, _ngroups = fast._encode_plan(noise)
     if fired:
         bad.append("noise table fired {} tricks; expected 0".format(fired))
     chosen = fast.encode(noise)
@@ -159,7 +159,7 @@ def check_fallback() -> list:
         ["zip", "city"],
         [[["98101", "98402", "98501"][i % 3],
           ["Seattle", "Tacoma", "Olympia"][i % 3]] for i in range(2000)])
-    sblob, sfired = fast._encode_plan(structured)
+    sblob, sfired, _sngroups = fast._encode_plan(structured)
     if not sfired:
         bad.append("structured table fired no tricks")
     if fast.encode(structured) != sblob:

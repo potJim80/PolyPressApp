@@ -405,8 +405,26 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
 
 # How many entropy-nominated parents actually get compressed and compared.
 # Each candidate costs one cheap pass over the column, and the score is a good
-# enough nominator that the winner is almost always in the first few.
-TEXT_PARENT_CANDIDATES = 3
+# enough nominator that the winner is usually in the first few -- but "usually"
+# was doing more work than it should. Measured end to end over 18 tables:
+#
+#     candidates   1        3        5       10      all
+#     total     8,839,893 8,833,390 8,800,253 8,796,082 8,790,196
+#     vs 3        +0.07%    0.00%   -0.38%   -0.42%   -0.49%
+#     encode s      9.6     10.4     11.2     12.9     17.4
+#
+# 5 takes the bulk of the available gain for 8% more encode time; going to
+# "all" costs 67% more time for a further 0.11%. The win is concentrated where
+# it is most wanted -- chicago_permits, the worst dataset in the corpus, drops
+# 3.5% at this setting.
+#
+# One caveat worth keeping: widening this is NOT monotonic per file. Each
+# column's choice is probed alone, but every text column ends up in one shared
+# blob that is compressed together, so a locally better ordering can be
+# globally worse -- noaa_gsoy_ord is 6,559 B at 3 and 6,588 B at 10. That is
+# the same local-versus-global trap as the 2D groups, and it is the reason
+# this constant is set by measurement rather than raised to "all".
+TEXT_PARENT_CANDIDATES = 5
 
 # A fast stand-in for the real entropy stage, used only to choose between
 # orderings. Preset 1 ranks the candidates the same way preset 9 does at a
@@ -620,17 +638,42 @@ def encode(table) -> bytes:
     finisher may well beat it. When any trick fired, the modelled output wins
     by a margin no general compressor closes, and the extra work is skipped.
     """
-    blob, fired = _encode_plan(table)
+    blob, fired, ngroups = _encode_plan(table)
+
+    # The planar predictor was the last decision in this codec taken on trust,
+    # and measuring it showed the trust was misplaced: of the three tables in
+    # the corpus where a group forms at all, two came out LARGER for it --
+    # nyc_collisions by 2,377 B and wide_random by 15,733 B -- against one real
+    # win of 5.98% on random_floats. Grouped columns lose their own measured
+    # differencing order and are forced into one fixed scheme, so a group
+    # trades several measured decisions for a single unmeasured one, which is
+    # exactly the asymmetry commit 20dd96e removed from the parent search.
+    #
+    # The guard has to be END TO END, not per group. Two cheaper checks were
+    # tried and both give the wrong answer: raw packed length shows -0.0% on
+    # nyc_collisions where the real effect is +28.1%, and a per-group probe
+    # says wide_random gains 1.4% where the file actually loses 0.69% -- the
+    # group's bytes are concatenated with every other payload and compressed
+    # together, so nothing short of the whole container can see the result.
+    #
+    # Encoding twice is affordable because groups are rare: they formed on 2 of
+    # 18 tables here and 3 of 24 in the full sweep. Tables without a group pay
+    # nothing at all.
+    if ngroups:
+        alt, alt_fired, _ = _encode_plan(table, use_2d=False)
+        if len(alt) < len(blob):
+            blob, fired = alt, alt_fired
+
     if fired:
         return blob
     alt = _raw_candidates(table, len(blob))
     return alt if alt is not None else blob
 
 
-def _encode_plan(table) -> Tuple[bytes, int]:
+def _encode_plan(table, use_2d: bool = True) -> Tuple[bytes, int, int]:
     plan = classify(table)
     nrows = len(table.rows)
-    groups = find_2d_groups(plan, nrows)
+    groups = find_2d_groups(plan, nrows) if use_2d else []
     in_group = {pos: gi for gi, g in enumerate(groups) for pos in g}
     parent, order = pick_parents(plan, nrows)
 
@@ -703,7 +746,7 @@ def _encode_plan(table) -> Tuple[bytes, int]:
                  and s["parent"] is not None)
              + sum(1 for s in specs if s and s["kind"] == "num" and s["k"])
              + len(groups))
-    return blob, fired
+    return blob, fired, len(groups)
 
 
 def decode(blob: bytes):

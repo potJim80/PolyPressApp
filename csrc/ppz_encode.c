@@ -716,7 +716,7 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
 
 /* -------------------------------------------------------- text reordering */
 
-#define TEXT_PARENT_CANDIDATES 3
+#define TEXT_PARENT_CANDIDATES 5
 
 typedef struct { double g; size_t dp; } Cand;
 
@@ -913,15 +913,23 @@ static void json_int(Buf *b, long long v)
 
 typedef struct { size_t n, b; int nl; } SMeta;
 
-int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
+/* `use_2d` off skips the planar grouping entirely, which is safe because
+ * classify() callocs the plan: in_group stays 0 and group_idx stays -1, so
+ * every numeric column falls through to its own measured differencing order.
+ * `ngroups_out` reports how many groups formed, so the caller knows whether
+ * the second encode is worth running at all. */
+static int encode_modelled(const Table *t, Buf *out, long *fired,
+                           int use_2d, size_t *ngroups_out)
 {
     if (fired) *fired = 0;
+    if (ngroups_out) *ngroups_out = 0;
     size_t nc = t->ncols, nr = t->nrows;
     ColPlan *plan = classify(t);
     if (!plan) return -1;
 
     size_t ngroups = 0;
-    Group *groups = find_2d_groups(plan, nc, nr, &ngroups);
+    Group *groups = use_2d ? find_2d_groups(plan, nc, nr, &ngroups) : NULL;
+    if (ngroups_out) *ngroups_out = ngroups;
     Parents P = pick_parents(plan, nc, nr);
     if (!P.parent) { plan_free(plan, nc); return -1; }
 
@@ -1270,10 +1278,43 @@ static int raw_candidates(const Table *t, size_t limit, Buf *out)
     return found;
 }
 
+int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
+{
+    return encode_modelled(t, out, fired, 1, NULL);
+}
+
 int ppz_encode(const Table *t, Buf *out)
 {
     long fired = 0;
-    if (ppz_encode_modelled(t, out, &fired)) return -1;
+    size_t ngroups = 0;
+    if (encode_modelled(t, out, &fired, 1, &ngroups)) return -1;
+
+    /* The planar predictor, measured. Mirrors fast.encode exactly, and for the
+     * same reason: of the three corpus tables where a group forms at all, two
+     * came out LARGER for it. A grouped column loses its own measured
+     * differencing order to one fixed scheme, so a group trades several
+     * measured decisions for a single unmeasured one.
+     *
+     * End to end is the only check that works. Raw packed length shows -0.0%
+     * on nyc_collisions where the real effect is +28.1%, and a per-group probe
+     * says wide_random gains 1.4% where the file actually loses 0.69% -- the
+     * group's bytes are compressed together with every other payload, so
+     * nothing short of the whole container can see the result.
+     *
+     * Groups formed on 2 of 18 tables here, so the second encode is rare. */
+    if (ngroups) {
+        Buf alt;
+        buf_init(&alt);
+        long alt_fired = 0;
+        if (!encode_modelled(t, &alt, &alt_fired, 0, NULL)
+                && alt.len < out->len) {
+            buf_free(out);
+            buf_put(out, alt.data, alt.len);
+            fired = alt_fired;
+        }
+        buf_free(&alt);
+    }
+
     /* Only when none of the three tricks fired -- that is precisely the case
      * where this codec has degenerated into "split into columns, then xz" and
      * a different finisher may well beat it. Running the candidates
