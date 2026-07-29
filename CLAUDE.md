@@ -68,7 +68,14 @@ attic/         superseded work kept for the record
 table, by walking the parent chain (mean 2.78 hops on a 209-column survey).
 Re-forked from master on 2026-07-28. It consumes `fast.py` through
 `classify` / `pick_parents` / `pack_ints` / `diff_order`, so keep those
-signatures stable or it breaks silently. It has **no 2D groups and no text
+**semantics** stable or it breaks silently — and "silently" is literal. On
+2026-07-29 `classify` gained the lenient numeric path without changing any
+signature, and `ondemand.pack` had nowhere to store the exception cells, so it
+wrote the forward-filled values and dropped the originals: a blank came back
+as `0.09`, a `-0.0` as `0.19`. No error, a table that looks fine and is wrong.
+`pack` now passes `lenient=False` explicitly. **After any change to those four
+functions, merge master into `ondemand` and round-trip it** — no test on
+either branch catches this. It has **no 2D groups and no text
 reorder parents**, and costs ~15% size against the archival codec.
 
 ## Running things
