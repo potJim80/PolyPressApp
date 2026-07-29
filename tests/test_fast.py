@@ -70,6 +70,43 @@ EXTRA = {
     "all_unique": dtz.Table(
         ["u"], [["value-{}".format(i)] for i in range(400)]),
     "single_distinct": dtz.Table(["s"], [["x"] for _ in range(100)]),
+
+    # Numeric-with-exceptions. A column that is numeric apart from a few cells
+    # used to be discarded to the dictionary path entirely, and on the
+    # Treasury yield curve four blank cells in 72,048 cost 41% of the archive.
+    # These force each way a cell can fail while the column stays numeric.
+    "one_blank": dtz.Table(
+        ["v"], [["" if i == 137 else "{:.2f}".format(1.0 + i * 0.01)]
+                for i in range(400)]),
+    "blank_first": dtz.Table(
+        ["v"], [["" if i < 3 else str(i * 3)] for i in range(400)]),
+    "blank_last": dtz.Table(
+        ["v"], [["" if i >= 397 else str(i * 3)] for i in range(400)]),
+    "minus_zero_rare": dtz.Table(
+        ["v"], [["-0.0" if i == 200 else "{:.1f}".format(i * 0.5 - 100)]
+                for i in range(400)]),
+    "stray_decimals": dtz.Table(
+        ["v"], [["{:.3f}".format(i) if i == 55 else "{:.2f}".format(i)]
+                for i in range(400)]),
+    "leading_zero_rare": dtz.Table(
+        ["v"], [["007" if i == 9 else str(i)] for i in range(400)]),
+    # Just past the 5% screen, so the lenient path must decline it and the
+    # column must stay a dictionary column.
+    "too_many_blanks": dtz.Table(
+        ["v"], [["" if i % 10 == 0 else str(i)] for i in range(400)]),
+    # Exceptions inside a commensurable group: the group is rebuilt first and
+    # the exceptions land afterwards, which is a different code path in both
+    # implementations.
+    "grouped_with_blanks": dtz.Table(
+        ["a", "b", "c"],
+        [["" if (i == 100 and j == 1) else "{:.2f}".format(1.0 + i * 0.01
+                                                           + j * 0.05)
+          for j in range(3)] for i in range(200)]),
+    # A value past the 2^62 acceptance limit is an exception, not a refusal of
+    # the whole column -- and Python's arbitrary-precision ints must agree
+    # with the C parser about that.
+    "over_limit_rare": dtz.Table(
+        ["v"], [[str(2 ** 63) if i == 42 else str(i)] for i in range(400)]),
 }
 
 
@@ -119,7 +156,7 @@ def check_fallback() -> list:
         [["".join(rnd.choice(al) for _ in range(24)),
           "".join(rnd.choice(al) for _ in range(24))] for _ in range(3000)])
 
-    blob, fired, _ngroups = fast._encode_plan(noise)
+    blob, fired, _ngroups, _nlax = fast._encode_plan(noise)
     if fired:
         bad.append("noise table fired {} tricks; expected 0".format(fired))
     chosen = fast.encode(noise)
@@ -159,7 +196,7 @@ def check_fallback() -> list:
         ["zip", "city"],
         [[["98101", "98402", "98501"][i % 3],
           ["Seattle", "Tacoma", "Olympia"][i % 3]] for i in range(2000)])
-    sblob, sfired, _sngroups = fast._encode_plan(structured)
+    sblob, sfired, _sngroups, _snlax = fast._encode_plan(structured)
     if not sfired:
         bad.append("structured table fired no tricks")
     if fast.encode(structured) != sblob:

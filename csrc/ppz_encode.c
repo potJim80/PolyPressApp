@@ -333,6 +333,108 @@ static int64_t *numeric_column(const Table *t, size_t col, int *dec_out)
     return out;
 }
 
+/* A column that is numeric apart from a few cells that are not. Mirrors
+ * fast._numeric_lenient exactly.
+ *
+ * The numeric test is all or nothing, and that is expensive. The Treasury
+ * yield curve contains four blank cells in 72,048 and those four drop all
+ * eight rate columns to the dictionary path: 59,309 B instead of 34,891 B.
+ * One "-0.0" in 26,304 cells disqualifies a temperature column the same way.
+ *
+ * Exception slots are FORWARD-FILLED from the previous good value so the
+ * column keeps its full length and can still join a planar group -- worth
+ * another 18% on the yield curve beyond the 28% for being numeric at all.
+ * The fill values are never seen; the decoder overwrites those positions.
+ *
+ * The decimal count is the most common one, ties to the smaller, so the
+ * choice cannot depend on iteration order. Cells with more than 18 decimals
+ * are counted as exception candidates rather than binned, which keeps this
+ * histogram a fixed array and keeps Python in step. */
+#define EX_MAX_DEC 18
+#define EX_FRAC_NUM 5
+#define EX_FRAC_DEN 100
+
+static int64_t *numeric_column_lenient(const Table *t, size_t col, int *dec_out,
+                                       size_t **expos_out, size_t *nex_out)
+{
+    size_t n = t->nrows;
+    *expos_out = NULL;
+    *nex_out = 0;
+    if (n == 0) return NULL;
+    size_t limit = n * EX_FRAC_NUM / EX_FRAC_DEN;
+
+    size_t counts[EX_MAX_DEC + 1];
+    for (int i = 0; i <= EX_MAX_DEC; i++) counts[i] = 0;
+    size_t bad = 0, any = 0;
+    for (size_t i = 0; i < n; i++) {
+        int d = 0;
+        if (scan_decimals_cell(table_at(t, i, col), &d) || d > EX_MAX_DEC) {
+            if (++bad > limit) return NULL;
+            continue;
+        }
+        counts[d]++;
+        any = 1;
+    }
+    if (!any) return NULL;
+    int dec = 0;
+    for (int d = 1; d <= EX_MAX_DEC; d++)
+        if (counts[d] > counts[dec]) dec = d;   /* ties keep the smaller d */
+
+    int64_t *out = malloc(n * sizeof(int64_t));
+    char *isex = calloc(n ? n : 1, 1);
+    size_t *expos = malloc((limit + 1) * sizeof(size_t));
+    if (!out || !isex || !expos) { free(out); free(isex); free(expos);
+                                   return NULL; }
+    size_t nex = 0;
+    Buf chk;
+    buf_init(&chk);
+    for (size_t i = 0; i < n; i++) {
+        Str s = table_at(t, i, col);
+        int64_t v = 0;
+        int ok = parse_fixed_cell(s, dec, &v) == 0;
+        if (ok) {
+            size_t at = chk.len;
+            fmt_fixed_one(&chk, v, dec);
+            ok = (chk.len - at == s.n) && memcmp(chk.data + at, s.p, s.n) == 0;
+            chk.len = at;
+        }
+        if (ok) {
+            out[i] = v;
+        } else {
+            if (nex >= limit + 1) { ok = 0; goto too_many; }
+            expos[nex++] = i;
+            isex[i] = 1;
+            if (nex > limit) goto too_many;
+        }
+    }
+    buf_free(&chk);
+    if (nex == 0) { free(out); free(isex); free(expos); return NULL; }
+
+    /* forward fill, then patch a leading run with the first good value */
+    int have = 0;
+    int64_t fill = 0, first_good = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (isex[i]) { if (have) out[i] = fill; }
+        else { fill = out[i]; if (!have) { first_good = out[i]; have = 1; } }
+    }
+    if (!have) { free(out); free(isex); free(expos); return NULL; }
+    for (size_t i = 0; i < n; i++) {
+        if (!isex[i]) break;
+        out[i] = first_good;
+    }
+
+    free(isex);
+    *dec_out = dec;
+    *expos_out = expos;
+    *nex_out = nex;
+    return out;
+
+too_many:
+    buf_free(&chk);
+    free(out); free(isex); free(expos);
+    return NULL;
+}
+
 /* --------------------------------------------------------------------- plan */
 
 typedef enum { K_NUM, K_DICT, K_TEXT } Kind;
@@ -348,6 +450,8 @@ typedef struct {
     long     parent;    /* -1 none */
     int      in_group;
     int      group_idx;
+    size_t  *ex_pos;    /* rows this numeric column could not represent */
+    size_t   nex;       /* the strings themselves are read back from the table */
 } ColPlan;
 
 static void plan_free(ColPlan *p, size_t n)
@@ -356,11 +460,12 @@ static void plan_free(ColPlan *p, size_t n)
         free(p[i].ints);
         free(p[i].alpha);
         free(p[i].ids);
+        free(p[i].ex_pos);
     }
     free(p);
 }
 
-static ColPlan *classify(const Table *t)
+static ColPlan *classify(const Table *t, int lenient)
 {
     size_t nc = t->ncols, nr = t->nrows;
     ColPlan *plan = calloc(nc ? nc : 1, sizeof(ColPlan));
@@ -376,6 +481,18 @@ static ColPlan *classify(const Table *t)
             plan[j].ints = ints;
             plan[j].dec = dec;
             continue;
+        }
+        if (lenient) {
+            size_t *expos = NULL, nex = 0;
+            int64_t *lax = numeric_column_lenient(t, j, &dec, &expos, &nex);
+            if (lax) {
+                plan[j].kind = K_NUM;
+                plan[j].ints = lax;
+                plan[j].dec = dec;
+                plan[j].ex_pos = expos;
+                plan[j].nex = nex;
+                continue;
+            }
         }
         /* dictionary if the distinct count is small enough */
         Str *tmp = malloc((nr ? nr : 1) * sizeof(Str));
@@ -919,13 +1036,20 @@ typedef struct { size_t n, b; int nl; } SMeta;
  * `ngroups_out` reports how many groups formed, so the caller knows whether
  * the second encode is worth running at all. */
 static int encode_modelled(const Table *t, Buf *out, long *fired,
-                           int use_2d, size_t *ngroups_out)
+                           int use_2d, size_t *ngroups_out,
+                           int use_lenient, size_t *nlax_out)
 {
     if (fired) *fired = 0;
     if (ngroups_out) *ngroups_out = 0;
+    if (nlax_out) *nlax_out = 0;
     size_t nc = t->ncols, nr = t->nrows;
-    ColPlan *plan = classify(t);
+    ColPlan *plan = classify(t, use_lenient);
     if (!plan) return -1;
+    if (nlax_out) {
+        size_t nl = 0;
+        for (size_t j = 0; j < nc; j++) if (plan[j].nex) nl++;
+        *nlax_out = nl;
+    }
 
     size_t ngroups = 0;
     Group *groups = use_2d ? find_2d_groups(plan, nc, nr, &ngroups) : NULL;
@@ -935,12 +1059,14 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
 
     Buf bins;           /* concatenated binary payloads */
     buf_init(&bins);
-    size_t *binsz = malloc((nc * 2 + ngroups + 8) * sizeof(size_t));
+    /* Three bins per column is the ceiling: a dictionary or numeric payload,
+     * an exception-position bin, and a string-length bin. */
+    size_t *binsz = malloc((nc * 3 + ngroups + 8) * sizeof(size_t));
     size_t nbins = 0;
 
     /* string groups, in the order the decoder expects them */
-    Str **sg = calloc(nc * 2 + 8, sizeof(Str *));
-    size_t *sgn = calloc(nc * 2 + 8, sizeof(size_t));
+    Str **sg = calloc(nc * 3 + 8, sizeof(Str *));
+    size_t *sgn = calloc(nc * 3 + 8, sizeof(size_t));
     size_t nsg = 0;
 
     /* dictionary columns, in parent-before-child order */
@@ -984,6 +1110,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     pick_text_parents(t, plan, nc, nr, tparent);
 
     Str **text_cells = calloc(nc ? nc : 1, sizeof(Str *));
+    Str **ex_cells = calloc(nc ? nc : 1, sizeof(Str *));
     for (size_t pos = 0; pos < nc; pos++) {
         ColPlan *c = &plan[pos];
         if (c->kind == K_TEXT) {
@@ -1014,6 +1141,31 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
             pack_ints(k ? d : c->ints, k ? dn : nr, &bins);
             binsz[nbins++] = bins.len - at;
             free(d);
+        }
+        /* Exception cells, for grouped and ungrouped numeric columns alike,
+         * emitted immediately after the column's own payload in BOTH streams
+         * so the decoder recovers them at the same point in its own walk and
+         * needs no index. Positions are delta-coded: they are sorted and
+         * sparse, so the gaps pack far smaller than the indices. */
+        if (c->kind == K_NUM && c->nex) {
+            int64_t *gaps = malloc(c->nex * sizeof(int64_t));
+            size_t prev = 0;
+            for (size_t i = 0; i < c->nex; i++) {
+                gaps[i] = (int64_t)c->ex_pos[i] - (int64_t)prev;
+                prev = c->ex_pos[i];
+            }
+            size_t at = bins.len;
+            pack_ints(gaps, c->nex, &bins);
+            binsz[nbins++] = bins.len - at;
+            free(gaps);
+
+            Str *exv = malloc(c->nex * sizeof(Str));
+            for (size_t i = 0; i < c->nex; i++)
+                exv[i] = table_at(t, c->ex_pos[i], pos);
+            ex_cells[pos] = exv;
+            sg[nsg] = exv;
+            sgn[nsg] = c->nex;
+            nsg++;
         }
     }
 
@@ -1119,6 +1271,12 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
             json_int(&meta, c->dec);
             buf_put(&meta, ",\"g\":", 5);
             json_int(&meta, c->group_idx);
+            /* "nex" is appended last because fast.py adds it to an already
+             * built dict, and the metadata is compared byte for byte. */
+            if (c->nex) {
+                buf_put(&meta, ",\"nex\":", 7);
+                json_int(&meta, (long long)c->nex);
+            }
             buf_putc(&meta, '}');
         } else {
             buf_put(&meta, "{\"kind\":\"num\",\"dec\":", 20);
@@ -1130,7 +1288,12 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
                 if (i) buf_putc(&meta, ',');
                 json_int(&meta, (long long)c->ints[i]);
             }
-            buf_put(&meta, "]}", 2);
+            buf_putc(&meta, ']');
+            if (c->nex) {
+                buf_put(&meta, ",\"nex\":", 7);
+                json_int(&meta, (long long)c->nex);
+            }
+            buf_putc(&meta, '}');
         }
     }
     buf_put(&meta, "],\"groups\":[", 12);
@@ -1208,8 +1371,8 @@ done:
     buf_free(&mz); buf_free(&bz); buf_free(&tz);
     buf_free(&meta); buf_free(&txt); buf_free(&bins);
     free(smeta); free(binsz); free(sg); free(sgn);
-    for (size_t j = 0; j < nc; j++) free(text_cells[j]);
-    free(text_cells); free(tparent);
+    for (size_t j = 0; j < nc; j++) { free(text_cells[j]); free(ex_cells[j]); }
+    free(text_cells); free(ex_cells); free(tparent);
     for (size_t g = 0; g < ngroups; g++) free(groups[g].pos);
     free(groups);
     free(P.parent); free(P.order);
@@ -1280,14 +1443,37 @@ static int raw_candidates(const Table *t, size_t limit, Buf *out)
 
 int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
 {
-    return encode_modelled(t, out, fired, 1, NULL);
+    return encode_modelled(t, out, fired, 1, NULL, 1, NULL);
 }
 
 int ppz_encode(const Table *t, Buf *out)
 {
     long fired = 0;
-    size_t ngroups = 0;
-    if (encode_modelled(t, out, &fired, 1, &ngroups)) return -1;
+    size_t ngroups = 0, nlax = 0;
+    if (encode_modelled(t, out, &fired, 1, &ngroups, 1, &nlax)) return -1;
+
+    /* Numeric-with-exceptions, measured. Mirrors fast.encode. Recovering a
+     * column that is numeric apart from a few cells is worth 41% of the
+     * Treasury yield curve, but it also moves a column out of the dictionary
+     * path -- exactly the trade that made the reverted ragged-decimal work
+     * 9-23% worse. So the old behaviour is encoded too and kept if smaller,
+     * which makes this never-worse per file rather than on average. */
+    int lenient = 1;
+    if (nlax) {
+        Buf alt;
+        buf_init(&alt);
+        long alt_fired = 0;
+        size_t alt_groups = 0;
+        if (!encode_modelled(t, &alt, &alt_fired, 1, &alt_groups, 0, NULL)
+                && alt.len < out->len) {
+            buf_free(out);
+            buf_put(out, alt.data, alt.len);
+            fired = alt_fired;
+            ngroups = alt_groups;
+            lenient = 0;
+        }
+        buf_free(&alt);
+    }
 
     /* The planar predictor, measured. Mirrors fast.encode exactly, and for the
      * same reason: of the three corpus tables where a group forms at all, two
@@ -1306,7 +1492,7 @@ int ppz_encode(const Table *t, Buf *out)
         Buf alt;
         buf_init(&alt);
         long alt_fired = 0;
-        if (!encode_modelled(t, &alt, &alt_fired, 0, NULL)
+        if (!encode_modelled(t, &alt, &alt_fired, 0, NULL, lenient, NULL)
                 && alt.len < out->len) {
             buf_free(out);
             buf_put(out, alt.data, alt.len);

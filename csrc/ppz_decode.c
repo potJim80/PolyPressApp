@@ -186,6 +186,44 @@ static int decode_fallback(const uint8_t *blob, size_t n, Table *out, int bz)
     return rc;
 }
 
+/* Overwrite the cells a numeric column could not represent -- blanks, "-0.0",
+ * a stray decimal count. The encoder filled those slots with a neighbouring
+ * value so the column kept its full length, and stored the originals by
+ * position and as text. Positions were delta-coded.
+ *
+ * Every bound is checked against the archive's own arrays rather than trusted,
+ * because this reads files other people made. Mirrors fast._apply_exceptions.
+ * Returns 0 on success. */
+static int read_exceptions(const Js *sp, size_t nrows,
+                           const uint8_t **cut, const size_t *cutlen,
+                           size_t nbins, Str **sgroup, const size_t *sgroup_n,
+                           size_t ngroups_s, size_t *bi, size_t *ti,
+                           Str *cells)
+{
+    size_t nex = (size_t)js_int(js_get(sp, "nex"), 0);
+    if (!nex) return 0;
+    if (nex > nrows || *bi >= nbins || *ti >= ngroups_s) return -1;
+
+    int64_t *gaps = unpack_ints(cut[*bi], cutlen[*bi], nex);
+    (*bi)++;
+    if (!gaps) return -1;
+    Str *vals = sgroup[*ti];
+    size_t nvals = sgroup_n[*ti];
+    (*ti)++;
+
+    int64_t acc = 0;
+    for (size_t i = 0; i < nex; i++) {
+        acc += gaps[i];
+        if (acc < 0 || (size_t)acc >= nrows || i >= nvals || !vals) {
+            free(gaps);
+            return -1;
+        }
+        cells[acc] = vals[i];
+    }
+    free(gaps);
+    return 0;
+}
+
 int ppz_decode(const uint8_t *blob, size_t n, Table *out)
 {
     if (n < 4) return -1;
@@ -299,6 +337,12 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     int64_t **ids_by_pos = calloc(ncols ? ncols : 1, sizeof(int64_t *));
     if (!ids_by_pos) goto fail_cols;
 
+    /* exceptions belonging to grouped columns, held until the group is built */
+    int64_t **grp_ex_pos = calloc(ncols ? ncols : 1, sizeof(int64_t *));
+    Str     **grp_ex_val = calloc(ncols ? ncols : 1, sizeof(Str *));
+    size_t   *grp_ex_n   = calloc(ncols ? ncols : 1, sizeof(size_t));
+    if (!grp_ex_pos || !grp_ex_val || !grp_ex_n) goto fail_ids;
+
     size_t bi = 0, ti = 0;
 
     /* dictionary columns, in the order the encoder wrote them so a parent is
@@ -307,6 +351,10 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         size_t pos = (size_t)js_int(&jorder->items[oi], 0);
         if (pos >= ncols) goto fail_ids;
         const Js *sp = &jcols->items[pos];
+        /* A crafted archive can name more columns than it carries payloads
+         * for; reading past these arrays would be an out-of-bounds read on a
+         * file somebody else made. */
+        if (ti >= ngroups_s || bi >= nbins) goto fail_ids;
         Str *alpha = sgroup[ti];
         size_t alpha_n = sgroup_n[ti];
         ti++;
@@ -377,6 +425,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         }
 
         if (!strcmp(jk->str, "text")) {
+            if (ti >= ngroups_s) goto fail_ids;
             Str *src = sgroup[ti];
             size_t cnt = sgroup_n[ti];
             ti++;
@@ -405,6 +454,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             int k = (int)js_int(js_get(sp, "k"), 0);
             int dec = (int)js_int(js_get(sp, "dec"), 0);
             size_t want = nrows >= (size_t)k ? nrows - (size_t)k : 0;
+            if (bi >= nbins) goto fail_ids;
             int64_t *d = unpack_ints(cut[bi], cutlen[bi], want);
             bi++;
             if (!d) goto fail_ids;
@@ -433,8 +483,40 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                 cells[i].n = lens[i];
             }
             free(offs); free(lens); free(d);
+            /* Cells this column could not represent -- blanks, "-0.0", a
+             * stray decimal count. They were stored by position and as text,
+             * and overwrite the filled-in values the encoder put there. */
+            if (read_exceptions(sp, nrows, cut, cutlen, nbins, sgroup,
+                                sgroup_n, ngroups_s, &bi, &ti,
+                                cells) != 0) {
+                free(cells);
+                cols[pos].cells = NULL;
+                goto fail_ids;
+            }
             cols[pos].cells = cells;
             cols[pos].owned = 1;
+        } else if (!strcmp(jk->str, "grp")) {
+            /* A grouped column's exceptions are read here, in the same walk
+             * the encoder wrote them, but cannot be applied until the group
+             * has been rebuilt below. */
+            size_t nex = (size_t)js_int(js_get(sp, "nex"), 0);
+            if (nex) {
+                if (nex > nrows || bi >= nbins || ti >= ngroups_s)
+                    goto fail_ids;
+                int64_t *gaps = unpack_ints(cut[bi], cutlen[bi], nex);
+                bi++;
+                if (!gaps) goto fail_ids;
+                int64_t acc = 0;
+                for (size_t i = 0; i < nex; i++) {
+                    acc += gaps[i];
+                    if (acc < 0 || (size_t)acc >= nrows) { free(gaps); goto fail_ids; }
+                    gaps[i] = acc;
+                }
+                grp_ex_pos[pos] = gaps;
+                grp_ex_val[pos] = sgroup[ti];
+                grp_ex_n[pos] = nex < sgroup_n[ti] ? nex : sgroup_n[ti];
+                ti++;
+            }
         }
     }
 
@@ -445,6 +527,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         if (w == 0 || nrows == 0) continue;
         size_t n_side = w + (nrows - 1);
         size_t total = n_side + (nrows - 1) * (w - 1);
+        if (bi >= nbins) goto fail_ids;
         int64_t *flat = unpack_ints(cut[bi], cutlen[bi], total);
         bi++;
         if (!flat) goto fail_ids;
@@ -491,6 +574,11 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                 cells[i].n = lens[i];
             }
             free(offs); free(lens);
+            /* the group is rebuilt now, so the stashed exceptions can land */
+            for (size_t e = 0; e < grp_ex_n[pos]; e++) {
+                size_t p = (size_t)grp_ex_pos[pos][e];
+                if (p < nrows) cells[p] = grp_ex_val[pos][e];
+            }
             free(cols[pos].cells);
             cols[pos].cells = cells;
             cols[pos].owned = 1;
@@ -548,8 +636,10 @@ fail_ids:
         free(cols[j].cells);
         buf_free(&cols[j].store);
         if (ids_by_pos) free(ids_by_pos[j]);
+        if (grp_ex_pos) free(grp_ex_pos[j]);
     }
     free(ids_by_pos);
+    free(grp_ex_pos); free(grp_ex_val); free(grp_ex_n);
 fail_cols:
     free(cols);
 fail_sgroup:

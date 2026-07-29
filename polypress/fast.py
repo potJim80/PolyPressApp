@@ -177,7 +177,130 @@ def _numeric(cells):
     return np.array(num[0], dtype=np.int64), num[1]
 
 
-def classify(table) -> List[dict]:
+# At most this fraction of a column may be exception cells. It is a screen,
+# not the decision -- the decision is the whole-file guard in encode(). The
+# point of the screen is to refuse the pathological shapes cheaply: a column
+# of ragged-decimal floats has exceptions everywhere and is exactly the case
+# that was measured 9-23% worse and reverted.
+EX_MAX_FRACTION = 0.05
+# The C port's POW10 table stops here, so both implementations refuse beyond it.
+EX_MAX_DEC = 18
+
+_NUM_RE = codec._NUMERIC
+
+
+def _exact_int(cell: str, dec: int):
+    """The cell as a scaled integer, or None if it cannot be reproduced.
+
+    Exactly codec.as_numeric_column's per-cell test: parse, print back, and
+    require the original string. That is what rejects "007", "1.50" at three
+    decimals, and -- the case that started this -- "-0.0", which parses to 0
+    and prints as "0.0".
+    """
+    if not _NUM_RE.match(cell):
+        return None
+    v = codec.cell_to_int(cell, dec)
+    # The C parser refuses anything past the 2^62 acceptance limit while it is
+    # still accumulating digits, so a value beyond it is an exception there.
+    # Python's ints are arbitrary precision and would happily take it, which
+    # would put the two implementations on different plans for the same file.
+    if v >= INT_LIMIT or v <= -INT_LIMIT:
+        return None
+    return v if codec.int_to_cell(v, dec) == cell else None
+
+
+def _numeric_lenient(cells):
+    """A column that is numeric apart from a few cells that are not.
+
+    The numeric test is all or nothing, and that turns out to be expensive.
+    The Treasury yield curve -- the matrix table the planar predictor exists
+    for -- contains four blank cells in 72,048, and those four drop all eight
+    rate columns to the dictionary path. With no numeric columns there is no
+    group, and the archive is 59,309 B instead of 34,856 B. Four cells, 41% of
+    the file. Separately, one "-0.0" in 26,304 cells disqualifies a whole
+    temperature column and splits a 21-column matrix into 18 and 3.
+
+    The exceptions are recorded by position and stored as text, and their
+    slots in the integer array are FORWARD-FILLED from the previous good
+    value. Filling rather than removing is what keeps every column the same
+    length, which is what keeps the planar predictor able to stack them --
+    worth another 18% on the yield curve on top of the 28% for being numeric
+    at all. The fill values are never seen: the decoder overwrites those
+    positions with the stored strings.
+
+    The decimal count is the most common one rather than the maximum, with
+    ties going to the smaller count so the choice cannot depend on dict order.
+    Anything that does not reproduce exactly at that count becomes an
+    exception, which folds blanks, "-0.0", leading zeros and stray decimal
+    counts into one mechanism.
+    """
+    n = len(cells)
+    if n == 0:
+        return None
+    limit = int(n * EX_MAX_FRACTION)
+
+    counts: Dict[int, int] = {}
+    bad = 0
+    for c in cells:
+        if not _NUM_RE.match(c):
+            bad += 1
+            if bad > limit:
+                return None
+            continue
+        i = c.find(".")
+        d = 0 if i < 0 else len(c) - i - 1
+        if d > EX_MAX_DEC:
+            # counted as an exception candidate rather than as a decimal
+            # count, so the histogram stays a fixed 0..18 array in the C port
+            bad += 1
+            if bad > limit:
+                return None
+            continue
+        counts[d] = counts.get(d, 0) + 1
+    if not counts:
+        return None
+    dec = min(counts, key=lambda d: (-counts[d], d))
+
+    vals: List[Optional[int]] = [None] * n
+    expos: List[int] = []
+    exvals: List[str] = []
+    for i, c in enumerate(cells):
+        v = _exact_int(c, dec)
+        if v is None:
+            expos.append(i)
+            exvals.append(c)
+            if len(expos) > limit:
+                return None
+        else:
+            vals[i] = v
+    if not expos:
+        return None                      # plain _numeric already handles this
+
+    # forward fill, then patch any leading run with the first good value
+    fill = None
+    first_good = None
+    for i in range(n):
+        if vals[i] is None:
+            vals[i] = fill
+        else:
+            fill = vals[i]
+            if first_good is None:
+                first_good = vals[i]
+    if first_good is None:
+        return None
+    for i in range(n):
+        if vals[i] is None:
+            vals[i] = first_good
+        else:
+            break
+
+    a = np.array(vals, dtype=np.int64)
+    if a.size and int(np.abs(a).max()) >= INT_LIMIT:
+        return None
+    return a, dec, np.array(expos, dtype=np.int64), exvals
+
+
+def classify(table, lenient: bool = True) -> List[dict]:
     nrows = len(table.rows)
     plan = []
     for j in range(len(table.columns)):
@@ -185,7 +308,12 @@ def classify(table) -> List[dict]:
         num = _numeric(cells)
         if num is not None:
             plan.append({"kind": "num", "ints": num[0], "dec": num[1],
-                         "j": j})
+                         "j": j, "ex": None})
+            continue
+        lax = _numeric_lenient(cells) if lenient else None
+        if lax is not None:
+            plan.append({"kind": "num", "ints": lax[0], "dec": lax[1],
+                         "j": j, "ex": (lax[2], lax[3])})
             continue
         uniq = sorted(set(cells))
         if len(uniq) <= DICT_MAX and len(uniq) * 2 <= max(nrows, 2):
@@ -518,6 +646,41 @@ def pick_text_parents(plan, nrows, parent, order) -> Dict[int, Optional[int]]:
     return out
 
 
+def _emit_exceptions(col, spec, bins, sgroups) -> None:
+    """Store the cells a numeric column could not represent.
+
+    Positions are delta-coded before packing -- exceptions are sorted and
+    usually sparse, so the gaps are far smaller than the indices. The strings
+    join the text blob, where a run of empty cells or of "-0.0" costs
+    essentially nothing.
+
+    Emitted immediately after the column's own payload, in both the binary and
+    the string stream, so the decoder recovers them at the same point in its
+    own walk without needing an index.
+    """
+    ex = col.get("ex")
+    if not ex:
+        return
+    expos, exvals = ex
+    spec["nex"] = int(expos.size)
+    bins.append(pack_ints(np.diff(expos, prepend=np.int64(0))))
+    sgroups.append(exvals)
+
+
+def _apply_exceptions(cells, sp, cuts, texts, bi, ti):
+    """Inverse of _emit_exceptions. Returns (cells, bi, ti)."""
+    nex = sp.get("nex", 0)
+    if not nex:
+        return cells, bi, ti
+    expos = np.cumsum(unpack_ints(cuts[bi], nex))
+    bi += 1
+    exvals = texts[ti]
+    ti += 1
+    for i, p in enumerate(expos.tolist()):
+        cells[p] = exvals[i]
+    return cells, bi, ti
+
+
 def _width(n: int) -> str:
     return "<u1" if n <= 256 else ("<u2" if n <= 65536 else "<u4")
 
@@ -638,7 +801,20 @@ def encode(table) -> bytes:
     finisher may well beat it. When any trick fired, the modelled output wins
     by a margin no general compressor closes, and the extra work is skipped.
     """
-    blob, fired, ngroups = _encode_plan(table)
+    blob, fired, ngroups, nlax = _encode_plan(table)
+
+    # Numeric-with-exceptions, measured. Recovering a column that is numeric
+    # apart from a few cells is worth a great deal where it applies -- 41% of
+    # the Treasury yield curve -- but it also moves a column out of the
+    # dictionary path, and that is precisely the trade that made the reverted
+    # ragged-decimal experiment 9-23% worse. So the old behaviour is encoded
+    # too and kept if it is smaller. This guarantees never-worse against the
+    # codec as it stood, per file, rather than on average.
+    lenient = True
+    if nlax:
+        alt, alt_fired, alt_groups, _ = _encode_plan(table, use_lenient=False)
+        if len(alt) < len(blob):
+            blob, fired, ngroups, lenient = alt, alt_fired, alt_groups, False
 
     # The planar predictor was the last decision in this codec taken on trust,
     # and measuring it showed the trust was misplaced: of the three tables in
@@ -660,7 +836,8 @@ def encode(table) -> bytes:
     # 18 tables here and 3 of 24 in the full sweep. Tables without a group pay
     # nothing at all.
     if ngroups:
-        alt, alt_fired, _ = _encode_plan(table, use_2d=False)
+        alt, alt_fired, _, _ = _encode_plan(table, use_2d=False,
+                                            use_lenient=lenient)
         if len(alt) < len(blob):
             blob, fired = alt, alt_fired
 
@@ -670,8 +847,9 @@ def encode(table) -> bytes:
     return alt if alt is not None else blob
 
 
-def _encode_plan(table, use_2d: bool = True) -> Tuple[bytes, int, int]:
-    plan = classify(table)
+def _encode_plan(table, use_2d: bool = True,
+                 use_lenient: bool = True) -> Tuple[bytes, int, int, int]:
+    plan = classify(table, lenient=use_lenient)
     nrows = len(table.rows)
     groups = find_2d_groups(plan, nrows) if use_2d else []
     in_group = {pos: gi for gi, g in enumerate(groups) for pos in g}
@@ -711,12 +889,14 @@ def _encode_plan(table, use_2d: bool = True) -> Tuple[bytes, int, int]:
                          {"kind": "text", "parent": tp}
         elif col["kind"] == "num" and pos in in_group:
             specs[pos] = {"kind": "grp", "dec": col["dec"], "g": in_group[pos]}
+            _emit_exceptions(col, specs[pos], bins, sgroups)
         elif col["kind"] == "num":
             a = col["ints"]
             k = diff_order(a)
             bins.append(pack_ints(np.diff(a, n=k) if k else a))
             specs[pos] = {"kind": "num", "dec": col["dec"], "k": k,
                           "warm": a[:k].tolist()}
+            _emit_exceptions(col, specs[pos], bins, sgroups)
 
     for g in groups:
         M = np.stack([plan[pos]["ints"] for pos in g], axis=1)   # rows x cols
@@ -746,7 +926,8 @@ def _encode_plan(table, use_2d: bool = True) -> Tuple[bytes, int, int]:
                  and s["parent"] is not None)
              + sum(1 for s in specs if s and s["kind"] == "num" and s["k"])
              + len(groups))
-    return blob, fired, len(groups)
+    nlax = sum(1 for c in plan if c.get("ex"))
+    return blob, fired, len(groups), nlax
 
 
 def decode(blob: bytes):
@@ -795,6 +976,11 @@ def decode(blob: bytes):
         cols[pos] = (np.array(alpha, dtype=object)[ids].tolist()
                      if alpha else [])
 
+    # Exceptions belonging to grouped columns are read here, in the same walk
+    # the encoder wrote them, but cannot be applied until the group has been
+    # reconstructed further down.
+    grp_ex: Dict[int, Tuple[np.ndarray, List[str]]] = {}
+
     for pos, sp in enumerate(specs):
         if sp["kind"] == "text":
             cells = list(texts[ti])
@@ -807,12 +993,21 @@ def decode(blob: bytes):
                     restored[src] = cells[k]
                 cells = restored
             cols[pos] = cells
+        elif sp["kind"] == "grp":
+            nex = sp.get("nex", 0)
+            if nex:
+                grp_ex[pos] = (np.cumsum(unpack_ints(cuts[bi], nex)),
+                               texts[ti])
+                bi += 1
+                ti += 1
         elif sp["kind"] == "num":
             k = sp["k"]
             d = unpack_ints(cuts[bi], nrows - k)
             bi += 1
             a = _undiff(d, np.array(sp["warm"], dtype=np.int64), k) if k else d
-            cols[pos] = ints_to_cells(a, sp["dec"])
+            cells = ints_to_cells(a, sp["dec"])
+            cells, bi, ti = _apply_exceptions(cells, sp, cuts, texts, bi, ti)
+            cols[pos] = cells
 
     for gi, g in enumerate(meta["groups"]):
         w = len(g)
@@ -825,7 +1020,13 @@ def decode(blob: bytes):
         D1 = np.concatenate([col0[:, None], D], axis=1).cumsum(axis=1)
         M = np.concatenate([row0[None, :], D1], axis=0).cumsum(axis=0)
         for c, pos in enumerate(g):
-            cols[pos] = ints_to_cells(M[:, c], specs[pos]["dec"])
+            cells = ints_to_cells(M[:, c], specs[pos]["dec"])
+            ex = grp_ex.get(pos)
+            if ex is not None:
+                expos, exvals = ex
+                for i, p in enumerate(expos.tolist()):
+                    cells[p] = exvals[i]
+            cols[pos] = cells
 
     # zip transposes at C speed; the nested comprehension did not
     rows = [list(r) for r in zip(*cols)]
