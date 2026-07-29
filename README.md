@@ -527,6 +527,12 @@ Full numbers, every contender, in `benchmarks/hostile-results.txt`.
 - **Six real datasets.** Still not a claim. The hostile suite above covers the
   "tables that are hostile to it" half; what is still missing is *real* breadth
   — census panels, NOAA grids, genomics tables.
+- **A short, very wide table is the worst case for speed, and it is not
+  obvious.** The slowest encode across 26 datasets is not a big file — it is
+  `noaa_gsoy_sea`, **60 KB, at 0.5 MB/s**. 106 columns and 79 rows: the parent
+  search is quadratic in the column count and there are nowhere near enough
+  rows to amortise it. That is two orders of magnitude slower than
+  `cdc_nndss` at 31.5 MB/s, for a 1.12x win.
 - **Parent search is O(columns^2).** Every ordered pair of dictionary columns
   is scored, so a 209-column table means 38,220 pairs. The sample depth is
   traded against the pair count (`MI_BUDGET`) to keep that bounded; without
