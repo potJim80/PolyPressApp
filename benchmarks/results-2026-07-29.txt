@@ -230,3 +230,74 @@ CONCLUSION: the all-or-nothing lesson does NOT generalise to these two. It was
 specific to the numeric gate, where the discarded column was large, smooth and
 the sole gateway to the planar predictor. Worth having asked; worth writing
 down that the answer was no.
+
+================================================================================
+11. FULL SWEEP AT HEAD -- 26 datasets, 12 competitors, commit 6d08229
+================================================================================
+Run in six phases smallest-first so a memory problem on the largest file could
+not take the rest of the run with it. Whole sweep: 19 minutes.
+
+  phase            peak RSS
+  matrix              715 MB
+  corpus_small        712 MB
+  hostile             716 MB
+  corpus_mid        1,333 MB
+  corpus_large      1,345 MB
+  corpus_permits    2,300 MB   <-- the 73.7 MB chicago_permits, alone
+
+>>> THE MEMORY RULE WAS WRONG AND IS NOW CORRECTED <<<
+The old estimate (input MB x 8.5 x 2) + 700 predicted 1,952 MB for
+chicago_permits. It actually peaked at 2,300 MB -- under-predicting by 18%,
+and over the 1-2 GB working budget. Use (input MB x 22) + 700.
+
+CORPUS, ALL 13 AT FULL SIZE -- 13/13 wins
+  cdc_nndss          150,000 x 16      95,894  vs    355,262 pq+brotli  3.70x
+  seattle_fire911    200,000 x 7    1,304,141  vs  2,314,260 xz -9e     1.77x
+  wa_ev_population   200,000 x 16   1,551,037  vs  2,715,120 xz -9e     1.75x
+  austin_incidents   150,000 x 19   1,627,126  vs  2,615,744 xz -9e     1.61x
+  chicago_crimes     150,000 x 22   2,857,063  vs  4,111,388 xz -9e     1.44x
+  nyc_collisions     150,000 x 29   2,157,666  vs  3,106,204 xz -9e     1.44x
+  nyc_311             60,000 x 44   2,025,998  vs  2,681,776 xz -9e     1.32x
+  nyc_baby_names      29,685 x 6       55,516  vs     70,142 pq+brotli  1.26x
+  usgs_quakes         16,190 x 22     476,403  vs    597,268 bzip2 -9   1.25x
+  usgs_quakes_deep    16,707 x 22     469,681  vs    570,111 bzip2 -9   1.21x
+  chicago_permits     80,000 x 116  6,314,943  vs  7,063,480 xz -9e     1.12x
+  noaa_gsoy_ord           69 x 102      6,545  vs      7,308 brotli-11  1.12x
+  noaa_gsoy_sea           79 x 106      6,521  vs      7,314 bzip2 -9   1.12x
+
+  Median 1.32x (was 1.31x), worst 1.12x (was 1.11x), best 3.70x.
+  Against the previous record: 3 IMPROVED (nyc_311, noaa_gsoy_ord,
+  noaa_gsoy_sea, each +0.01x), 10 unchanged, 0 REGRESSED.
+
+  That is the number that matters after this session. The numeric classifier,
+  the planar predictor, the text parent search and the guard structure all
+  changed, and nothing on the corpus moved backwards.
+
+MATRIX-SHAPED -- 3/3 wins
+  weather_hourly      87,672 x 11     503,460  vs  1,078,640 xz -9e     2.14x
+  treasury_yields      9,006 x 9       34,891  vs     64,836 xz -9e     1.86x
+  weather_wide        26,304 x 25     414,471  vs    687,390 bzip2 -9   1.66x
+
+ADVERSARIAL -- 7/10 wins, unchanged in character
+  anticorrelated      40,000 x 2       11,824  vs     50,152 xz -9e     4.24x
+  mixed_types         40,000 x 2       60,220  vs     96,620 xz -9e     1.60x
+  single_wide_row          1 x 5000    21,480  vs     25,192 xz -9e     1.17x
+  random_floats       40,000 x 3      663,029  vs    768,307 bzip2 -9   1.16x
+  uuid_keys           40,000 x 2      763,880  vs    818,301 brotli-11  1.07x
+  shuffled_cats       40,000 x 8      231,904  vs    240,423 bzip2 -9   1.04x
+  wide_random          4,000 x 200  2,286,318  vs  2,351,798 bzip2 -9   1.03x
+  base64_blob         40,000 x 1    1,972,172  vs  1,959,691 brotli-11  1.01x LARGER
+  random_text         40,000 x 3    1,172,566  vs  1,163,658 brotli-11  1.01x LARGER
+  high_precision      40,000 x 2      337,455  vs    337,451 bzip2 -9   4 B LARGER
+
+  All three losses are to brotli on data incompressible by construction, all
+  by <=1%. high_precision's four bytes are the container magic.
+
+SPEED, and the honest end of it
+  encode 0.5 - 31.5 MB/s, decode 2 - 180 MB/s across all 26.
+  Fastest encode  cdc_nndss 31.5 MB/s.
+  SLOWEST encode  noaa_gsoy_sea 0.5 MB/s and noaa_gsoy_ord 0.6 MB/s -- 60 KB
+  files with 102-106 columns. The parent search is quadratic in column count
+  and there are far too few rows to amortise it. Worth stating plainly: on a
+  short, very wide table this codec is two orders of magnitude slower than on
+  a tall narrow one, for a 1.12x win.

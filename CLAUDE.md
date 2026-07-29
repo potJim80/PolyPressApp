@@ -114,6 +114,15 @@ Benchmarks: `python3 benchmarks/bench.py --reps 1 corpus/*.csv`. Use
 `fast.py` expands CSV ~8.5x into Python strings and benchmarking holds an
 encoded and a decoded copy at once.
 
+**Peak memory, measured 2026-07-29 and the earlier rule corrected.** The old
+estimate `(input MB x 8.5 x 2) + 700` **under-predicts by about 18%**: it put
+the 73.7 MB `chicago_permits` at 1,952 MB and the real peak was **2,300 MB**.
+Use `(input MB x 22) + 700` instead. Run the whole 13-dataset corpus in
+phases, smallest first, so a memory problem on the largest file cannot take
+the rest of the run with it — `benchmarks/` has no driver for this, it is a
+few lines of shell. A full sweep of 26 datasets takes **19 minutes**, not the
+~40 recorded earlier.
+
 ## The measured/unmeasured trap — read this before optimising
 
 Three separate "obviously good" changes were built, measured, and reverted:
@@ -276,8 +285,8 @@ Remaining backlog, in value order — see the memory directory for detail:
 
 ## Honest status
 
-13 of 13 real datasets beaten. Median **1.31x**, worst **1.11x**, best
-**3.70x**, measured 2026-07-27 and reproduced in
+13 of 13 real datasets beaten. Median **1.32x**, worst **1.12x**, best
+**3.70x**, all thirteen at full size, measured 2026-07-29 and reproduced in
 `benchmarks/corpus-results.txt`. Excellent on densely-coded administrative
 data, marginal on numeric and text-heavy data. Nobody outside this project has
 run it yet, and the `.dmg` is unsigned — Gatekeeper will call it damaged until
