@@ -1,0 +1,117 @@
+Matrix-shaped data, and what it exposed.  2026-07-29, at commit f9db14b.
+
+WHY THIS RUN HAPPENED
+---------------------
+The planar (2D) predictor fired on 3 of 24 tables in the 2026-07-28 sweep and
+made the file LARGER on two of them. But every table it fired on was an
+accident -- random floats, a wide random table, a collisions file. None was
+matrix-shaped. The README's ~2x planar claim rested on data no benchmark in
+this repo touched, so "is the planar predictor any good?" was unanswerable.
+
+benchmarks/fetch_matrix.py now downloads three matrix-shaped tables:
+
+  treasury_yields   9,006 x 9    daily US par yield curve 1990-2025
+  weather_hourly   87,672 x 11   ten sensor channels, hourly, ten years
+  weather_wide     26,304 x 25   hourly temperature at 24 European cities
+
+>>> THE HEADLINE: THE PREDICTOR IS NOT THE PROBLEM. THE GATE IS. <<<
+
+The Treasury yield curve is the canonical matrix table and this codec's own
+headline 2.01x dataset. Measured today, as downloaded:
+
+  classification         1 text, 8 dict, 0 numeric
+  2D groups formed       none
+  polypress              59,309 B
+  xz -9e                 64,836 B     -> 1.09x
+
+There are FOUR BLANK CELLS in the file, out of 72,048. Drop the four rows:
+
+  classification         1 text, 8 numeric
+  2D groups formed       one, eight columns wide
+  polypress              34,892 B
+  xz -9e                 64,876 B     -> 1.86x
+
+FOUR BLANK CELLS COST 41.2% OF THE COMPRESSED FILE. A column is tested for
+numeric-ness as all or nothing, so a single missing value drops the entire
+column to the dictionary path, and with no numeric columns there is nothing
+for the planar predictor to group.
+
+THE SAME DISEASE, A SECOND STRAIN: "-0.0"
+-----------------------------------------
+weather_wide has 21 numeric columns and three that are not: barcelona, oslo,
+helsinki. Their decimals are uniform, they contain no blanks, and every cell
+matches -?\d+\.\d. They are refused because they contain the cell "-0.0" --
+one single occurrence in barcelona's 26,304 cells, 43 in oslo, 84 in helsinki.
+
+The refusal is CORRECT: "-0.0" cannot be stored as the integer 0 and printed
+back as "-0.0", and this codec does not lose formatting. The response is what
+is too blunt -- one anomalous cell discards the whole column.
+
+And it cascades. barcelona sits at column 19, between two runs of numeric
+columns, so its refusal splits what should be one 21-column matrix into groups
+of 18 and 3.
+
+HOW WIDESPREAD (probe over 19 datasets)
+---------------------------------------
+60 columns across 11 datasets parse as numeric once blanks are set aside, and
+they cost 664,600 B at the cheap probe today. Most have a handful of blanks:
+
+  nyc_collisions   number_of_motorist_killed   34,227 present,   1 blank
+  wa_ev_population electric_range              30,850 present,   1 blank
+  treasury_yields  all 8 rate columns           ~9,005 present, 1-4 blanks
+  usgs_quakes      nst                         16,133 present,  57 blanks
+
+  by dataset:  chicago_crimes 161,223 B   nyc_collisions 136,139 B
+               nyc_311 100,543 B          treasury_yields 78,076 B
+               wa_ev_population 46,142 B  chicago_permits 42,150 B
+               cdc_nndss 41,633 B         usgs_quakes 36,179 B
+
+THIS IS NOT THE EXPERIMENT THAT FAILED BEFORE. The reverted ragged-decimal
+work rescaled columns to their maximum decimal count, inflating values to
+~4e16 so consecutive differences cost 8 bytes each, and it moved columns out
+of `text` back when dictionary parents were still unmeasured. The columns
+above already have uniform decimals; only the blanks disqualify them. And
+dictionary parents have been measured since 20dd96e.
+
+NON-ADJACENT GROUPING: TRIED BOTH WAYS, NEITHER PAYS
+----------------------------------------------------
+A group is stored as an explicit list of column positions and the decoder
+walks that list, so non-adjacent groups need NO format change. Only the
+detector insists on neighbours. Two candidate rules, measured end to end:
+
+  weather_wide      none 432,210   adjacent 431,381 *   cluster 432,210
+                                                        gapped  431,693
+  weather_hourly    none 566,244 * adjacent 566,244     cluster 566,244
+                                                        gapped  566,244
+
+  cluster = bucket by decimal count, sort by magnitude, run-build against the
+            run's first column (transitive, fixes the known drift)
+  gapped  = keep file order, skip an incompatible column instead of ending
+            the run -- the literal "columns 3 and 40 should be allowed to
+            meet" proposal
+
+Gapped grouping DOES rejoin weather_wide's 18 and 3 into a single 21-column
+group, and the result is 312 B WORSE than leaving them split. Clustering by
+magnitude is 829 B worse. Adjacency wins.
+
+The reason is that the planar predictor differences ACROSS the group, so
+which column sits beside which is part of the prediction. In weather_wide the
+file order is geographic and already near-optimal; bridging over barcelona
+puts two less-similar cities next to each other at the seam. Sorting by
+magnitude destroys the ordering entirely.
+
+NEGATIVE RESULT, RECORDED: non-adjacent 2D grouping is not worth building.
+The fragmentation it was meant to repair is better fixed at its cause -- the
+all-or-nothing numeric gate that made barcelona non-numeric in the first
+place.
+
+WHERE 2D STANDS NOW
+-------------------
+  fires and wins    random_floats -5.98%, weather_wide -0.19%
+  fires and loses   wide_random +0.69%, nyc_collisions +0.11% (guard catches
+                    both since f9db14b)
+  cannot fire       treasury_yields -- the case it exists for -- because four
+                    blank cells removed every numeric column
+
+The measured guard from f9db14b is what makes this safe to keep experimenting
+with: 2D is kept where it wins and declined where it does not, per table.
