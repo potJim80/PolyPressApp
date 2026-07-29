@@ -286,13 +286,13 @@ Remaining backlog, in value order — see the memory directory for detail:
 ## Honest status
 
 13 of 13 real datasets beaten. Median **1.32x**, worst **1.12x**, best
-**3.70x**, all thirteen at full size, measured 2026-07-29 and reproduced in
+**3.73x**, all thirteen at full size, measured 2026-07-29 and reproduced in
 `benchmarks/corpus-results.txt`. Excellent on densely-coded administrative
 data, marginal on numeric and text-heavy data. Nobody outside this project has
 run it yet, and the `.dmg` is unsigned — Gatekeeper will call it damaged until
 someone pays for a certificate.
 
-Added 2026-07-29 and **not** yet folded into that corpus record:
+Also measured 2026-07-29:
 
 - **Three matrix-shaped datasets** via `fetch_matrix.py`: **1.86x**, **2.14x**,
   **1.66x**. These are the shape the planar predictor exists for and the first

@@ -301,3 +301,66 @@ SPEED, and the honest end of it
   and there are far too few rows to amortise it. Worth stating plainly: on a
   short, very wide table this codec is two orders of magnitude slower than on
   a tall narrow one, for a 1.12x win.
+
+================================================================================
+12. AFTER FRONT-CODING -- full sweep re-run at commit 52461f1
+================================================================================
+  dataset            before    after
+  cdc_nndss           3.70x -> 3.73x
+  seattle_fire911     1.77x -> 1.82x
+  nyc_collisions      1.44x -> 1.46x
+  chicago_crimes      1.44x -> 1.45x
+  nyc_baby_names      1.26x -> 1.27x
+  usgs_quakes         1.25x -> 1.27x
+  usgs_quakes_deep    1.21x -> 1.22x
+  six others                   same
+
+  7 improved, 6 unchanged, 0 regressed.
+  Median 1.32x, worst 1.12x, BEST 3.70x -> 3.73x.
+  Adversarial 7/10 unchanged. Matrix 2.14x / 1.86x / 1.66x unchanged, as
+  expected -- those tables are nearly all numeric and have little alphabet to
+  front-code.
+
+================================================================================
+13. WHY THE TEXT PATH IS NEAR ITS LIMIT -- the finisher shootout
+================================================================================
+Before hunting for a better text algorithm, measure the ceiling. The real text
+blob from six datasets, against every strong finisher on this machine:
+
+  finisher                total      vs xz -9e
+  xz -9e (ships)      2,263,479          0.00%
+  7z LZMA2 -mx9       2,266,396         +0.13%   (same algorithm)
+  brotli -q11 lgwin24 2,371,255         +4.76%
+  zstd -22 --long=27  2,460,015         +8.68%
+  7z PPMd             2,735,845        +20.87%
+
+NOTHING BEATS xz -9e. PPMd is normally the strongest thing available on
+natural-language text and loses by a fifth, because this blob is short
+structured strings, not prose.
+
+Consequence: there is no better coder to switch to, and a substitution stage
+(FSST, OnPair, BPE) would have to beat xz's own match finder. BtrBlocks
+(SIGMOD 2023) measured plain zstd BEATING Dict+FSST on a real string column,
+13.6x against 8.0x -- and xz just beat zstd by 8.68% here, so the gap would be
+wider. Those codecs trade ratio for RANDOM ACCESS, which the archival path does
+not need. Their proper home in this project is the `ondemand` branch.
+
+FSST+ (CWI, 2025) independently confirms the front-coding work: its entire
+contribution is common-prefix elimination over lexicographically sorted
+dictionary entries, and it reports 2.2-2.8x from that alone.
+
+THE PRINCIPLE THAT FOLLOWS. xz already finds every repeat inside its window;
+what it PAYS for is distance, since a match costs bits proportional to
+log(distance). So the lever is not "find more repeats", it is "make similar
+things closer". Row reordering and front-coding are both instances of it, and
+they are the only two text ideas that have ever worked here.
+
+Tested and rejected the same day: reordering the string groups inside the blob
+so similar columns sit together. -0.29% overall, wins on 5 of 16, best case
+chicago_crimes -2.7%. Not worth a format change; that lever is exhausted.
+
+The one remaining lead with evidence is semantic, not compressive: in the
+numeric-extraction data, usgs_quakes.time has 16,190 distinct values and a
+skeleton with ONE, and splitting wins 9.8% on that column. A real timestamp
+parser -- not generic digit splitting, which loses on seattle_fire911.datetime
+and nyc_311.created_date -- is the only text idea left with data behind it.
