@@ -88,6 +88,10 @@ python3 tests/test_cbin.py      # C must match Python byte for byte
 python3 tests/test_fuzz.py      # random adversarial tables, both languages
 python3 tests/test_hostile.py   # corrupt stream/ondemand archives, run in a
                                 # memory-capped subprocess (invariant 3)
+python3 tests/test_lying_header.py  # headers that are well-formed and LIE.
+                                # Mutation fuzzing cannot build these, which is
+                                # why three unchecked indices and a segfault
+                                # survived every earlier pass
 python3 tests/test_encoding.py  # BOMs, UTF-16, latin-1: read or refuse
 python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
                                 # whole menu headless (26 checks). This is
@@ -159,8 +163,24 @@ and the cost is the whole column.
   columns and the guard refuses all four.
 
 **When reading this codec, treat every all-or-nothing test as suspect and ask
-what one anomalous cell costs.** The same shape may still be lurking in the
-50% dictionary threshold and in the commensurability screen.
+what one anomalous cell costs.**
+
+**The other two were then checked, and both stay** — the lesson did not
+generalise, which is itself worth knowing:
+
+- **The 50% dictionary threshold**: +0.09% at 0.6, +1.44% at 0.75, +2.45% at
+  0.9. It also **disproves the standing theory** that raising it only failed
+  because dictionary parents were unmeasured — `20dd96e` fixed that two
+  sessions ago and the threshold still loses. Drop that theory. Per file it
+  is mixed (nyc_311 gains 5.0% at 0.6, chicago_permits loses 1.8%), so the
+  best threshold is file-dependent — but choosing per file means another
+  double encode, and that is the most expensive thing in this codec.
+- **The 2D exact-decimal rule**, relaxed to within one: **+0 bytes on every
+  table**. On `weather_hourly` the looser rule forms 2 groups where strict
+  forms 0, and the guard rejects both.
+
+The numeric gate was special: the discarded column was large, smooth, and the
+sole gateway to the planar predictor.
 
 ## Traps that have already bitten
 

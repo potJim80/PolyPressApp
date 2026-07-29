@@ -639,6 +639,7 @@ python3 tests/test_fast.py            # 32 fidelity cases, C path and fallback
 python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
 python3 tests/test_encoding.py        # BOMs, UTF-16, latin-1: read or refuse
 python3 tests/test_stream.py          # 180 checks: block counts and every output format
+python3 tests/test_lying_header.py    # headers that are well-formed and dishonest
 python3 tests/test_cbin.py            # the C binary must agree with Python on every case
 python3 tests/test_fuzz.py [n] [seed] # random adversarial tables through both implementations
 python3 benchmarks/bench.py data.csv  # size and speed vs the binaries AND Parquet
@@ -662,6 +663,18 @@ resident. Use `stream-compress` for anything larger.
 malformed AppleScript only surfaces when the user clicks something, so it is
 checked at build time -- an earlier version shipped a file-type list joined
 with spaces where AppleScript wanted commas, and the first click failed.
+
+`test_lying_header.py` covers what mutation fuzzing structurally cannot. The
+corrupt-archive suites damage bytes, and a random mutation essentially never
+produces an archive that decompresses cleanly, parses as valid JSON, and then
+*lies about its own shape*. That gap was real: three unchecked array indices
+survived every fuzzing pass in this repo and had to be found by reading. So
+this suite builds the header deliberately — 27 specimens claiming ghost
+columns, parents that do not exist, row counts larger than the file, exception
+counts larger than the table. **It found a segfault on its first run**: a
+header claiming a differencing order of 2^20 walked a million entries off the
+end of an eight-element stack array in the C decoder. Python refused all 27
+before the fix; only C crashed, which is the usual shape here.
 
 `test_fuzz.py` builds tables out of deliberately awful cells -- int64
 boundaries, ragged decimals, embedded quotes and newlines, non-BMP characters,
