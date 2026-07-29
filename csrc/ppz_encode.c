@@ -439,6 +439,97 @@ too_many:
 
 typedef enum { K_NUM, K_DICT, K_TEXT } Kind;
 
+static int diff_order(const int64_t *a, size_t n);
+static int64_t *diff_n(const int64_t *a, size_t n, int k, size_t *out_n);
+static int str_cmp(const void *pa, const void *pb);
+static int str_eq(Str a, Str b);
+static long str_bsearch(const Str *sorted, size_t n, Str key);
+static void pack_ints(const int64_t *a, size_t n, Buf *out);
+
+/* Could storing this column as numbers possibly beat leaving it alone?
+ * Mirrors fast._lenient_promising exactly -- it decides whether the whole-file
+ * guard runs, so a disagreement here is a different archive.
+ *
+ * The guard costs a second full encode, and that second encode IS the cost:
+ * the lenient scan is 0.04-0.09s where the extra encode is 0.9-1.4s. Four
+ * large datasets used to encode twice, find nothing, and keep the first result.
+ *
+ * One-sided by construction. The alternative is deliberately OVER-estimated --
+ * it charges for the dictionary's alphabet and ignores the reorder parent that
+ * would make the column cheaper still -- so `numeric >= estimate` implies
+ * `numeric >= real`, and declining on that basis cannot discard a win. */
+static int lenient_promising(const Table *t, size_t col, const int64_t *a,
+                             size_t n, const size_t *expos, size_t nex)
+{
+    int k = diff_order(a, n);
+    size_t dn = 0;
+    int64_t *d = k ? diff_n(a, n, k, &dn) : NULL;
+    Buf pb;
+    buf_init(&pb);
+    pack_ints(k ? d : a, k ? dn : n, &pb);
+    size_t num = ppz_lzma_probe_len(pb.data, pb.len);
+    buf_free(&pb);
+    free(d);
+
+    int64_t *gaps = malloc((nex ? nex : 1) * sizeof(int64_t));
+    if (!gaps) return 1;                 /* cannot screen -> let the guard run */
+    size_t prev = 0;
+    for (size_t i = 0; i < nex; i++) {
+        gaps[i] = (int64_t)expos[i] - (int64_t)prev;
+        prev = expos[i];
+    }
+    buf_init(&pb);
+    pack_ints(gaps, nex, &pb);
+    num += ppz_lzma_probe_len(pb.data, pb.len);
+    buf_free(&pb);
+    free(gaps);
+
+    /* the alternative: the same distinct-count test classify() applies */
+    Str *tmp = malloc((n ? n : 1) * sizeof(Str));
+    if (!tmp) return 1;
+    for (size_t i = 0; i < n; i++) tmp[i] = table_at(t, i, col);
+    qsort(tmp, n, sizeof(Str), str_cmp);
+    size_t u = 0;
+    for (size_t i = 0; i < n; i++)
+        if (i == 0 || !str_eq(tmp[i], tmp[u - 1])) tmp[u++] = tmp[i];
+
+    size_t limit = n > 2 ? n : 2;
+    size_t alt;
+    if (u <= DICT_MAX && u * 2 <= limit) {
+        int w = u <= 256 ? 1 : (u <= 65536 ? 2 : 4);
+        Buf idb;
+        buf_init(&idb);
+        for (size_t i = 0; i < n; i++) {
+            long id = str_bsearch(tmp, u, table_at(t, i, col));
+            uint64_t v = (uint64_t)(id < 0 ? 0 : id);
+            for (int b = 0; b < w; b++)
+                buf_putc(&idb, (char)((v >> (8 * b)) & 0xFF));
+        }
+        alt = ppz_lzma_probe_len(idb.data, idb.len);
+        buf_free(&idb);
+        Buf ab;
+        buf_init(&ab);
+        for (size_t i = 0; i < u; i++) {
+            if (i) buf_putc(&ab, '\n');
+            buf_put(&ab, tmp[i].p, tmp[i].n);
+        }
+        alt += ppz_lzma_probe_len(ab.data, ab.len);
+        buf_free(&ab);
+    } else {
+        Buf cb;
+        buf_init(&cb);
+        for (size_t i = 0; i < n; i++) {
+            if (i) buf_putc(&cb, '\n');
+            Str s = table_at(t, i, col);
+            buf_put(&cb, s.p, s.n);
+        }
+        alt = ppz_lzma_probe_len(cb.data, cb.len);
+        buf_free(&cb);
+    }
+    free(tmp);
+    return num < alt;
+}
+
 typedef struct {
     Kind     kind;
     int64_t *ints;      /* K_NUM */
@@ -452,6 +543,7 @@ typedef struct {
     int      group_idx;
     size_t  *ex_pos;    /* rows this numeric column could not represent */
     size_t   nex;       /* the strings themselves are read back from the table */
+    int      ex_prom;   /* could the lenient form possibly win? nominator only */
 } ColPlan;
 
 static void plan_free(ColPlan *p, size_t n)
@@ -491,6 +583,7 @@ static ColPlan *classify(const Table *t, int lenient)
                 plan[j].dec = dec;
                 plan[j].ex_pos = expos;
                 plan[j].nex = nex;
+                plan[j].ex_prom = lenient_promising(t, j, lax, nr, expos, nex);
                 continue;
             }
         }
@@ -1046,8 +1139,10 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     ColPlan *plan = classify(t, use_lenient);
     if (!plan) return -1;
     if (nlax_out) {
+        /* only PROMISING columns are reported, because this is what decides
+         * whether the caller pays for a second encode */
         size_t nl = 0;
-        for (size_t j = 0; j < nc; j++) if (plan[j].nex) nl++;
+        for (size_t j = 0; j < nc; j++) if (plan[j].nex && plan[j].ex_prom) nl++;
         *nlax_out = nl;
     }
 
@@ -1446,20 +1541,47 @@ int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
     return encode_modelled(t, out, fired, 1, NULL, 1, NULL);
 }
 
+/* Does this table have lenient columns at all, and could any of them win?
+ * fast.encode classifies once up front to answer exactly this, because the
+ * answer decides which plan is encoded -- so it has to be settled BEFORE any
+ * encoding, not after, or the two implementations pick different containers. */
+static void lenient_verdict(const Table *t, int *any_lax, int *promising)
+{
+    *any_lax = 0;
+    *promising = 0;
+    ColPlan *plan = classify(t, 1);
+    if (!plan) return;
+    for (size_t j = 0; j < t->ncols; j++) {
+        if (plan[j].nex) {
+            *any_lax = 1;
+            if (plan[j].ex_prom) *promising = 1;
+        }
+    }
+    plan_free(plan, t->ncols);
+}
+
 int ppz_encode(const Table *t, Buf *out)
 {
-    long fired = 0;
-    size_t ngroups = 0, nlax = 0;
-    if (encode_modelled(t, out, &fired, 1, &ngroups, 1, &nlax)) return -1;
+    /* Numeric-with-exceptions, measured. Mirrors fast.encode branch for
+     * branch. Recovering a column that is numeric apart from a few cells is
+     * worth 41% of the Treasury yield curve, but it also moves a column out of
+     * the dictionary path -- exactly the trade that made the reverted
+     * ragged-decimal work 9-23% worse. So the old behaviour is encoded too and
+     * kept if smaller: never-worse per file, not on average.
+     *
+     * The second encode is the expensive part, so it is nominated first. Three
+     * cases, matching Python: no lenient columns at all (the two plans are
+     * identical, encode once); lenient columns but none that could win (encode
+     * the plain plan once); otherwise encode both and measure. */
+    int any_lax = 0, promising = 0;
+    lenient_verdict(t, &any_lax, &promising);
+    int lenient = (!any_lax) || promising;
 
-    /* Numeric-with-exceptions, measured. Mirrors fast.encode. Recovering a
-     * column that is numeric apart from a few cells is worth 41% of the
-     * Treasury yield curve, but it also moves a column out of the dictionary
-     * path -- exactly the trade that made the reverted ragged-decimal work
-     * 9-23% worse. So the old behaviour is encoded too and kept if smaller,
-     * which makes this never-worse per file rather than on average. */
-    int lenient = 1;
-    if (nlax) {
+    long fired = 0;
+    size_t ngroups = 0;
+    if (encode_modelled(t, out, &fired, 1, &ngroups, lenient, NULL)) return -1;
+
+    if (any_lax && promising) {
         Buf alt;
         buf_init(&alt);
         long alt_fired = 0;

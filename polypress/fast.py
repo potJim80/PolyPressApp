@@ -300,6 +300,38 @@ def _numeric_lenient(cells):
     return a, dec, np.array(expos, dtype=np.int64), exvals
 
 
+def _lenient_promising(cells, a, expos, nrows) -> bool:
+    """Could storing this column as numbers possibly beat leaving it alone?
+
+    The never-worse guard costs a whole second encode, and profiling says that
+    second encode IS the cost -- the lenient scan itself is 0.04-0.09s where
+    the extra encode is 0.9-1.4s. On four large datasets the guard runs, finds
+    nothing, and doubles encode time for zero bytes.
+
+    This is a one-sided screen, and the direction matters. The alternative cost
+    is deliberately OVER-estimated: it includes the dictionary's alphabet, and
+    it ignores the reorder parent that would make the column cheaper still. So
+    the real alternative is never more expensive than this estimate, and
+    `numeric >= estimate` therefore implies `numeric >= real`. Skipping on that
+    basis cannot discard a win on this column.
+
+    It is only a nominator. Whenever any column looks promising the full
+    end-to-end guard still runs and still decides.
+    """
+    k = diff_order(a)
+    num = _probe_bytes(pack_ints(np.diff(a, n=k) if k else a))
+    num += _probe_bytes(pack_ints(np.diff(expos, prepend=np.int64(0))))
+    uniq = sorted(set(cells))
+    if len(uniq) <= DICT_MAX and len(uniq) * 2 <= max(nrows, 2):
+        idx = {v: i for i, v in enumerate(uniq)}
+        ids = np.array([idx[v] for v in cells], dtype=np.int64)
+        alt = _probe_bytes(ids.astype(_width(len(uniq))).tobytes())
+        alt += _probe_len(uniq)
+    else:
+        alt = _probe_len(cells)
+    return num < alt
+
+
 def classify(table, lenient: bool = True) -> List[dict]:
     nrows = len(table.rows)
     plan = []
@@ -313,7 +345,9 @@ def classify(table, lenient: bool = True) -> List[dict]:
         lax = _numeric_lenient(cells) if lenient else None
         if lax is not None:
             plan.append({"kind": "num", "ints": lax[0], "dec": lax[1],
-                         "j": j, "ex": (lax[2], lax[3])})
+                         "j": j, "ex": (lax[2], lax[3]),
+                         "exp": _lenient_promising(cells, lax[0], lax[2],
+                                                   nrows)})
             continue
         uniq = sorted(set(cells))
         if len(uniq) <= DICT_MAX and len(uniq) * 2 <= max(nrows, 2):
@@ -801,17 +835,34 @@ def encode(table) -> bytes:
     finisher may well beat it. When any trick fired, the modelled output wins
     by a margin no general compressor closes, and the extra work is skipped.
     """
-    blob, fired, ngroups, nlax = _encode_plan(table)
-
     # Numeric-with-exceptions, measured. Recovering a column that is numeric
     # apart from a few cells is worth a great deal where it applies -- 41% of
     # the Treasury yield curve -- but it also moves a column out of the
     # dictionary path, and that is precisely the trade that made the reverted
     # ragged-decimal experiment 9-23% worse. So the old behaviour is encoded
-    # too and kept if it is smaller. This guarantees never-worse against the
-    # codec as it stood, per file, rather than on average.
+    # too and kept if it is smaller: never-worse per file, not on average.
+    #
+    # The guard costs a whole second encode, so it is nominated first. The
+    # plan is built once and reused, and the second encode only happens when
+    # some column's numbers actually look cheaper than leaving it alone. That
+    # screen is one-sided -- it over-estimates the alternative -- so it can
+    # only decline cases that could not have won. Without it, four large
+    # datasets encoded twice and kept the first result every time.
+    plan = classify(table)
+    any_lax = any(c.get("ex") for c in plan)
+    promising = any(c.get("exp") for c in plan)
+
     lenient = True
-    if nlax:
+    if not any_lax:
+        # the two plans are identical, so there is nothing to choose between
+        blob, fired, ngroups, _ = _encode_plan(table, plan=plan)
+    elif not promising:
+        del plan
+        lenient = False
+        blob, fired, ngroups, _ = _encode_plan(table, use_lenient=False)
+    else:
+        blob, fired, ngroups, _ = _encode_plan(table, plan=plan)
+        del plan
         alt, alt_fired, alt_groups, _ = _encode_plan(table, use_lenient=False)
         if len(alt) < len(blob):
             blob, fired, ngroups, lenient = alt, alt_fired, alt_groups, False
@@ -847,9 +898,13 @@ def encode(table) -> bytes:
     return alt if alt is not None else blob
 
 
-def _encode_plan(table, use_2d: bool = True,
-                 use_lenient: bool = True) -> Tuple[bytes, int, int, int]:
-    plan = classify(table, lenient=use_lenient)
+def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
+                 plan=None) -> Tuple[bytes, int, int, int]:
+    # `plan` lets the caller hand in a classification it has already paid for.
+    # Nothing here writes to it, so it is safe to share between encodes that
+    # agree about `use_lenient`.
+    if plan is None:
+        plan = classify(table, lenient=use_lenient)
     nrows = len(table.rows)
     groups = find_2d_groups(plan, nrows) if use_2d else []
     in_group = {pos: gi for gi, g in enumerate(groups) for pos in g}
