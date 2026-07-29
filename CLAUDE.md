@@ -16,7 +16,10 @@ at here independently; claim withdrawn — see the prior-art note in README.md.
 **Which idea fires depends on the data, and getting this wrong wastes days:**
 
 - Smooth numeric / matrix-shaped tables (yield curves, sensor grids) → the
-  planar predictor. This is the ~2x case.
+  planar predictor. This is the ~2x case, and as of 2026-07-29 it is finally
+  backed by data in the repo: `benchmarks/fetch_matrix.py` pulls a Treasury
+  yield curve and two sensor grids, giving 1.86x, 2.14x and 1.66x. Before
+  that, the claim rested on data no benchmark here touched.
 - **Survey and administrative data (NHANES, NEDS, disease surveillance) → the
   planar predictor does NOT apply** and the codec correctly refuses it: those
   columns are *codes*, not quantities. **The reordering does all the work.**
@@ -54,8 +57,9 @@ tzip.py        shim -> polypress/cli.py (the `polypress` console script)
 app/           the Mac app. build_app.sh, build_app.sh dmg
 tests/         test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
                test_hostile, test_encoding
-benchmarks/    bench.py is the one to use; fetch_corpus.py + fetch_nhanes.py
-               download real data; make_hostile.py generates adversarial tables
+benchmarks/    bench.py is the one to use; fetch_corpus.py + fetch_nhanes.py +
+               fetch_matrix.py download real data; make_hostile.py generates
+               adversarial tables
 attic/         superseded work kept for the record
 ```
 
@@ -88,6 +92,10 @@ python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
 **Do not wrap the suites in a `python3 -c` subprocess loop with a long
 timeout** — that has hung twice in this repo for reasons unrelated to the
 tests. Run them directly.
+
+```bash
+python3 benchmarks/fetch_matrix.py corpus/   # yield curve + 2 sensor grids
+```
 
 Benchmarks: `python3 benchmarks/bench.py --reps 1 corpus/*.csv`. Use
 `--reps 1` for a corpus run; 3 passes triples a run already dominated by
@@ -123,6 +131,30 @@ useless, they were harmful.
 it to shortlist, then compress and compare. `_probe_len` / `_probe_bytes` exist
 for exactly this.
 
+## The all-or-nothing gate — the 2026-07-29 lesson
+
+A screen that a column must pass *entirely* will be failed by one bad cell,
+and the cost is the whole column.
+
+- **Four blank cells in 72,048 cost 41.2% of the Treasury yield curve.** The
+  numeric test was all or nothing, so those four dropped all eight rate
+  columns to the dictionary path, and with no numeric columns the planar
+  predictor had nothing to group.
+- **One `-0.0` in 26,304 cells disqualified a temperature column** and, because
+  that column sat in the middle, split a 21-column matrix into 18 and 3.
+- Numeric columns now carry **exceptions**: unrepresentable cells are stored by
+  position and as text, and their slots are **forward-filled**. Filling rather
+  than dropping is load-bearing — equal column lengths are what let the planar
+  predictor stack them, worth 18% on top of the 28% for being numeric at all.
+- **It is guarded end to end**, because recovering these columns also moves
+  them out of the dictionary path — the exact trade that made the reverted
+  ragged-decimal work 9-23% worse. Four large corpus datasets have eligible
+  columns and the guard refuses all four.
+
+**When reading this codec, treat every all-or-nothing test as suspect and ask
+what one anomalous cell costs.** The same shape may still be lurking in the
+50% dictionary threshold and in the commensurability screen.
+
 ## Traps that have already bitten
 
 - **`set --` in `app/build_app.sh`** clobbers the script's own arguments. The
@@ -143,6 +175,19 @@ for exactly this.
   used to depend on CPython's hash table, so archive bytes did too.
 - **`buf_free` zeroes `len`** — capture the length before freeing if you are
   about to compare against it.
+- **Finding leaks on this machine has exactly one working recipe.** ASan's
+  leak detector does not run on Apple Silicon, and ASan and `leaks` cannot be
+  combined — `leaks` refuses to inspect a process using a malloc replacement
+  ("target process is using Address Sanitizer"). What works: a plain
+  `-O0 -g` build, then `MallocStackLogging=1 leaks --atExit -- ./binary ...`,
+  which names the allocating source line. That is how the exception-path leak
+  in `ppz_decode` was found; ASan had reported the same run clean.
+  Compare a real file against a three-row one — a leak that appears only on
+  the real file is data-dependent and therefore yours, not startup noise.
+- **A `goto` cleanup label is not the success path.** The decoder's exception
+  arrays were freed at `fail_ids:` and nowhere else, so every *successful*
+  decode of an archive with a 2D group leaked them. Adding a resource means
+  editing both exits.
 - **`errors="replace"` made the round-trip check unable to see corruption.**
   The readers opened every file that way, so an undecodable byte became
   U+FFFD *before* the table existed. Verification then compared the decoded
@@ -210,6 +255,19 @@ Remaining backlog, in value order — see the memory directory for detail:
 data, marginal on numeric and text-heavy data. Nobody outside this project has
 run it yet, and the `.dmg` is unsigned — Gatekeeper will call it damaged until
 someone pays for a certificate.
+
+Added 2026-07-29 and **not** yet folded into that corpus record:
+
+- **Three matrix-shaped datasets** via `fetch_matrix.py`: **1.86x**, **2.14x**,
+  **1.66x**. These are the shape the planar predictor exists for and the first
+  time it has been benchmarked on its own case.
+- **Like for like against Parquet** — Polypress re-finished with Parquet's own
+  codec wins **18/18 at zstd-22 and 17/18 at brotli-11**, margins to 5.6x.
+  Parquet cannot use xz at all, so this forecloses the "you just picked a
+  better finisher" objection. Worth leading with.
+- **Encode is 1.86x slower** than before this session, for 1.66% smaller
+  output. Four large datasets pay ~2.2x for zero gain. See the limitations
+  section of the README; this is the open cost.
 
 **Regenerate the results file whenever the codec changes; never hand-patch the
 README table from a commit message.** Doing that after the parent-guard change

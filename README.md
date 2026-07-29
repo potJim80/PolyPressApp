@@ -44,6 +44,33 @@ stores a 209-column survey as compressed CSV. And the comparison is clean:
 Parquet reproduced the printed text of all 209 columns exactly on this file,
 so none of its size comes from discarding formatting.
 
+### Is the win the modelling, or just a better final compressor?
+
+A fair objection: Parquet **cannot use xz at all**. Its options are snappy,
+gzip, brotli, zstd and lz4 — asking pyarrow for xz returns
+`Unsupported compression: xz`. So some of the margin above might be nothing
+more than a better finisher.
+
+It is not. Re-finishing Polypress with the *same* codec Parquet is using, and
+comparing like for like across 18 tables:
+
+| dataset | ppz+zstd | parquet+zstd | ppz+brotli | parquet+brotli |
+|---|---|---|---|---|
+| `cdc_nndss` | 41,531 | 191,910 | 37,027 | 223,929 |
+| `noaa_gsoy_sea` | 6,896 | 36,732 | 6,392 | 35,524 |
+| `seattle_fire911` | 612,622 | 1,138,757 | 576,554 | 1,095,103 |
+| `chicago_permits` | 918,844 | 1,353,332 | 864,525 | 1,312,856 |
+| `wa_ev_population` | 272,923 | 528,746 | 254,441 | 502,133 |
+
+**18 of 18 at zstd-22, 17 of 18 at brotli-11**, by margins from 1.06x to 5.6x.
+The single loss is `mixed_types`, an adversarial table, by 11%. Strip xz out
+entirely and the gap barely moves — the win is the modelling.
+
+That measurement also prices the speed trade, since it is the same swap:
+Polypress finished with zstd-22 instead of xz is **8% larger and several times
+faster**, and still beats Parquet on every table. Nothing in the format
+prevents offering that as a flag.
+
 `tzip.py info` explains where the win comes from: **172 of the 200
 dictionary columns were sorted by a parent**. Survey columns predict each
 other heavily, and no columnar format exploits that — Parquet compresses
@@ -140,6 +167,66 @@ wrong lesson to draw from NHAMCS.
 
 Encode ranged from 28.7 MB/s down to 1.3 MB/s across the corpus, the low end
 being the widest tables.
+
+### Matrix-shaped tables, and the bug that was hiding them
+
+Every dataset above is survey, administrative, incident or text-heavy data.
+**None of them is the shape the planar predictor was built for**, and for a
+long time that meant the ~2x planar claim rested on data no benchmark here
+touched. `benchmarks/fetch_matrix.py` fixes that — three matrix-shaped tables,
+no credentials, one command:
+
+```bash
+python3 benchmarks/fetch_matrix.py corpus/
+python3 benchmarks/bench.py --reps 1 corpus/treasury_yields.csv \
+    corpus/weather_hourly.csv corpus/weather_wide.csv
+```
+
+| dataset | shape | ours | best other | win |
+|---|---|---|---|---|
+| Treasury yield curve 1990-2025 | 9,006 x 9 | 34,891 | 64,836 `xz -9e` | **1.86x** |
+| Weather, 10 sensors hourly x 10y | 87,672 x 11 | 503,460 | 1,078,640 `xz -9e` | **2.14x** |
+| Hourly temperature, 24 cities | 26,304 x 25 | 414,471 | 687,390 `bzip2 -9` | **1.66x** |
+
+**Getting this data in immediately exposed a real defect.** The Treasury yield
+curve is the canonical matrix table, and it classified as *eight dictionary
+columns and zero numeric ones* — so no group could form and the predictor never
+ran. The cause was four blank cells out of 72,048. The numeric test was all or
+nothing, so a single missing value discarded an entire column.
+
+**Four cells were costing 41.2% of that file** (59,309 B where 34,891 B was
+available). A second strain of the same fault: three of the 24 temperature
+columns are refused despite uniform decimals and no blanks, because they
+contain the cell `-0.0` — once, in one column's 26,304 cells. That refusal is
+*correct*, since `-0.0` cannot be stored as the integer 0 and printed back
+faithfully, but discarding the column for it is far too blunt, and it split a
+21-column matrix into groups of 18 and 3.
+
+A numeric column may now carry **exceptions**: cells it cannot represent are
+kept by position and as text, and their slots are forward-filled from the
+previous good value. Filling rather than dropping is the load-bearing choice —
+it keeps every column the same length, which is what keeps the planar
+predictor able to stack them. On the yield curve, becoming numeric at all is
+worth 28% and the group on top of that another 18%.
+
+**It is measured, because it is adjacent to an idea that already failed here.**
+Recovering these columns also moves them out of the dictionary path, which is
+exactly the trade that made the reverted ragged-decimal work 9–23% worse. So
+the previous behaviour is encoded too and kept whenever it is smaller:
+
+| dataset | before | after |
+|---|---|---|
+| `treasury_yields` | 59,309 | **34,891** (−41.2%) |
+| `mixed_types` | 85,990 | 60,220 (−30.0%) |
+| `weather_hourly` | 566,244 | 503,460 (−11.1%) |
+| `weather_wide` | 431,381 | 414,471 (−3.9%) |
+| every other table | — | **0.00%** |
+
+Those exact zeroes are the guard working. `chicago_crimes`, `nyc_311`,
+`nyc_collisions` and `wa_ev_population` all have eligible columns — 161 KB,
+136 KB, 100 KB and 46 KB of them — and on every one the guard measured the
+conversion and refused it. Without it this change would have lost on four of
+the largest datasets here.
 
 Against the *specialised* numeric codecs on the yield curve — the comparison
 that actually matters, since general-purpose tools were never the competition
@@ -426,6 +513,15 @@ Full numbers, every contender, in `benchmarks/hostile-results.txt`.
 - **Pure Python + numpy + a small C library.** Encode is 9–30 MB/s. That
   beats `xz -9e` (5), `brotli -q 11` (1.1) and `zstd -22` (4), but it is
   nowhere near the fast tier — `zstd -3` encodes at 173 MB/s and always will.
+- **Never-worse costs encode time, and the bill has gone up.** Every guard in
+  here works by encoding the table both ways and keeping the smaller, so a
+  table eligible for a guard is encoded twice. Measured across 21 tables, the
+  2026-07-29 changes made encode **1.86x slower for 1.66% smaller output**.
+  Tables with nothing to recover are untouched (`shuffled_cats` 1.00x,
+  `wide_random` 1.00x, `cdc_nndss` 1.03x), but four large datasets pay ~2.2x
+  for **zero** gain: they have eligible columns, so the guard runs and then
+  correctly declines. Making the guard cheaper without weakening it is open
+  work; the guarantee is not negotiable, the price of it is.
 - **The 2x cases are matrix-shaped tables.** The 1.3–1.5x cases are the more
   typical result.
 - **Six real datasets.** Still not a claim. The hostile suite above covers the

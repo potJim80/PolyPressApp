@@ -1,0 +1,185 @@
+Session results, 2026-07-29.  Commits f9db14b, 998b27b, 419b71d, 14cf741.
+
+Companion to matrix-findings-2026-07-29.txt, which covers how the numeric-gate
+defect was found. This file is the measurement record.
+
+================================================================================
+1. MATRIX-SHAPED DATA -- the planar predictor benchmarked on its own case
+================================================================================
+Fetched by benchmarks/fetch_matrix.py. Full competitor lineup, --reps 1.
+
+  treasury_yields.csv   468,315 B   9,006 x 9
+    *** polypress          34,891  13.42x     enc 1.6 MB/s   dec 54.9 MB/s
+        xz -9e             64,836   7.22x
+        brotli -q 11       72,612   6.45x
+        zstd -19           75,967   6.16x
+        bzip2 -9           82,726   5.66x
+        parquet+brotli    115,103   4.07x
+    -> 1.86x smaller than the best other
+
+  weather_hourly.csv  5,677,612 B   87,672 x 11
+    *** polypress         503,460  11.28x     enc 2.8 MB/s   dec 56.7 MB/s
+        xz -9e          1,078,640   5.26x
+        bzip2 -9        1,139,191   4.98x
+        brotli -q 11    1,173,478   4.84x
+        parquet+brotli  1,198,785   4.74x
+    -> 2.14x smaller than the best other
+
+  weather_wide.csv    3,413,818 B   26,304 x 25
+    *** polypress         414,471   8.24x     enc 3.6 MB/s   dec 67.2 MB/s
+        bzip2 -9          687,390   4.97x
+        xz -9e            746,960   4.57x
+        brotli -q 11      810,188   4.21x
+        parquet+brotli    811,255   4.21x
+    -> 1.66x smaller than the best other
+
+Parquet failed the exact-printed-text check on all three.
+
+================================================================================
+2. LIKE FOR LIKE AGAINST PARQUET -- is the win the modelling or the finisher?
+================================================================================
+Parquet CANNOT use xz: pyarrow returns "Unsupported compression: xz". Its
+options are snappy, gzip, brotli, zstd, lz4. So some of the published margin
+might be nothing but a better finisher. Polypress was re-finished with the
+same codec and compared like for like over 18 tables.
+
+  dataset              ppz+zstd   pq+zstd   ppz+brotli  pq+brotli  vsZ   vsB
+  austin_incidents      582,614   773,956      527,019    715,079 1.33x 1.36x
+  cdc_nndss              41,531   191,910       37,027    223,929 4.62x 6.05x
+  chicago_crimes        778,080 1,335,156      733,808  1,270,881 1.72x 1.73x
+  chicago_permits       918,844 1,353,332      864,525  1,312,856 1.47x 1.52x
+  high_precision        337,455   542,020      337,455    449,717 1.61x 1.33x
+  mixed_types            92,197   179,743      135,413    119,972 1.95x 0.89x
+  noaa_gsoy_ord           6,869    35,911        6,353     34,658 5.23x 5.46x
+  noaa_gsoy_sea           6,896    36,732        6,392     35,524 5.33x 5.56x
+  nyc_311               418,236   746,367      387,217    723,662 1.78x 1.87x
+  nyc_baby_names         63,985    75,232       54,339     69,866 1.18x 1.29x
+  nyc_collisions        629,664   962,365      596,349    890,610 1.53x 1.49x
+  random_floats         671,838 1,049,465      721,715    916,304 1.56x 1.27x
+  seattle_fire911       612,622 1,138,757      576,554  1,095,103 1.86x 1.90x
+  shuffled_cats         229,340   243,578      229,196    241,303 1.06x 1.05x
+  usgs_quakes           536,057   729,445      489,635    682,547 1.36x 1.39x
+  uuid_keys             775,631   901,040      759,436    901,000 1.16x 1.19x
+  wa_ev_population      272,923   528,746      254,441    502,133 1.94x 1.97x
+  wide_random         2,571,772 3,734,968    2,176,157  3,572,303 1.45x 1.64x
+
+  18/18 at zstd-22.  17/18 at brotli-11 (mixed_types, adversarial, by 11%).
+
+THE WIN IS THE MODELLING, NOT xz. Also prices the speed trade: ppz+zstd is
++8% size for several times the speed, and still beats parquet everywhere.
+
+================================================================================
+3. NUMERIC-WITH-EXCEPTIONS -- the change, measured across 21 tables
+================================================================================
+  treasury_yields    59,309 ->    34,891   -41.17%
+  mixed_types        85,990 ->    60,220   -29.97%
+  weather_hourly    566,244 ->   503,460   -11.09%
+  weather_wide      431,381 ->   414,471    -3.92%
+  usgs_quakes       477,263 ->   476,403    -0.18%
+  all 16 others                              0.00%
+  TOTAL           9,841,454 -> 9,710,712    -1.33%
+
+The exact zeroes are the guard. chicago_crimes, nyc_311, nyc_collisions and
+wa_ev_population all HAVE eligible columns -- 161 KB, 136 KB, 100 KB, 46 KB at
+the cheap probe -- and the guard measured and refused every one. Without it
+this change loses on four of the largest datasets here.
+
+================================================================================
+4. THE OTHER TWO CODEC CHANGES
+================================================================================
+2D groups, measured end to end (18 tables, groups form on 2):
+  random_floats   663,029 with / 705,202 without   -> 2D pays 5.98%, kept
+  wide_random   2,302,051 with / 2,286,318 without -> 2D costs 0.69%, declined
+Plus the known +2,377 B on full-size nyc_collisions. Two losses of three.
+
+TEXT_PARENT_CANDIDATES 3 -> 5:
+  candidates      1         3         5        10       all
+  total     8,839,893 8,833,390 8,800,253 8,796,082 8,790,196
+  vs 3         +0.07%     0.00%    -0.38%    -0.42%    -0.49%
+  encode s        9.6      10.4      11.2      12.9      17.4
+chicago_permits, the worst dataset in the corpus, drops 3.50% at 5.
+NOT monotonic: each column is probed alone but all text columns share one
+blob compressed together, so a locally better ordering can be globally worse
+(noaa_gsoy_ord 6,559 B at 3, 6,588 B at 10).
+
+================================================================================
+5. AUDITS THAT FOUND NOTHING TO CHANGE -- also results
+================================================================================
+Phase-7 fallback gate. The safety net is skipped on a COUNT of tricks, not a
+measurement, so in principle it can skip a fallback that would have won. Over
+18 tables it never does: 0 misses, narrowest margin wide_random at 2.2%, most
+20-400%. No change made. Now known-safe rather than assumed-safe.
+
+Three-pile container split. Compressing metadata, binary and text as one
+concatenated stream instead of three: three piles wins by only 0.04% overall
+and LOSES on 7 of 18 (mixed_types by 15.7%). It wins where the text blob is
+large, which is the case that matters, so it stays -- but it is no longer an
+unexamined assumption.
+
+Global-fit prediction (fit one line/parabola through a whole column, store the
+error) vs the local differencing that ships: 8.1% larger, and it won on 1 of
+236 numeric columns. Local re-fitting adapts and stores no coefficients.
+
+Non-adjacent 2D grouping: both plausible rules measured, both lose. See
+matrix-findings-2026-07-29.txt.
+
+================================================================================
+6. THE COST, STATED PLAINLY
+================================================================================
+Encode is 1.86x SLOWER for 1.66% smaller output, across 21 tables, like for
+like (both paths including the fallback).
+
+  untouched   shuffled_cats 1.00x, wide_random 1.00x, uuid_keys 1.01x,
+              nyc_baby_names 1.01x, cdc_nndss 1.03x
+  pay and win treasury_yields 3.66x, weather_wide 1.61x, mixed_types 2.35x
+  PAY AND GAIN NOTHING
+              austin_incidents 2.22x, chicago_crimes 2.23x, nyc_311 2.22x,
+              wa_ev_population 2.46x -- all +0 bytes
+
+That last group is the honest problem: they have eligible columns, so the
+guard encodes twice and then correctly declines. The guarantee is not
+negotiable; the price of it is open work.
+
+================================================================================
+7. MEMORY SAFETY
+================================================================================
+ASan + UBSan clean on treasury_yields, weather_wide, mixed_types, usgs_quakes,
+with output byte-identical to the release build.
+
+`leaks` found a real leak in the new decoder path: the three arrays holding
+grouped columns' exception data were freed at the fail_ids label and nowhere
+else, so every SUCCESSFUL decode of an archive with a 2D group leaked them.
+11 leaks / 400 bytes on treasury_yields, 0 on a three-row file -- which is what
+identified it as data-dependent and therefore new. Fixed; 0 leaks on compress
+and restore for all three datasets since.
+
+Three pre-existing unchecked indices found by reading and fixed: the dictionary
+walk (sgroup[], cut[]), the text walk (sgroup[]) and the 2D group loop (cut[])
+all indexed by counters driven from the column list without bounds-checking
+against the arrays' real lengths. Reachable from a crafted archive.
+test_hostile does not catch these -- its mutations damage bytes rather than
+build a coherent header that lies about its own shape. That is a fuzzer gap.
+
+================================================================================
+8. TESTS
+================================================================================
+test_fast 41 cases (9 new for the exception machinery), test_dtz 18,
+test_stream 180 checks, test_cbin 48/48 BYTE-IDENTICAL, test_fuzz 250 tables
+0 byte differences, test_encoding 22, test_hostile 117 corrupt archives all
+refused, gui --selftest 26. All pass.
+
+Python and C byte-identical on every real dataset using the new path:
+treasury_yields, weather_wide, weather_hourly, mixed_types, usgs_quakes,
+nyc_collisions, high_precision.
+
+================================================================================
+9. CORPUS REGRESSION -- nothing moved backwards
+================================================================================
+Re-benchmarked at HEAD. The two full-size corpus files reproduce their
+published figures exactly:
+  usgs_quakes      1.25x  (published 1.25x)
+  nyc_baby_names   1.26x  (published 1.26x)
+The rest were run as 8 MB slices to stay inside the 1-2 GB budget, so their
+ratios are not directly comparable to the published full-file numbers:
+  cdc_nndss 4.94x, chicago_crimes 1.30x, wa_ev_population 1.76x.
+corpus-results.txt remains the canonical full-file record and is unchanged.
