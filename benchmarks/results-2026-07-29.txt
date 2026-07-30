@@ -364,3 +364,63 @@ numeric-extraction data, usgs_quakes.time has 16,190 distinct values and a
 skeleton with ONE, and splitting wins 9.8% on that column. A real timestamp
 parser -- not generic digit splitting, which loses on seattle_fire911.datetime
 and nyc_311.created_date -- is the only text idea left with data behind it.
+
+================================================================================
+14. ORGANISING PARTLY-REPETITIVE TEXT -- four designs, measured
+================================================================================
+The question was organisational, not which compressor to use: how should a
+column that is partly repetitive be ARRANGED? A column is either dict
+(alphabet + ids that collapse into runs under a parent) or text (raw strings).
+The 50% threshold is a cliff -- a 60%-distinct column gets nothing from the 40%
+of rows that do repeat.
+
+Four organisations, per text column, against what ships:
+
+  A HYBRID   repeated values -> alphabet + ids, singletons -> raw text
+             (removes the cliff without paying for singletons in the alphabet)
+                                                              +1.10%
+  B SORTED   singletons sorted and front-coded plus an explicit
+             permutation to undo it (what SortComp does)      +9.48%
+  C FRONT    front-code the text column as stored              +5.56%
+  D BOTH     hybrid with its singleton run front-coded         +4.88%
+
+All four lose on average. But the average hides the result, and the individual
+rows are where it is:
+
+  weather_hourly.time     9,438 ->    434    21.7x
+  weather_wide.time       2,660 ->    325     8.2x
+  treasury_yields.Date    5,757 ->  4,637   -19.5%
+  chicago_crimes.date    13,304 -> 21,517   MUCH WORSE
+
+>>> THE DISCRIMINATOR IS MONOTONICITY, NOT TEXT-NESS <<<
+Consecutive timestamps share ~14 of 16 characters. Timestamps in arbitrary row
+order share none. chicago_crimes is not in date order; weather_hourly is.
+
+WHY EVERY CHEAP NOMINATOR FAILED, measured end to end:
+  cheap per-group probe (lzma preset 1, group alone)          +2.50%
+  prefix ratio >= 0.3 / 0.5 / 0.7                +3.29% / +2.45% / +0.57%
+
+The reason is the useful part. A long shared prefix IS a long LZ77 match, and
+xz already codes it cheaply. Front-coding REMOVES the anchor xz was matching
+on. It only pays where the strings are short enough that xz's per-match
+overhead dominates the bytes saved. High prefix sharing is necessary and
+nowhere near sufficient.
+
+THE DESIGN THAT WORKS: nominate by prefix ratio, DECIDE on the whole blob, cap
+at the top 3 candidates so the cost stays bounded.
+
+  dataset            text pile      after      gain
+  weather_hourly         9,438        434    -9,004   (-95.4%)
+  weather_wide           2,660        325    -2,335   (-87.8%)
+  treasury_yields        5,757      4,637    -1,120   (-19.5%)
+  seattle_fire911      258,888    258,323      -565
+  14 others                              exactly +0
+  TOTAL              3,366,752  3,353,728   -13,024   (-0.39%)
+
+NEVER WORSE on any dataset. Archive level: treasury_yields -3.2%,
+weather_hourly -1.8%, weather_wide -0.6%. Cost: at most 3 extra text-pile
+compressions, which is far cheaper than the second full encode the exceptions
+guard needs.
+
+NOT BUILT -- it is a format change (per-group front-coding flags in smeta
+rather than one archive-level flag) and was left for a decision.
