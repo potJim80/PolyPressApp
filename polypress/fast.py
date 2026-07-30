@@ -775,7 +775,128 @@ def _un_front_code(chunk: bytes, n: int) -> List[str]:
     return out
 
 
-def _pack_strings(groups: List[List[str]], nfront: int = 0):
+# How many groups get a real end-to-end trial. Each one costs a compression of
+# the whole text pile, so this is what bounds the price -- and the price is the
+# whole argument for the value being 1. Measured across 21 tables:
+#
+#     K   encode    total bytes   vs K=0
+#     0    28.5s      9,646,428        +0     (1.00x)
+#     1    32.9s      9,633,980   -12,448     (1.16x)
+#     2    40.0s      9,633,419   -13,009     (1.41x)
+#     3    43.1s      9,633,419   -13,009     (1.52x)
+#
+# One trial takes 96% of everything available for a sixth of the time penalty.
+# The stake-ranked first candidate is the right one nearly every time, which is
+# what a good nominator is for.
+TEXT_FC_CANDIDATES = 1
+
+
+# Below this estimated saving a candidate is not worth a trial, and below this
+# share of its own bytes it is not worth one either. Both are floors on the
+# NOMINATION only -- every survivor is still decided by measuring the whole
+# pile. Their job is to stop the trials being spent on nothing, which is what
+# takes encode time from 21s to 57s across the test set.
+FC_MIN_BYTES = 1024
+FC_MIN_NUM, FC_MIN_DEN = 1, 4        # shared/total must exceed 1/4
+
+
+def _prefix_stats(words: List[str], cap: int = 4000) -> Tuple[int, int]:
+    """(bytes shared with the previous word, total bytes), both integers.
+
+    This measures the one property that makes front-coding pay -- how much
+    consecutive values have in common. It is deliberately NOT a compression
+    probe: a probe run on the group alone was measured +2.50% worse end to end,
+    because it cannot see what happens once the group is concatenated with
+    everything else.
+
+    Returned as two integers rather than a ratio so the C port can rank
+    candidates by cross-multiplying and never has to agree about a float.
+    """
+    n = min(len(words), cap)
+    if n < 2:
+        return 0, 0
+    shared = 0
+    prev = words[0].encode("utf-8")
+    total = len(prev)
+    for i in range(1, n):
+        b = words[i].encode("utf-8")
+        m = min(len(prev), len(b), 255)
+        k = 0
+        while k < m and prev[k] == b[k]:
+            k += 1
+        shared += k
+        total += len(b)
+        prev = b
+    return shared, total
+
+
+def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
+    """Which string groups to front-code, decided on the WHOLE text pile.
+
+    Three designs that decided per group were measured and all lost: a cheap
+    per-group compression probe (+2.50%) and a prefix-ratio threshold at 0.3,
+    0.5 and 0.7 (+3.29%, +2.45%, +0.57%). The reason is worth remembering --
+    a long shared prefix IS a long LZ77 match, and xz already codes it
+    cheaply, so front-coding can remove the very anchor xz was matching on.
+    High prefix sharing is necessary and nowhere near sufficient.
+
+    So the ratio only NOMINATES, capped at TEXT_FC_CANDIDATES, and every
+    decision is a measurement of the entire pile. Measured that way: -0.39%
+    overall and never worse on any table, with weather_hourly's time column
+    going 9,438 -> 434 bytes and treasury_yields' date column -19.5%.
+    """
+    def build(front):
+        packed = _pack_strings(groups, front)
+        return packed, lzma.compress(packed[0], **XZ)
+
+    best = frozenset()
+    best_packed, best_zb = build(best)
+    best_z = len(best_zb)
+
+    # the alphabets as one block, which is what shipped before this
+    if ndict:
+        alpha = frozenset(range(ndict))
+        packed, zb = build(alpha)
+        if len(zb) < best_z:
+            best, best_packed, best_zb, best_z = alpha, packed, zb, len(zb)
+
+    # Then the most promising remaining groups, one at a time, each confirmed.
+    #
+    # Ranked by ESTIMATED BYTES AT STAKE, not by ratio. Ranking by ratio was
+    # wrong in a way worth recording: a numeric column's exception group is a
+    # run of identical values -- 47 copies of "-0.0" -- which shares 98% of its
+    # bytes and so outranked everything, and with three trial slots those tiny
+    # groups crowded out the real prize. weather_hourly's timestamp column has
+    # a ratio of only 0.74 but about a megabyte at stake against that group's
+    # 184 bytes, and it was being skipped entirely.
+    cands = []
+    for i in range(ndict, len(groups)):
+        g = groups[i]
+        if not g or any("\n" in s for s in g):
+            continue
+        sh, tot = _prefix_stats(g)
+        if sh <= 0 or tot <= 0:
+            continue
+        if sh * FC_MIN_DEN <= tot * FC_MIN_NUM:
+            continue
+        sampled = min(len(g), 4000)
+        stake = sh * len(g) // sampled
+        if stake < FC_MIN_BYTES:
+            continue
+        cands.append((stake, i))
+    # descending stake, ties by group index so both implementations agree
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    for _stake, i in cands[:TEXT_FC_CANDIDATES]:
+        trial = frozenset(best | {i})
+        packed, zb = build(trial)
+        if len(zb) < best_z:
+            best, best_packed, best_zb, best_z = trial, packed, zb, len(zb)
+    # the winner's pile and its compressed bytes are returned so the caller
+    # never compresses the same pile a second time
+    return best, best_packed, best_zb
+
+
+def _pack_strings(groups: List[List[str]], front=frozenset()):
     """Concatenate string groups, paying for length prefixes only where a
     value actually contains a newline.
 
@@ -792,9 +913,9 @@ def _pack_strings(groups: List[List[str]], nfront: int = 0):
             length_arrays.append(np.fromiter((len(b) for b in blobs),
                                              dtype=np.int64, count=len(blobs)))
             metas.append({"n": len(g), "b": len(data), "nl": False})
-        elif i < nfront:
+        elif i in front:
             data = _front_code(g)
-            metas.append({"n": len(g), "b": len(data), "nl": True})
+            metas.append({"n": len(g), "b": len(data), "nl": True, "fc": 1})
         else:
             data = "\n".join(g).encode("utf-8")
             metas.append({"n": len(g), "b": len(data), "nl": True})
@@ -803,7 +924,12 @@ def _pack_strings(groups: List[List[str]], nfront: int = 0):
 
 
 def _unpack_strings(data: bytes, metas, length_bins,
-                    nfront: int = 0) -> List[List[str]]:
+                    legacy_nfront: int = 0) -> List[List[str]]:
+    """`legacy_nfront` covers archives written with the archive-level "fc"
+    flag, which meant "the first N groups are front-coded". Those are only
+    hours old but they exist on disk, and reading one under the new per-group
+    rule would return wrong strings rather than an error -- the worst outcome
+    for a decoder. Both spellings are honoured."""
     out, at, li = [], 0, 0
     for i, m in enumerate(metas):
         chunk = data[at:at + m["b"]]
@@ -812,7 +938,7 @@ def _unpack_strings(data: bytes, metas, length_bins,
             out.append([])
             continue
         if m["nl"]:
-            if i < nfront:
+            if m.get("fc") or i < legacy_nfront:
                 out.append(_un_front_code(chunk, m["n"]))
             else:
                 out.append(chunk.decode("utf-8").split("\n"))
@@ -1025,14 +1151,15 @@ def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
     # This guard is cheap in a way the others are not: it re-compresses only
     # the text pile, not the whole container. Compare the exceptions guard,
     # which costs a second full encode.
-    txt_data, smeta, length_arrays = _pack_strings(sgroups)
-    txt_b = lzma.compress(txt_data, **XZ)
-    fc = 0
-    if order:
-        alt_data, alt_smeta, _alt_len = _pack_strings(sgroups, len(order))
-        alt_b = lzma.compress(alt_data, **XZ)
-        if len(alt_b) < len(txt_b):
-            txt_b, smeta, fc = alt_b, alt_smeta, 1
+    front, (txt_data, smeta, length_arrays), txt_b = \
+        _choose_front(sgroups, len(order))
+    # "front == exactly the alphabets" is the common case, and the older
+    # archive-level flag spells it in 7 bytes instead of 7 per group. Same
+    # information, smaller metadata, same payload; the decoder reads both.
+    compact = bool(order) and front == frozenset(range(len(order)))
+    if compact:
+        for m in smeta:
+            m.pop("fc", None)
 
     n_before = len(bins)
     bins.extend(pack_ints(a) for a in length_arrays)   # always last
@@ -1040,7 +1167,7 @@ def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
             "groups": groups, "order": order,
             "bins": [len(b) for b in bins],
             "smeta": smeta, "nlenbins": len(bins) - n_before}
-    if fc:
+    if compact:
         meta["fc"] = 1
     meta_b = lzma.compress(json.dumps(meta, separators=(",", ":")).encode(),
                            **XZ)
@@ -1084,10 +1211,10 @@ def decode(blob: bytes):
 
     nlen = meta["nlenbins"]
     length_bins = cuts[len(cuts) - nlen:] if nlen else []
-    # the dictionary alphabets are the first len(order) groups, and are
-    # front-coded only when the encoder measured that it paid
-    nfront = len(meta["order"]) if meta.get("fc") else 0
-    texts = _unpack_strings(txt_data, meta["smeta"], length_bins, nfront)
+    # Which groups are front-coded is recorded per group in smeta. The
+    # archive-level "fc" is the older spelling, kept readable.
+    legacy = len(meta["order"]) if meta.get("fc") else 0
+    texts = _unpack_strings(txt_data, meta["smeta"], length_bins, legacy)
 
     cols: List[Optional[List[str]]] = [None] * len(specs)
     ids_by_pos: Dict[int, np.ndarray] = {}

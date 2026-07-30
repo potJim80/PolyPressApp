@@ -1121,7 +1121,91 @@ static void json_int(Buf *b, long long v)
 
 /* ------------------------------------------------------------------ encode */
 
-typedef struct { size_t n, b; int nl; } SMeta;
+typedef struct { size_t n, b; int nl; int fc; } SMeta;
+
+/* Sampling cap and nomination floors -- must match fast.py exactly, since they
+ * decide which groups get front-coded and therefore which archive is written. */
+#define FC_PREFIX_CAP 4000
+#define FC_MIN_BYTES  1024
+#define FC_MIN_NUM    1
+#define FC_MIN_DEN    4
+
+/* Bytes shared with the previous word, and total bytes. Mirrors
+ * fast._prefix_stats: byte comparisons, prefix capped at 255, sampled to
+ * FC_PREFIX_CAP words. Returned as two integers rather than a ratio so both
+ * implementations rank by cross-multiplying and never compare floats. */
+static void prefix_stats(const Str *words, size_t count,
+                         int64_t *shared, int64_t *total)
+{
+    *shared = 0;
+    *total = 0;
+    size_t n = count < FC_PREFIX_CAP ? count : FC_PREFIX_CAP;
+    if (n < 2) return;
+    Str prev = words[0];
+    *total = (int64_t)prev.n;
+    for (size_t i = 1; i < n; i++) {
+        Str c = words[i];
+        size_t m = prev.n < c.n ? prev.n : c.n;
+        if (m > 255) m = 255;
+        size_t k = 0;
+        while (k < m && prev.p[k] == c.p[k]) k++;
+        *shared += (int64_t)k;
+        *total += (int64_t)c.n;
+        prev = c;
+    }
+}
+
+/* One group into the pile. `front` front-codes it; otherwise newline-joined,
+ * or concatenated with an external length array when it contains a newline. */
+static void pile_group(Buf *out, const Str *w, size_t count, int has_nl,
+                       int front)
+{
+    if (has_nl) {
+        for (size_t i = 0; i < count; i++) buf_put(out, w[i].p, w[i].n);
+        return;
+    }
+    if (!front) {
+        for (size_t i = 0; i < count; i++) {
+            if (i) buf_putc(out, '\n');
+            buf_put(out, w[i].p, w[i].n);
+        }
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        size_t n = 0;
+        if (i) {
+            size_t m = w[i - 1].n < w[i].n ? w[i - 1].n : w[i].n;
+            if (m > 255) m = 255;
+            while (n < m && w[i - 1].p[n] == w[i].p[n]) n++;
+        }
+        buf_putc(out, (char)(unsigned char)n);
+    }
+    for (size_t i = 0; i < count; i++) {
+        size_t n = 0;
+        if (i) {
+            size_t m = w[i - 1].n < w[i].n ? w[i - 1].n : w[i].n;
+            if (m > 255) m = 255;
+            while (n < m && w[i - 1].p[n] == w[i].p[n]) n++;
+            buf_putc(out, '\n');
+        }
+        buf_put(out, w[i].p + n, w[i].n - n);
+    }
+}
+
+static void build_pile(Str **sg, const size_t *sgn, size_t nsg,
+                       const unsigned char *has_nl,
+                       const unsigned char *front, Buf *txt, SMeta *sm)
+{
+    txt->len = 0;
+    for (size_t g = 0; g < nsg; g++) {
+        size_t at = txt->len;
+        pile_group(txt, sg[g], sgn[g], has_nl[g], front[g]);
+        sm[g].n = sgn[g];
+        sm[g].b = txt->len - at;
+        sm[g].nl = has_nl[g] ? 0 : 1;
+        sm[g].fc = (!has_nl[g] && front[g]) ? 1 : 0;
+    }
+}
 
 /* `use_2d` off skips the planar grouping entirely, which is safe because
  * classify() callocs the plan: in_group stays 0 and group_idx stays -1, so
@@ -1298,31 +1382,24 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     size_t *lenbinsz = malloc((nsg + 1) * sizeof(size_t));
     size_t nlenbins = 0;
 
-    for (size_t g = 0; g < nsg; g++) {
-        int has_nl = 0;
+    unsigned char *has_nl = calloc(nsg ? nsg : 1, 1);
+    if (!has_nl) { buf_free(&lenbins); free(lenbinsz); free(smeta); }
+    for (size_t g = 0; g < nsg && has_nl; g++)
         for (size_t i = 0; i < sgn[g]; i++)
-            if (memchr(sg[g][i].p, '\n', sg[g][i].n)) { has_nl = 1; break; }
-        size_t at = txt.len;
-        if (has_nl) {
-            int64_t *lens = malloc((sgn[g] ? sgn[g] : 1) * sizeof(int64_t));
-            for (size_t i = 0; i < sgn[g]; i++) {
-                buf_put(&txt, sg[g][i].p, sg[g][i].n);
-                lens[i] = (int64_t)sg[g][i].n;
-            }
-            size_t la = lenbins.len;
-            pack_ints(lens, sgn[g], &lenbins);
-            lenbinsz[nlenbins++] = lenbins.len - la;
-            free(lens);
-            smeta[g].nl = 0;
-        } else {
-            for (size_t i = 0; i < sgn[g]; i++) {
-                if (i) buf_putc(&txt, '\n');
-                buf_put(&txt, sg[g][i].p, sg[g][i].n);
-            }
-            smeta[g].nl = 1;
-        }
-        smeta[g].n = sgn[g];
-        smeta[g].b = txt.len - at;
+            if (memchr(sg[g][i].p, '\n', sg[g][i].n)) { has_nl[g] = 1; break; }
+
+    /* Length arrays exist only for groups that contain a newline, and such a
+     * group is never front-coded, so they are identical for every candidate
+     * layout and are built exactly once. */
+    for (size_t g = 0; g < nsg && has_nl; g++) {
+        if (!has_nl[g]) continue;
+        int64_t *lens = malloc((sgn[g] ? sgn[g] : 1) * sizeof(int64_t));
+        if (!lens) break;
+        for (size_t i = 0; i < sgn[g]; i++) lens[i] = (int64_t)sg[g][i].n;
+        size_t la = lenbins.len;
+        pack_ints(lens, sgn[g], &lenbins);
+        lenbinsz[nlenbins++] = lenbins.len - la;
+        free(lens);
     }
     /* Front-coding the dictionary alphabets, measured. Mirrors fast.py: the
      * alphabets are the first P.norder string groups by construction and are
@@ -1343,78 +1420,100 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     buf_init(&mz); buf_init(&bz); buf_init(&tz);
     int rc = -1;
 
-    Buf txt2;
-    buf_init(&txt2);
-    SMeta *smeta2 = calloc(nsg ? nsg : 1, sizeof(SMeta));
-    int fc_possible = (P.norder > 0) && smeta2 != NULL;
-    if (fc_possible) {
-        for (size_t g = 0; g < nsg; g++) {
-            int has_nl = 0;
-            for (size_t i = 0; i < sgn[g]; i++)
-                if (memchr(sg[g][i].p, '\n', sg[g][i].n)) { has_nl = 1; break; }
-            size_t at = txt2.len;
-            if (!has_nl && g < P.norder) {
-                for (size_t i = 0; i < sgn[g]; i++) {
-                    size_t n = 0;
-                    if (i) {
-                        Str p = sg[g][i - 1], c = sg[g][i];
-                        size_t m = p.n < c.n ? p.n : c.n;
-                        if (m > 255) m = 255;
-                        while (n < m && p.p[n] == c.p[n]) n++;
-                    }
-                    buf_putc(&txt2, (char)(unsigned char)n);
-                }
-                for (size_t i = 0; i < sgn[g]; i++) {
-                    size_t n = 0;
-                    if (i) {
-                        Str p = sg[g][i - 1], c = sg[g][i];
-                        size_t m = p.n < c.n ? p.n : c.n;
-                        if (m > 255) m = 255;
-                        while (n < m && p.p[n] == c.p[n]) n++;
-                        buf_putc(&txt2, '\n');
-                    }
-                    buf_put(&txt2, sg[g][i].p + n, sg[g][i].n - n);
-                }
-                smeta2[g].nl = 1;
-            } else if (has_nl) {
-                for (size_t i = 0; i < sgn[g]; i++)
-                    buf_put(&txt2, sg[g][i].p, sg[g][i].n);
-                smeta2[g].nl = 0;
-            } else {
-                for (size_t i = 0; i < sgn[g]; i++) {
-                    if (i) buf_putc(&txt2, '\n');
-                    buf_put(&txt2, sg[g][i].p, sg[g][i].n);
-                }
-                smeta2[g].nl = 1;
-            }
-            smeta2[g].n = sgn[g];
-            smeta2[g].b = txt2.len - at;
-        }
-    }
-
-    int use_fc = 0;
-    if (ppz_lzma_compress(txt.data, txt.len, &tz)) {
-        buf_free(&txt2); free(smeta2); buf_free(&lenbins); free(lenbinsz);
+    /* Which groups to front-code, decided by compressing the WHOLE pile.
+     * Mirrors fast._choose_front branch for branch, including the order the
+     * candidates are tried in, because the choice selects the archive. */
+    unsigned char *front = calloc(nsg ? nsg : 1, 1);
+    unsigned char *trial = calloc(nsg ? nsg : 1, 1);
+    unsigned char *bestf = calloc(nsg ? nsg : 1, 1);
+    SMeta *smeta_t = calloc(nsg ? nsg : 1, sizeof(SMeta));
+    Buf txt_t;
+    buf_init(&txt_t);
+    if (!front || !trial || !bestf || !smeta_t || !has_nl) {
+        free(front); free(trial); free(bestf); free(smeta_t);
+        buf_free(&txt_t); buf_free(&lenbins); free(lenbinsz); free(has_nl);
         goto done;
     }
-    if (fc_possible) {
+
+    /* candidate 1: nothing front-coded */
+    build_pile(sg, sgn, nsg, has_nl, front, &txt, smeta);
+    if (ppz_lzma_compress(txt.data, txt.len, &tz)) {
+        free(front); free(trial); free(bestf); free(smeta_t);
+        buf_free(&txt_t); buf_free(&lenbins); free(lenbinsz); free(has_nl);
+        goto done;
+    }
+    size_t best_z = tz.len;
+
+    #define TAKE_TRIAL()                                                      \
+        do {                                                                  \
+            buf_free(&tz); buf_init(&tz);                                     \
+            buf_put(&tz, tz2.data, tz2.len);                                  \
+            best_z = tz2.len;                                                 \
+            memcpy(bestf, trial, nsg);                                        \
+            memcpy(smeta, smeta_t, nsg * sizeof(SMeta));                      \
+        } while (0)
+
+    /* candidate 2: every dictionary alphabet */
+    if (P.norder > 0) {
+        memset(trial, 0, nsg);
+        for (size_t g = 0; g < P.norder && g < nsg; g++) trial[g] = 1;
+        build_pile(sg, sgn, nsg, has_nl, trial, &txt_t, smeta_t);
         Buf tz2;
         buf_init(&tz2);
-        if (!ppz_lzma_compress(txt2.data, txt2.len, &tz2) && tz2.len < tz.len) {
-            buf_free(&tz);
-            buf_init(&tz);
-            buf_put(&tz, tz2.data, tz2.len);
-            use_fc = 1;
-        }
+        if (!ppz_lzma_compress(txt_t.data, txt_t.len, &tz2) && tz2.len < best_z)
+            TAKE_TRIAL();
         buf_free(&tz2);
     }
-    if (use_fc) {
-        SMeta *tmp = smeta;
-        smeta = smeta2;
-        smeta2 = tmp;
+
+    /* candidate 3: the winner so far plus the single group with the most bytes
+     * at stake. TEXT_FC_CANDIDATES is 1 because measurement said one trial
+     * takes 96% of the available gain for a sixth of the time penalty. */
+    {
+        long pick = -1;
+        int64_t best_stake = 0;
+        for (size_t g = 0; g < nsg; g++) {
+            if (bestf[g] || has_nl[g] || sgn[g] < 2) continue;
+            int64_t sh = 0, tot = 0;
+            prefix_stats(sg[g], sgn[g], &sh, &tot);
+            if (sh <= 0 || tot <= 0) continue;
+            if (sh * FC_MIN_DEN <= tot * FC_MIN_NUM) continue;
+            size_t sampled = sgn[g] < FC_PREFIX_CAP ? sgn[g] : FC_PREFIX_CAP;
+            int64_t stake = sh * (int64_t)sgn[g] / (int64_t)sampled;
+            if (stake < FC_MIN_BYTES) continue;
+            /* strictly greater keeps the lowest index on a tie, as Python's
+             * sort by (-stake, index) does */
+            if (stake > best_stake) { best_stake = stake; pick = (long)g; }
+        }
+        if (pick >= 0) {
+            memcpy(trial, bestf, nsg);
+            trial[pick] = 1;
+            build_pile(sg, sgn, nsg, has_nl, trial, &txt_t, smeta_t);
+            Buf tz2;
+            buf_init(&tz2);
+            if (!ppz_lzma_compress(txt_t.data, txt_t.len, &tz2)
+                    && tz2.len < best_z)
+                TAKE_TRIAL();
+            buf_free(&tz2);
+        }
     }
-    buf_free(&txt2);
-    free(smeta2);
+    #undef TAKE_TRIAL
+
+    /* "exactly the alphabets" is the common case and the archive-level flag
+     * spells it in 7 bytes rather than 7 per group. Same information, smaller
+     * metadata; the decoder reads both spellings. */
+    int use_fc = 0;
+    if (P.norder > 0) {
+        int all_alpha = 1;
+        for (size_t g = 0; g < nsg; g++) {
+            int want = (g < P.norder);
+            if ((bestf[g] != 0) != want) { all_alpha = 0; break; }
+        }
+        use_fc = all_alpha;
+    }
+    for (size_t g = 0; g < nsg; g++) smeta[g].fc = use_fc ? 0 : bestf[g];
+
+    free(front); free(trial); free(bestf); free(smeta_t);
+    buf_free(&txt_t); free(has_nl);
 
     /* length arrays always go last in the binary payload */
     buf_put(&bins, lenbins.data, lenbins.len);
@@ -1512,6 +1611,8 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
         json_int(&meta, (long long)smeta[g].b);
         buf_put(&meta, ",\"nl\":", 6);
         buf_put(&meta, smeta[g].nl ? "true" : "false", smeta[g].nl ? 4 : 5);
+        /* fast.py adds "fc" to an already-built dict, so it lands last */
+        if (smeta[g].fc) buf_put(&meta, ",\"fc\":1", 7);
         buf_putc(&meta, '}');
     }
     buf_put(&meta, "],\"nlenbins\":", 13);

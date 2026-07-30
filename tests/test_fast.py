@@ -107,6 +107,36 @@ EXTRA = {
     # with the C parser about that.
     "over_limit_rare": dtz.Table(
         ["v"], [[str(2 ** 63) if i == 42 else str(i)] for i in range(400)]),
+
+    # Front-coding, per group. A monotonic text column shares almost every
+    # character with its predecessor, which is where this pays -- one real
+    # timestamp column went 9,438 bytes to 434. The reconstruction is a prefix
+    # length plus a remainder, so anything that makes the prefix ambiguous or
+    # the arithmetic wrong shows up as a round-trip failure here.
+    "monotonic_text": dtz.Table(
+        ["t"], [["2015-01-{:02d}T{:02d}:{:02d}:00".format(
+            1 + i // 1440, (i // 60) % 24, i % 60)] for i in range(3000)]),
+    # Prefix longer than 255 bytes, which is where the one-byte cap bites.
+    "long_shared_prefix": dtz.Table(
+        ["t"], [["Z" * 400 + "{:04d}".format(i)] for i in range(500)]),
+    # A non-ASCII shared prefix. Python counts BYTES like C does; counting
+    # characters would give a different archive for exactly this table.
+    "unicode_prefix": dtz.Table(
+        ["t"], [["éü中文-{:05d}".format(i)]
+                for i in range(600)]),
+    # Front-coding must be refused on a group containing a newline, because the
+    # remainders are newline-joined and could not be split back apart.
+    "newline_in_sorted_text": dtz.Table(
+        ["t"], [["pre-{:04d}\nsuffix".format(i)] for i in range(400)]),
+    # Empty and one-character values around the front-coded path.
+    "degenerate_text": dtz.Table(
+        ["t"], [[""], ["a"], ["a"], ["ab"], [""], ["b"]] * 80),
+    # Two monotonic columns, so the single-candidate cap has to choose, and the
+    # choice must be the same in both implementations.
+    "two_monotonic": dtz.Table(
+        ["a", "b"],
+        [["2020-01-01T{:02d}:{:02d}".format(i // 60, i % 60),
+          "id-{:07d}-tail".format(i * 3)] for i in range(2000)]),
 }
 
 

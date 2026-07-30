@@ -316,7 +316,13 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             if (cnt == 0) { sgroup[g] = NULL; continue; }
             Str *arr = malloc(cnt * sizeof(Str));
             if (!arr) goto fail_sgroup;
-            if (nl && fc_on && g < norder) {
+            /* Front-coding is recorded per group. The archive-level "fc",
+             * meaning "the first `norder` groups", is the older spelling and
+             * is still honoured -- reading such an archive under the new rule
+             * would return wrong strings rather than an error. */
+            int fc_g = (int)js_int(js_get(m, "fc"), 0)
+                       || (fc_on && g < norder);
+            if (nl && fc_g) {
                 /* cnt prefix-length bytes, then newline-joined remainders */
                 if (nb < cnt) { free(arr); goto fail_sgroup; }
                 const unsigned char *pl = (const unsigned char *)chunk;
