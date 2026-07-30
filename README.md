@@ -184,9 +184,9 @@ python3 benchmarks/bench.py --reps 1 corpus/treasury_yields.csv \
 
 | dataset | shape | ours | best other | win |
 |---|---|---|---|---|
-| Treasury yield curve 1990-2025 | 9,006 x 9 | 34,891 | 64,836 `xz -9e` | **1.86x** |
-| Weather, 10 sensors hourly x 10y | 87,672 x 11 | 503,460 | 1,078,640 `xz -9e` | **2.14x** |
-| Hourly temperature, 24 cities | 26,304 x 25 | 414,471 | 687,390 `bzip2 -9` | **1.66x** |
+| Treasury yield curve 1990-2025 | 9,006 x 9 | 33,778 | 64,836 `xz -9e` | **1.92x** |
+| Weather, 10 sensors hourly x 10y | 87,672 x 11 | 494,456 | 1,078,640 `xz -9e` | **2.18x** |
+| Hourly temperature, 24 cities | 26,304 x 25 | 412,140 | 687,390 `bzip2 -9` | **1.67x** |
 
 **Getting this data in immediately exposed a real defect.** The Treasury yield
 curve is the canonical matrix table, and it classified as *eight dictionary

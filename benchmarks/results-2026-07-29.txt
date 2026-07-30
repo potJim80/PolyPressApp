@@ -424,3 +424,39 @@ guard needs.
 
 NOT BUILT -- it is a format change (per-group front-coding flags in smeta
 rather than one archive-level flag) and was left for a decision.
+
+================================================================================
+15. PER-GROUP FRONT-CODING SHIPPED -- full sweep at commit 4d7ae13
+================================================================================
+  MATRIX -- all three improved, and the only datasets that did
+    weather_hourly   2.14x -> 2.18x    503,460 -> 494,456
+    treasury_yields  1.86x -> 1.92x     34,891 ->  33,778
+    weather_wide     1.66x -> 1.67x    414,471 -> 412,140
+
+  CORPUS -- 13 of 13 IDENTICAL. Median 1.32x, worst 1.12x, best 3.73x.
+  ADVERSARIAL -- 7/10, unchanged.
+
+That split is the mechanism, not luck. Front-coding a text column pays when the
+column is MONOTONIC in stored order: consecutive timestamps share ~14 of 16
+characters, so weather_hourly's time column goes 9,438 bytes to 434. No corpus
+dataset is time-ordered -- chicago_crimes' date column is in arbitrary row order
+and front-coding it is 62% WORSE -- so the guard declines on all 13 and those
+archives come out byte-identical.
+
+COST: 1.16x encode, from TEXT_FC_CANDIDATES = 1.
+    K   encode    total bytes   vs K=0
+    0    28.5s      9,646,428        +0     (1.00x)
+    1    32.9s      9,633,980   -12,448     (1.16x)
+    2    40.0s      9,633,419   -13,009     (1.41x)
+    3    43.1s      9,633,419   -13,009     (1.52x)
+The naive implementation charged 1.51x. Three economies got it to 1.16x: one
+trial instead of three, length arrays built once rather than per candidate, and
+the winning pile returned already compressed instead of compressed twice.
+
+THE DEBUGGING RESULT WORTH KEEPING: ranking candidates by shared-prefix RATIO
+is wrong. A numeric column's exception group is a run of identical values -- 47
+copies of "-0.0" -- which shares 98% of its bytes and outranked everything,
+crowding out weather_hourly's timestamp column at ratio 0.74 with a megabyte at
+stake. Rank by estimated total shared BYTES.
+
+Speed across all 26: encode 0.5-31.1 MB/s, decode 2-177 MB/s.

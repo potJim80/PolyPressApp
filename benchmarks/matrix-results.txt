@@ -1,14 +1,19 @@
-Matrix-shaped results, regenerated 2026-07-29 at commit 52461f1.
+Matrix-shaped results, regenerated 2026-07-29 at commit 4d7ae13.
 
 Three tables fetched by benchmarks/fetch_matrix.py -- the daily US Treasury par
 yield curve 1990-2025, ten hourly sensor channels over ten years, and hourly
 temperature at 24 European cities. These are the shape the planar predictor
 exists for.
 
-  weather_hourly   2.14x      treasury_yields  1.86x      weather_wide  1.66x
+  weather_hourly   2.14x -> 2.18x
+  treasury_yields  1.86x -> 1.92x
+  weather_wide     1.66x -> 1.67x
 
-Unchanged by front-coding, which is expected: these tables are almost entirely
-numeric and have little or no dictionary alphabet to front-code.
+ALL THREE IMPROVED by per-group front-coding, and they are the only datasets
+that did. Every one carries a timestamp column that is monotonic in stored
+order, so consecutive values share nearly every character:
+weather_hourly's time column alone goes 9,438 bytes to 434. The 13-dataset
+corpus is unchanged, because its date columns sit in arbitrary row order.
 
 ==============================================================================
 treasury_yields.csv   468,315 B
@@ -16,20 +21,20 @@ treasury_yields.csv   468,315 B
 ==============================================================================
   codec                   bytes   ratio    enc MB/s    dec MB/s
   --------------------------------------------------------------
-  *** polypress          34,891  13.42x        1.3        55.1
-  xz -9e                 64,836   7.22x        5.2        70.1
-  brotli -q 11           72,612   6.45x        1.2       107.6
-  zstd -19               75,967   6.16x        5.9       118.0
-  zstd -22 ultra         75,967   6.16x        4.0       117.6
-  bzip2 -9               82,726   5.66x       23.1        65.2
-  gzip -9               113,345   4.13x        4.9       193.5
-  parquet+brotli        115,103   4.07x        1.7       627.0
-  parquet+zstd          124,622   3.76x       10.9      1032.2
-  zstd -3               124,736   3.75x       82.2       132.3
-  parquet+gzip          137,818   3.40x       63.4       854.8
-  parquet+snappy        169,903   2.76x      245.8        17.5
+  *** polypress          33,778  13.86x        1.1        48.8
+  xz -9e                 64,836   7.22x        5.3        70.0
+  brotli -q 11           72,612   6.45x        1.2       113.9
+  zstd -19               75,967   6.16x        5.7       113.2
+  zstd -22 ultra         75,967   6.16x        3.9       117.3
+  bzip2 -9               82,726   5.66x       23.1        64.4
+  gzip -9               113,345   4.13x        4.9       179.1
+  parquet+brotli        115,103   4.07x        1.7       614.8
+  parquet+zstd          124,622   3.76x       10.7      1069.3
+  zstd -3               124,736   3.75x       79.5       135.6
+  parquet+gzip          137,818   3.40x       63.2       852.9
+  parquet+snappy        169,903   2.76x      242.0        17.5
 
-  best other: xz -9e at 64,836 B -- polypress is 1.86x smaller
+  best other: xz -9e at 64,836 B -- polypress is 1.92x smaller
   NOTE: parquet did NOT reproduce the exact printed text -- part of its size win is discarded formatting, not compression
 
 ==============================================================================
@@ -38,20 +43,20 @@ weather_hourly.csv   5,677,612 B
 ==============================================================================
   codec                   bytes   ratio    enc MB/s    dec MB/s
   --------------------------------------------------------------
-  *** polypress         503,460  11.28x        2.7        65.8
-  xz -9e              1,078,640   5.26x        3.4       112.2
-  bzip2 -9            1,139,191   4.98x       25.5        73.5
-  brotli -q 11        1,173,478   4.84x        0.9       283.4
-  parquet+brotli      1,198,785   4.74x        1.3      1457.7
-  zstd -22 ultra      1,231,150   4.61x        3.8       515.4
-  zstd -19            1,231,192   4.61x        4.5       523.9
-  parquet+zstd        1,320,664   4.30x       48.4      3994.9
-  parquet+gzip        1,393,679   4.07x       90.7      2557.6
-  gzip -9             1,564,221   3.63x        8.8       660.7
-  zstd -3             1,714,478   3.31x      130.0       446.6
-  parquet+snappy      1,719,526   3.30x      558.8      5286.0
+  *** polypress         494,456  11.48x        2.5        58.8
+  xz -9e              1,078,640   5.26x        3.3       111.5
+  bzip2 -9            1,139,191   4.98x       25.4        74.9
+  brotli -q 11        1,173,478   4.84x        0.9       269.5
+  parquet+brotli      1,198,785   4.74x        1.3      1646.5
+  zstd -22 ultra      1,231,150   4.61x        3.7       515.8
+  zstd -19            1,231,192   4.61x        4.5       510.4
+  parquet+zstd        1,320,664   4.30x       48.5      3995.6
+  parquet+gzip        1,393,679   4.07x       92.0      2539.3
+  gzip -9             1,564,221   3.63x        8.9       648.3
+  zstd -3             1,714,478   3.31x      128.8       439.6
+  parquet+snappy      1,719,526   3.30x      560.5      5315.5
 
-  best other: xz -9e at 1,078,640 B -- polypress is 2.14x smaller
+  best other: xz -9e at 1,078,640 B -- polypress is 2.18x smaller
   NOTE: parquet did NOT reproduce the exact printed text -- part of its size win is discarded formatting, not compression
 
 ==============================================================================
@@ -60,18 +65,18 @@ weather_wide.csv   3,413,818 B
 ==============================================================================
   codec                   bytes   ratio    enc MB/s    dec MB/s
   --------------------------------------------------------------
-  *** polypress         414,471   8.24x        4.1        66.2
-  bzip2 -9              687,390   4.97x       24.8        71.7
-  xz -9e                746,960   4.57x        3.9       102.4
-  brotli -q 11          810,188   4.21x        1.0       233.1
-  parquet+brotli        811,255   4.21x        1.7      2152.5
-  zstd -19              829,321   4.12x        5.0       407.9
-  zstd -22 ultra        829,512   4.12x        4.3       407.5
-  parquet+zstd          857,010   3.98x       65.3      4476.0
-  parquet+gzip          868,824   3.93x      122.1      3430.4
-  gzip -9               934,278   3.65x        5.8       506.0
-  parquet+snappy        973,050   3.51x      455.7      3848.0
-  zstd -3             1,019,943   3.35x      131.0       395.4
+  *** polypress         412,140   8.28x        3.6        61.0
+  bzip2 -9              687,390   4.97x       24.8        70.9
+  xz -9e                746,960   4.57x        3.8       102.1
+  brotli -q 11          810,188   4.21x        1.0       227.2
+  parquet+brotli        811,255   4.21x        1.7      2181.0
+  zstd -19              829,321   4.12x        5.1       388.5
+  zstd -22 ultra        829,512   4.12x        4.3       399.4
+  parquet+zstd          857,010   3.98x       66.3      3252.0
+  parquet+gzip          868,824   3.93x      123.1      3301.5
+  gzip -9               934,278   3.65x        5.8       507.2
+  parquet+snappy        973,050   3.51x      454.8      3884.6
+  zstd -3             1,019,943   3.35x      127.5       379.7
 
-  best other: bzip2 -9 at 687,390 B -- polypress is 1.66x smaller
+  best other: bzip2 -9 at 687,390 B -- polypress is 1.67x smaller
   NOTE: parquet did NOT reproduce the exact printed text -- part of its size win is discarded formatting, not compression
