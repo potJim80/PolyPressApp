@@ -57,9 +57,14 @@ tzip.py        shim -> polypress/cli.py (the `polypress` console script)
 app/           the Mac app. build_app.sh, build_app.sh dmg
 tests/         test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
                test_hostile, test_encoding
-benchmarks/    bench.py is the one to use; fetch_corpus.py + fetch_nhanes.py +
-               fetch_matrix.py download real data; make_hostile.py generates
-               adversarial tables
+benchmarks/    measure_one.py (one table, every competitor) + sweep.py (a
+               corpus, one subprocess per table, resumable) + report.py
+               (aggregate into the claims). fetch_socrata100.py pulls the
+               unbiased 100; fetch_corpus.py + fetch_nhanes.py +
+               fetch_matrix.py pull the curated sets; make_hostile.py
+               generates adversarial tables
+results/       sweep output. The .jsonl and the summary are committed; the
+               downloaded CSV is not (see .gitignore)
 attic/         superseded work kept for the record
 ```
 
@@ -93,6 +98,12 @@ python3 tests/test_lying_header.py  # headers that are well-formed and LIE.
                                 # why three unchecked indices and a segfault
                                 # survived every earlier pass
 python3 tests/test_encoding.py  # BOMs, UTF-16, latin-1: read or refuse
+python3 tests/test_input_guard.py   # the C binary must refuse what it cannot
+                                # parse. It used to read a .parquet as text,
+                                # verify it, and restore garbage
+python3 tests/test_cbin_corpus.py corpus100/*.csv   # invariant 1 on real
+                                # data, not constructed cases. Slow; needs the
+                                # corpus downloaded. Run before releasing
 python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
                                 # whole menu headless (26 checks). This is
                                 # the build gate in app/build_app.sh.
@@ -108,11 +119,25 @@ tests. Run them directly.
 python3 benchmarks/fetch_matrix.py corpus/   # yield curve + 2 sensor grids
 ```
 
-Benchmarks: `python3 benchmarks/bench.py --reps 1 corpus/*.csv`. Use
-`--reps 1` for a corpus run; 3 passes triples a run already dominated by
-`brotli -q 11` at ~1 MB/s. Memory ceiling is 80 MB of CSV per file because
-`fast.py` expands CSV ~8.5x into Python strings and benchmarking holds an
-encoded and a decoded copy at once.
+Benchmarks, three steps:
+
+```bash
+python3 benchmarks/fetch_socrata100.py corpus100/ --count 100   # ~1.0 GB
+python3 benchmarks/sweep.py corpus100/*.csv --out results/socrata100.jsonl
+python3 benchmarks/report.py results/socrata100.jsonl --title "Socrata 100"
+```
+
+`sweep.py` runs **one subprocess per dataset**, so peak RSS is the largest
+single table rather than the accumulated total, and it **skips datasets
+already in the output** — a multi-hour sweep has to be safe to interrupt.
+`--max-mb` truncates oversize inputs at a row boundary (every codec then gets
+the identical file) and `--rss-abort` stops the run if a worker's *measured*
+peak crosses the ceiling. Predict to schedule, measure to believe.
+
+`benchmarks/bench.py` was retired to `attic/` — `measure_one.py` is a strict
+superset (adds lz4, ORC, Feather, the like-for-like re-finish, and peak RSS).
+Two scripts measuring the same thing differently is how the repo ends up
+contradicting its own evidence.
 
 **Peak memory, measured 2026-07-29 and the earlier rule corrected.** The old
 estimate `(input MB x 8.5 x 2) + 700` **under-predicts by about 18%**: it put
@@ -232,6 +257,25 @@ sole gateway to the planar predictor.
   see the damage.** Decoding is strict now; a BOM is honoured, anything else
   is refused, and `--encoding` is the only override. Do not reintroduce a
   guess: chardet-style sniffing is the same bug with better odds.
+- **The same shape again, found 2026-07-30: `csrc/polypress compress` accepted
+  any file.** It reads comma-separated text and nothing else, but the CLI
+  handed `table_read_csv` whatever it was given. On a `.parquet` it read the
+  **binary as text**, found 883 "rows" of 2 "columns", encoded them, **passed
+  the round-trip verification**, wrote the archive, and restored a corrupt
+  file. On a `.tsv` it found one column per line — nothing in a TSV is a comma
+  — so it disagreed with the Python encoder about what the table was, which is
+  invariant 1 broken where no test looked. Invariant 4's check compares the
+  *parsed* table with the *decoded* one; both agreed, because the damage
+  happened before either existed. **Refuse at the door — `input_refusal()` in
+  `ppz_main.c`, pinned by `tests/test_input_guard.py`.** The guard is magic
+  bytes and file extensions only, deliberately **not** a content sniff: a rule
+  that makes C refuse what Python accepts breaks byte-identity in the act of
+  defending it.
+- **Known divergence, recorded not fixed:** a CSV containing a NUL byte is
+  *refused* by Python (`_csv.Error: line contains NUL`) and *accepted* by the
+  C reader. Not data loss and not invariant 1 — which is about two encoders
+  given the same table — but the two CLIs disagree about whether that file is
+  readable. Changing either reader's mind about NUL is a format decision.
 - **Tkinter looks available on macOS and is not.** Apple's Tk 8.5.9 imports,
   constructs every `ttk` widget, and `destroy()`s cleanly — so a probe that
   builds widgets on a withdrawn window *passes*. It is **mapping** the window
