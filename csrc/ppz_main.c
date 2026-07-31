@@ -78,6 +78,118 @@ static int cmd_restore(int argc, char **argv)
     return 0;
 }
 
+/* Is this file something we can honestly parse?
+ *
+ * This binary reads exactly one thing: comma-delimited text. `table_read_csv`
+ * does not check, and until this guard existed `cmd_compress` handed it
+ * whatever it was given. That was not a harmless misread -- it was silent
+ * data loss, and the verify step below could not see it:
+ *
+ *   polypress compress data.parquet     read a BINARY file as text, found
+ *                                       883 "rows" of 2 "columns", encoded
+ *                                       them, verified that round-trip
+ *                                       perfectly, wrote the archive, and
+ *                                       restored to a corrupt file.
+ *   polypress compress data.tsv         found one column per line, because
+ *                                       nothing in a TSV is a comma, and
+ *                                       disagreed with the Python encoder
+ *                                       about the table -- which is
+ *                                       invariant 1 broken in the one place
+ *                                       no test looked.
+ *
+ * The verification is real but it compares the parsed table against the
+ * decoded table, so it is downstream of the damage and cannot see it. This
+ * repo has met that exact shape before, when `errors="replace"` corrupted a
+ * file before the round-trip check ever ran. The lesson stands: a check
+ * downstream of the damage cannot see the damage, so refuse at the door.
+ *
+ * Two signals, both cheap and both decisive:
+ *
+ *   magic bytes   a container that announces itself. Parquet is the one that
+ *                 bit us; the rest are here because they are what people
+ *                 actually have next to their CSVs.
+ *   extension     formats the Python CLI reads properly and this one cannot,
+ *                 so the answer is "use the other CLI", not "refuse".
+ *
+ * Deliberately NOT a check: a NUL byte, or anything else content-based. A NUL
+ * is legal inside a CSV cell -- it forces quoting, which `table_write_canonical`
+ * has to reproduce and `test_cbin.py::check_canonical` pins -- so rejecting on
+ * it would make the C binary refuse files the Python one accepts, and break
+ * the byte-identity guarantee in the course of protecting it.
+ *
+ * Returns NULL when the file is fine, otherwise the reason.
+ */
+static const char *input_refusal(const char *path)
+{
+    static const struct { const char *magic; size_t n; const char *what; } MAGIC[] = {
+        { "PAR1",             4, "a Parquet file" },
+        { "ORC",              3, "an ORC file" },
+        { "ARROW1",           6, "an Arrow/Feather file" },
+        { "PK\x03\x04",       4, "a zip archive (.xlsx and .ods are zips)" },
+        { "\x1f\x8b",         2, "a gzip-compressed file" },
+        { "BZh",              3, "a bzip2-compressed file" },
+        { "\xfd" "7zXZ",      6, "an xz-compressed file" },
+        { "\x28\xb5\x2f\xfd", 4, "a zstd-compressed file" },
+        { "SQLite format 3", 15, "an SQLite database" },
+        { "PPZ1",             4, "a Polypress archive already" },
+        { "PPZX",             4, "a Polypress archive already" },
+        { "PPZB",             4, "a Polypress archive already" },
+        { "FAST",             4, "a Polypress archive already" },
+    };
+    static const struct { const char *ext; const char *what; } EXT[] = {
+        { ".parquet", "Parquet" },
+        { ".json",    "JSON" },
+        { ".jsonl",   "JSON Lines" },
+        { ".ndjson",  "newline-delimited JSON" },
+        { ".tsv",     "tab-separated" },
+        { ".psv",     "pipe-separated" },
+        { ".xlsx",    "Excel" },
+        { ".xls",     "Excel" },
+        { ".orc",     "ORC" },
+        { ".feather", "Feather" },
+        { ".arrow",   "Arrow" },
+    };
+    static char msg[512];
+
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        char head[16];
+        size_t got = fread(head, 1, sizeof(head), f);
+        fclose(f);
+        for (size_t i = 0; i < sizeof(MAGIC) / sizeof(MAGIC[0]); i++)
+            if (got >= MAGIC[i].n && !memcmp(head, MAGIC[i].magic, MAGIC[i].n)) {
+                snprintf(msg, sizeof(msg),
+                         "%s looks like %s, not comma-separated text.\n"
+                         "This binary reads CSV only. Reading it as CSV would "
+                         "produce an archive that restores to a corrupt file.",
+                         path, MAGIC[i].what);
+                return msg;
+            }
+    }
+
+    size_t n = strlen(path);
+    for (size_t i = 0; i < sizeof(EXT) / sizeof(EXT[0]); i++) {
+        size_t e = strlen(EXT[i].ext);
+        if (n <= e) continue;
+        const char *tail = path + n - e;
+        int same = 1;
+        for (size_t k = 0; k < e; k++) {
+            char a = tail[k], b = EXT[i].ext[k];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (a != b) { same = 0; break; }
+        }
+        if (same) {
+            snprintf(msg, sizeof(msg),
+                     "%s is %s, which this binary cannot parse -- it reads "
+                     "comma-separated text only.\n"
+                     "The Python CLI does read it:  polypress compress %s",
+                     path, EXT[i].what, path);
+            return msg;
+        }
+    }
+    return NULL;
+}
+
 static int cmd_compress(int argc, char **argv)
 {
     const char *src = NULL, *dst = NULL;
@@ -88,6 +200,9 @@ static int cmd_compress(int argc, char **argv)
         if (!src) src = argv[i];
     }
     if (!src) { fprintf(stderr, "usage: polypress compress FILE [-o OUT]\n"); return 2; }
+
+    const char *why = input_refusal(src);
+    if (why) { fprintf(stderr, "polypress: %s\n", why); return 1; }
 
     Table t;
     if (table_read_csv(&t, src)) { fprintf(stderr, "cannot read %s\n", src); return 1; }
