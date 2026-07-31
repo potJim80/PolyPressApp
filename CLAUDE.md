@@ -271,6 +271,20 @@ sole gateway to the planar predictor.
   bytes and file extensions only, deliberately **not** a content sniff: a rule
   that makes C refuse what Python accepts breaks byte-identity in the act of
   defending it.
+- **"Skip what is already chosen" is not the same as "never consider".** The C
+  front-coding search looped `for (g = 0; g < nsg; g++)` and skipped anything
+  already in `bestf`; Python loops `for i in range(ndict, len(groups))`. Those
+  look equivalent and are not — **when the all-alphabets candidate loses,
+  `bestf` is empty, so C could front-code a single dictionary alphabet and
+  Python never can.** Found 2026-07-30 by `tests/test_cbin_corpus.py` on a
+  Colombian pharmaceutical register whose 26 string groups were *all*
+  alphabets: Python had zero candidates, C picked group 6, and the archives
+  differed by 41 bytes (C 0.13% smaller). Both decoded correctly and each read
+  the other's output — it was never a data bug — but invariant 1 is
+  byte-identity, and "the C port is slightly better here" is precisely the
+  silent divergence that guarantee forbids. The loop now starts at `P.norder`.
+  **`tests/test_cbin.py` passed throughout**; only real data with that shape
+  exposed it.
 - **Known divergence, recorded not fixed:** a CSV containing a NUL byte is
   *refused* by Python (`_csv.Error: line contains NUL`) and *accepted* by the
   C reader. Not data loss and not invariant 1 — which is about two encoders
@@ -329,12 +343,36 @@ Remaining backlog, in value order — see the memory directory for detail:
 
 ## Honest status
 
-13 of 13 real datasets beaten. Median **1.32x**, worst **1.12x**, best
-**3.73x**, all thirteen at full size, measured 2026-07-29 and reproduced in
-`benchmarks/corpus-results.txt`. Excellent on densely-coded administrative
-data, marginal on numeric and text-heavy data. Nobody outside this project has
-run it yet, and the `.dmg` is unsigned — Gatekeeper will call it damaged until
-someone pays for a certificate.
+**The headline is now the unselected corpus, measured 2026-07-30.** 100
+datasets taken from the Socrata catalog in page-view order, not chosen:
+**95 of 100 beaten against the best of 20 competitors**, median margin
+**1.25x**, aggregate **1.23x**, **100 of 100 round-trip exact**. Against
+Parquet specifically it is **90/90 at all four codecs**, and still 90/90 when
+re-finished with Parquet's own codec — which forecloses "you just picked a
+better finisher". Full record in `results/socrata100-summary.txt`, per-codec
+rows in `results/socrata100-results.csv`, selection record in
+`benchmarks/socrata100-manifest.json`.
+
+**Parquet did not reproduce the exact printed text on 77 of the 100.** Always
+quote that next to a Parquet size comparison.
+
+**Two things the bigger corpus exposed that 18 datasets could not:**
+
+1. **The "never worse" guarantee does not hold.** The plain fallbacks are only
+   generated when no trick fired, so a table where one fired can lose to a
+   fallback never run — 3 of 100, worst **24.9%**. This is invariant 2 broken
+   and it is the top backlog item. Fixing it means a cheap probe as nominator
+   and a real compression as decider, in **both** implementations in one commit.
+2. **The C binary compressed a `.parquet` as text** and its own verification
+   passed, because the check is downstream of the misparse. Fixed; see the
+   traps section.
+
+Excellent on densely-coded administrative data, marginal on numeric and
+text-heavy data. Every dataset is a government open-data table, so breadth of
+*genre* is still unmeasured. Nobody outside this project has run it. The `.dmg`
+now carries a valid ad-hoc signature — Gatekeeper still refuses it on first
+open, but as an ordinary unsigned app, which right-click → Open clears, rather
+than as "damaged".
 
 Also measured 2026-07-29:
 

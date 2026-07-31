@@ -1471,7 +1471,23 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     {
         long pick = -1;
         int64_t best_stake = 0;
-        for (size_t g = 0; g < nsg; g++) {
+        /* Start at P.norder, NOT at 0. Python's loop is
+         * `for i in range(ndict, len(groups))`, so a dictionary alphabet is
+         * only ever front-coded as part of candidate 2 -- the all-or-nothing
+         * block -- and never individually.
+         *
+         * This loop used to start at 0 and skip whatever was already in
+         * `bestf`, which looks equivalent and is not: when candidate 2 loses,
+         * `bestf` is empty, so the alphabets became eligible here and C could
+         * front-code one on its own. Python cannot. Found 2026-07-30 by
+         * tests/test_cbin_corpus.py on a Colombian pharmaceutical register
+         * where all 26 string groups were alphabets: Python had zero
+         * candidates and C picked group 6, giving a 41-byte smaller but
+         * DIFFERENT archive. Both decoded correctly and each read the other's
+         * output, so it was never a data bug -- but invariant 1 is
+         * byte-identity, and "C is 0.13% better here" is exactly the kind of
+         * silent divergence that guarantee exists to forbid. */
+        for (size_t g = P.norder; g < nsg; g++) {
             if (bestf[g] || has_nl[g] || sgn[g] < 2) continue;
             int64_t sh = 0, tot = 0;
             prefix_stats(sg[g], sgn[g], &sh, &tot);
