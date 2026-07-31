@@ -285,6 +285,35 @@ sole gateway to the planar predictor.
   silent divergence that guarantee forbids. The loop now starts at `P.norder`.
   **`tests/test_cbin.py` passed throughout**; only real data with that shape
   exposed it.
+- **>>> OPEN, 2026-07-30: exact-tie parent ordering, 2 of 122 real datasets.
+  <<<** `tests/test_cbin_corpus.py` over every corpus here gives **120 of 122
+  byte-identical**. Both exceptions have the **same** root cause: a pair of
+  columns whose base entropies are *exactly* equal, ordered oppositely by the
+  two implementations.
+
+  | dataset | the tied pair | H (identical to the last bit) | python | C |
+  |---|---|---|---|---|
+  | `..._covid_19_deat_hk9y-quqm` | `condition` / `icd10_codes` | 4.5235329837568745148 | 86,027 | 86,028 |
+  | `data_food_inspections_4ijn-s7e5` | `longitude` / `location` | 12.923597062545605141 | 2,169,624 | 2,179,486 |
+
+  In both cases the pair is **the same information written twice** — an ICD
+  code and its label, a longitude and a `"POINT (lon lat)"` string — so the
+  mapping is a bijection and `==` on the entropies is True. Python places one
+  first, C the other, and every string group downstream shifts. Both archives
+  decode correctly and each implementation reads the other's output; nothing is
+  at risk but invariant 1 itself.
+
+  **It is NOT a tie-break-rule bug.** The documented rule (lowest column index
+  wins; `remaining` is a list, not a set) is implemented on both sides. It is
+  the `pairwise_sum` family: somewhere in `_cond_entropy_corrected` the C port
+  accumulates in a different order from numpy, so a pair that ties in Python
+  does not tie in C. The signature is visible in the same table — columns 1 and
+  2 differ only in the last three bits (`1.8817034640742975604` vs
+  `1.8817034640742971163`). **Do not assume the existing `pairwise_sum()`
+  covers every accumulation.** Reproduce with either file above.
+
+  Note the second one is also a free illustration of the cross-column
+  redundancy backlog item: `location` stores the longitude a second time.
 - **Known divergence, recorded not fixed:** a CSV containing a NUL byte is
   *refused* by Python (`_csv.Error: line contains NUL`) and *accepted* by the
   C reader. Not data loss and not invariant 1 — which is about two encoders

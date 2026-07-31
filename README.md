@@ -753,6 +753,19 @@ Full numbers, every contender, in `results/hostile-summary.txt`.
   work; the guarantee is not negotiable, the price of it is.
 - **The 2x cases are matrix-shaped tables.** The 1.3–1.5x cases are the more
   typical result.
+- **The C encoder is byte-identical to the Python one on 120 of 122 real
+  datasets, not 122.** Checked with `tests/test_cbin_corpus.py` across every
+  corpus here — the first time that guarantee had been tested on real data
+  rather than constructed cases. It found three divergences; one was fixed
+  (the C port front-coding a dictionary alphabet Python never would), and two
+  remain, both from the *same* cause: a pair of columns that are the same
+  information written twice — an ICD code and its label, a longitude and a
+  `"POINT (lon lat)"` string — whose entropies are equal *to the last bit*, and
+  which the two implementations then order oppositely. The archives differ by
+  1 byte in 86,027 and by 0.45% respectively; both decode correctly and each
+  implementation reads the other's output, so nothing is at risk except the
+  guarantee. It is a float-summation-order difference, not a tie-break-rule
+  one; reproducers are in `CLAUDE.md`.
 - **The "never worse" guarantee does not currently hold.** The plain xz and
   bzip2 fallbacks are only generated when no modelling trick fired, so a table
   where one fired can lose to a fallback that was never run. 3 of the 100
