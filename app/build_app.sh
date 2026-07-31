@@ -143,6 +143,27 @@ if command -v iconutil >/dev/null && command -v sips >/dev/null; then
 fi
 rm -rf "$TMP"
 
+# ---- re-sign, and it must be LAST ------------------------------------------
+# osacompile emits an ad-hoc signed bundle, and everything above this line
+# then edits it: PlistBuddy rewrites Info.plist, the icon step drops an .icns
+# into Resources, the payload is copied in. Every one of those breaks the
+# seal, and the result is worse than never signing at all -- `spctl` answers
+# "invalid Info.plist (plist or signature have been modified)" and macOS tells
+# the user the app is DAMAGED. An unsigned app merely gets "unidentified
+# developer", which right-click -> Open clears; a *broken* signature is
+# refused outright, so the READ ME FIRST workaround did not work.
+#
+# Re-signing ad-hoc costs nothing, needs no certificate, and puts the bundle
+# back to the ordinary unsigned-app path. It is not notarisation and does not
+# pretend to be: Gatekeeper still objects on first open, it just objects in
+# the way the instructions describe.
+if command -v codesign >/dev/null; then
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || \
+    echo "warning: could not re-sign $APP; first-run may report 'damaged'" >&2
+  codesign --verify --deep "$APP" 2>/dev/null || \
+    echo "warning: $APP does not verify after re-signing" >&2
+fi
+
 # Nudge LaunchServices so the .tcz association takes effect now.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
   -f "$APP" >/dev/null 2>&1 || true
