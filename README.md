@@ -30,12 +30,12 @@ python3 benchmarks/report.py results/socrata100.jsonl --title "Socrata 100"
 | | result |
 |---|---|
 | **Round-trips exactly** | **100 of 100** |
-| **Smaller than the best of all 20 competitors** | **95 of 100** |
-| Margin over the best other tool | median **1.25x**, best **2.30x**, worst 0.80x |
-| Whole corpus, aggregate | 67,415,491 B vs 82,793,057 B — **1.23x smaller** |
-| Compression vs raw CSV | median **13.84x**, best 163.03x, worst 3.99x |
+| **Smaller than the best of all 20 competitors** | **98 of 100** |
+| Margin over the best other tool | median **1.25x**, best **2.30x**, worst 0.92x |
+| Whole corpus, aggregate | 66,751,004 B vs 82,793,057 B — **1.24x smaller** |
+| Compression vs raw CSV | median **13.84x**, best 164.74x, worst 3.99x |
 
-Beaten by the *best of twenty* on 95 tables out of 100 is the honest headline,
+Beaten by the *best of twenty* on 98 tables out of 100 is the honest headline,
 because someone storing a table uses the best tool they have, not the average
 one. Against each competitor individually it is stronger:
 
@@ -45,25 +45,26 @@ one. Against each competitor individually it is stronger:
 | `parquet+brotli` | **90/90** | 1.68x | 1.18x |
 | `parquet+gzip` | **90/90** | 1.91x | 1.26x |
 | `parquet+snappy` | **90/90** | 2.62x | 1.39x |
-| `orc+zstd` | 86/86 | 2.01x | 1.02x |
+| `orc+zstd` | 86/86 | 2.02x | 1.02x |
 | `orc+zlib` | 86/86 | 2.14x | 1.04x |
-| `feather+zstd` | 90/90 | 3.38x | 1.68x |
-| `xz -9e` | 98/100 | 1.29x | 0.80x |
-| `brotli -q 11` | 97/100 | 1.33x | 0.82x |
-| `zstd -22 ultra` | 99/100 | 1.41x | 0.95x |
-| `bzip2 -9` | 99/100 | 1.51x | 0.99x |
-| `gzip -9` | 100/100 | 2.37x | 1.25x |
+| `feather+zstd` | 90/90 | 3.39x | 1.68x |
+| **`xz -9e`** | **100/100** | 1.29x | 1.00x |
+| **`bzip2 -9`** | **100/100** | 1.51x | 1.00x |
+| **`zstd -22 ultra`** | **100/100** | 1.41x | 1.06x |
+| `brotli -q 11` | 98/100 | 1.33x | 0.92x |
+| `gzip -9` | 100/100 | 2.37x | 1.26x |
 
 (The counts differ because pyarrow could not read every CSV: 10 files defeated
 its Parquet/Feather reader and 14 its ORC writer. Those datasets keep their
 general-purpose competitors and lose their columnar ones.)
 
 **It beat Parquet on every single table it could be compared on**, at all four
-of the codecs Parquet supports. The five losses are all to general-purpose
-compressors, listed in full under [Where it loses](#where-it-loses) — because a
-compressor whose failure cases are unknown is one nobody should trust with
-their data. One of them is a 24.9% loss and it exposes a real defect, described
-there.
+of the codecs Parquet supports. **It also beat plain `xz`, `bzip2` and
+`zstd -22` on all 100** — that is the "never worse" guarantee holding, and it
+only holds because a defect found by this corpus was fixed (below). The two
+remaining losses are both to `brotli -q 11`, by 8.1% and 1.0%, and are listed
+in full under [Where it loses](#where-it-loses) — because a compressor whose
+failure cases are unknown is one nobody should trust with their data.
 
 ### Parquet did not reproduce the data on 77 of the 100 tables
 
@@ -91,10 +92,10 @@ entropy coder, across all 100 datasets:
 |---|---|---|---|
 | `polypress+zstd` vs `parquet+zstd` | **90/90** | 1.58x | 1.06x |
 | `polypress+zstd` vs `orc+zstd` | 83/86 | 1.81x | 0.95x |
-| `polypress+zstd` vs `feather+zstd` | 90/90 | 3.02x | 1.44x |
-| `polypress+brotli` vs `parquet+brotli` | **90/90** | 1.67x | 1.14x |
-| `polypress+zstd` vs plain `zstd -22` | 95/100 | 1.27x | 0.83x |
-| `polypress+brotli` vs plain `brotli -q 11` | 97/100 | 1.31x | 0.78x |
+| `polypress+zstd` vs `feather+zstd` | 90/90 | 3.10x | 1.44x |
+| `polypress+brotli` vs `parquet+brotli` | **90/90** | 1.66x | 1.14x |
+| `polypress+zstd` vs plain `zstd -22` | 96/100 | 1.27x | 0.96x |
+| `polypress+brotli` vs plain `brotli -q 11` | 99/100 | 1.31x | 1.00x |
 
 **Strip xz out entirely and the gap barely moves. The win is the modelling.**
 
@@ -111,15 +112,16 @@ was built for, and ten tables written specifically to break it.
 
 | corpus | datasets | wins | median margin | worst |
 |---|---|---|---|---|
-| **Socrata 100** (unselected) | 100 | **95** | 1.25x | 0.80x |
-| Curated (by shape) | 13 | **13** | 1.35x | 1.12x |
+| **Socrata 100** (unselected) | 100 | **98** | 1.25x | 0.92x |
+| Curated (by shape) | 13 | **13** | 1.35x | 1.13x |
 | Matrix-shaped | 3 | **3** | 1.92x | 1.67x |
 | Adversarial (built to break it) | 10 | 5 | 1.00x | 0.92x |
-| **all** | **126** | **116 (92%)** | **1.25x** | 0.80x |
+| **all** | **126** | **119 (94%)** | **1.25x** | 0.92x |
 
-**126 of 126 round-trip to the exact input**, and the whole 1.36 GB comes to
-90,801,656 B against 113,451,346 B for the best competitor on each table —
-**1.25x smaller in aggregate**. The adversarial row is meant to be the bad one:
+**126 of 126 round-trip to the exact input**, and the whole 1.35 GB comes to
+89,135,658 B against 112,360,574 B for the best competitor on each table —
+**1.26x smaller in aggregate**. Peak memory across the whole sweep was
+1,782 MB. The adversarial row is meant to be the bad one:
 those tables are random text, UUIDs and base64 by construction, and a tie there
 is the correct outcome.
 
@@ -258,14 +260,16 @@ python3 benchmarks/report.py results/curated13.jsonl
 | NYC baby names | 29,685 x 6 | **1.27x** | `parquet+brotli` |
 | USGS earthquakes 2023 | 16,190 x 22 | **1.26x** | `bzip2 -9` |
 | USGS earthquakes 21-22 | 16,707 x 22 | **1.22x** | `bzip2 -9` |
-| Chicago permits | 40,735 x 116 \* | **1.13x** | `xz -9e` |
+| Chicago permits | 28,332 x 116 \* | **1.15x** | `xz -9e` |
 | NOAA climate, SEA | 79 x 106 | **1.12x** | `bzip2 -9` |
 | NOAA climate, ORD | 69 x 102 | **1.12x** | `brotli -q11` |
 
-\* truncated at a 40 MB row boundary to stay inside a 2 GB memory ceiling.
-Every codec was handed the identical truncated file.
+\* truncated at a row boundary to stay inside a 2 GB memory ceiling — at
+40 MB for the first three, and at 28 MB for `chicago_permits`, which peaked at
+2,120 MB at 40 MB and had to come down. Every codec was handed the identical
+truncated file, so the comparison on each row is exact.
 
-**13 of 13, median 1.35x, worst 1.12x, best 2.26x**, aggregate **1.43x**.
+**13 of 13, median 1.35x, worst 1.12x, best 2.26x.**
 Regenerated 2026-07-30 from `results/curated13.jsonl` by the command in this
 section, never edited by hand — an earlier version of this table was patched
 per-dataset after a codec change and drifted from the results file on five of
@@ -608,56 +612,58 @@ itself. Three of six test encodings destroyed data that way.
 
 ## Where it loses
 
-### The five losses out of 100, in full
+### The two losses out of 100, in full
 
 | dataset | lost to | by | shape |
 |---|---|---|---|
-| `covid_19_vaccinations_in_the_united_states` | `xz -9e` | **24.9%** | 50,000 x 80 |
-| `open_meetings` | `brotli -q 11` | 8.8% | 147 x 31 |
-| `traffic_incidents` | `xz -9e` | 1.2% | — |
+| `open_meetings` | `brotli -q 11` | 8.1% | 147 x 31 |
 | `county_clerk_license_information` | `brotli -q 11` | 1.0% | — |
-| `missouri_beer_wine_and_liquor_solicitor` | `bzip2 -9` | 0.9% | — |
 
-Four of the five are under 1.3%. The first is not, and it is a defect rather
-than a shape the codec is bad at.
+Both are to brotli, which is not carried as a fallback candidate — see the note
+at the end of this section. Against every codec Polypress *does* carry, and
+against every columnar format, it wins all 100.
 
-### The 24.9% loss is a bug in the "never worse" guarantee
+### The 24.9% loss that used to be here was a bug, and it is fixed
+
+Worth keeping in the record, because the corpus earned its keep by finding it.
 
 The codec carries plain `xz` and `bzip2` over canonical CSV as fallback
-candidates, and the rule is supposed to be that the modelled encoding only
-wins if it is *measured* smaller. It is not measured. `fast.py` runs the
-fallbacks **only when none of the three modelling tricks fired**, on the
-assumption that if any trick fired the modelled output wins by a margin no
-general compressor closes.
+candidates, and the rule is that the modelled encoding only wins if it is
+*measured* smaller. It was not measured. `fast.py` built the fallbacks **only
+when none of the three modelling tricks fired**, on the theory that if any
+trick fired the modelled output wins by a margin no general compressor closes.
 
-That assumption is wrong, and this corpus is what found it. On the COVID
-vaccination table (50,000 x 80) one trick fired, so the fallbacks were skipped.
-Generating them by hand afterwards:
+That theory was wrong. It had been checked against 18 tables and held; against
+100 unselected ones it failed on 3. On the COVID vaccination table (50,000 x 80)
+one trick fired, so the fallbacks were skipped:
 
 ```
-what encode() actually returns :    2,830,752 B   (container PPZ1)
+what encode() shipped          :    2,830,752 B   (container PPZ1)
 the xz fallback it never ran   :    2,210,086 B
-the bzip2 fallback it never ran:    5,401,233 B
 ```
 
-**The shipped archive is 28.1% larger than a fallback the codec already
-implements, already had the code to build, and simply did not try.** (Against
-`xz -9e` run on the original file rather than on canonical CSV, the gap is
-24.9% — that is the figure in the loss table above.)
+**28.1% larger than a fallback the codec already implements and simply did not
+try.** This is the failure mode `CLAUDE.md` calls *the measured/unmeasured
+trap*: entropy is a good nominator and a bad decider.
 
-This is the exact failure mode `CLAUDE.md` warns about under *the
-measured/unmeasured trap*: **entropy is a good nominator and a bad decider.**
-The gate had been checked before and found to miss 0 times out of 18 tables.
-At 100 tables it misses 3 — twice by about 1%, once by 24.9%.
+Fixed 2026-07-31. The candidates are now always considered, and the three
+affected datasets improved by **21.9%**, 1.4% and 0.9%. `xz -9e`, `bzip2 -9`
+and `zstd -22` all went to **100/100**.
 
-It is left unfixed here on purpose. The honest fix is to measure rather than
-assume, but running both fallbacks unconditionally is not a 2x encode cost as
-the docstring claims — on a 26 MB table it is closer to 5x, because `xz -9e`
-over the whole canonical CSV is comparable in cost to the entire modelled
-encode. The right shape is a cheap probe as nominator and a real compression as
-decider, which is what `_probe_len` exists for elsewhere in the codec. That is
-a measured change to **both** implementations in the same commit, since the C
-encoder must stay byte-identical, and it is the top item in the backlog.
+Two things about the fix are worth stating. It is affordable because the
+compressors are handed the size they must beat and abandon a hopeless candidate
+part-way — compressed output only grows, so that cannot change which candidate
+wins. And a cheaper alternative was **measured and rejected**: a preset-1 LZMA
+probe as nominator is only sound above a 3.0x threshold (worst observed ratio
+2.825), which fires on 19 of 22 datasets and saves almost nothing over simply
+always checking. See `benchmarks/probe_fallback_gate.py`.
+
+**The test suite had been agreeing with the bug.** `tests/test_fast.py`
+asserted that "a structured table must NOT pay for the fallback" — the same
+assumption `encode()` was making, so it could never have caught the defect. On
+its own 2,000-row zip/city table the modelled container is 294 B and plain xz
+is **122 B, 2.4x smaller**, and a trick fired. The test now requires the
+smaller of the two.
 
 ### The adversarial suite
 
@@ -688,11 +694,10 @@ anything previously measured here**, and the gap is 9% rather than 0.8%.
 This is the same lesson as the `cdc_nndss` row further up. A benchmark lineup
 that is too small does not produce wrong numbers, it produces flattering ones.
 
-**The intended guarantee is: never worse than xz or bzip2 on any table**,
-because both are carried as candidates and the smaller wins. As the section
-above records, **the guarantee does not currently hold** — the candidates are
-only generated when no modelling trick fired, so a table where one fired can
-lose to a fallback that was never run. On this corpus that is 3 tables in 100.
+**The guarantee is: never worse than xz or bzip2 on any table**, because both
+are carried as candidates and the smaller wins. As the section above records it
+did not hold until 2026-07-31; it now does, and the head-to-head table shows it
+— `xz -9e` and `bzip2 -9` are both **100/100** across the unselected corpus.
 
 It was never "never worse than anything" in any case. The fallbacks carried are
 xz and bzip2, both stdlib; adding a brotli candidate would mean a non-stdlib
@@ -704,11 +709,12 @@ oversight, unlike the gate above.
 
 Two costs, stated plainly:
 
-- **Unstructured tables encode 3–5x slower.** When none of the three ideas
-  fire, the fallbacks run, and they are a second and third pass over the data.
-  `shuffled_cats` went from 12.5 to 2.6 MB/s. Tables where any trick fires are
-  untouched — which is the speed benefit that the correctness bug above is
-  buying, and it is not worth 24.9%.
+- **Every table now pays for the fallback check, and that is the price of the
+  guarantee.** Measured before the abort-early cap was added: **+63% encode
+  time** across 22 datasets. It also costs memory — building the canonical CSV
+  and parsing it back is roughly another copy of the table, which took
+  `chicago_permits` at 40 MB from a 1,965 MB peak to 2,120 MB. The benchmark
+  ceiling dropped from 40 MB to 28 MB per input as a result.
 - **The fallback is refused if it cannot round-trip.** Canonical CSV is not
   lossless for every conceivable cell, so a candidate is parsed back and
   compared before it is allowed to win. Losing on size beats corrupting data.
@@ -733,12 +739,14 @@ Full numbers, every contender, in `results/hostile-summary.txt`.
 ## Honest limitations
 
 - **Pure Python + numpy + a small C library, and it sits in the slow tier.**
-  Median across the 100 unselected datasets: **3.6 MB/s encode, 121 MB/s
-  decode**. For context, on the same corpus and the same machine, `xz -9e` is
-  3.7 / 199, `brotli -q 11` is 1.0 / 473, `zstd -22` is 2.7 / 792 and
-  `zstd -3` is 185 / 704. So it is in the same class as the max-level general
-  compressors and two orders of magnitude off the fast tier, which is where it
-  will stay. Note also that these are not measured on the same basis: the
+  Median across the 100 unselected datasets: **2.0 MB/s encode, 134 MB/s
+  decode** — down from 3.6 MB/s encode before the fallback check became
+  unconditional, which is what the "never worse" guarantee cost. For context,
+  on the same corpus and the same machine, `xz -9e` is 3.9 / 203,
+  `brotli -q 11` is 1.1 / 501, `zstd -22` is 2.8 / 871 and `zstd -3` is
+  187 / 716. So encoding is now slower than `xz -9e` and roughly twice
+  `brotli -q 11`, and two orders of magnitude off the fast tier, which is where
+  it will stay. Note also that these are not measured on the same basis: the
   general-purpose tools are handed raw CSV bytes, while Parquet, ORC, Feather
   and Polypress are handed an already-parsed table and are not charged for
   reading the CSV.
@@ -753,24 +761,26 @@ Full numbers, every contender, in `results/hostile-summary.txt`.
   work; the guarantee is not negotiable, the price of it is.
 - **The 2x cases are matrix-shaped tables.** The 1.3–1.5x cases are the more
   typical result.
-- **The C encoder is byte-identical to the Python one on 120 of 122 real
-  datasets, not 122.** Checked with `tests/test_cbin_corpus.py` across every
-  corpus here — the first time that guarantee had been tested on real data
-  rather than constructed cases. It found three divergences; one was fixed
-  (the C port front-coding a dictionary alphabet Python never would), and two
-  remain, both from the *same* cause: a pair of columns that are the same
-  information written twice — an ICD code and its label, a longitude and a
-  `"POINT (lon lat)"` string — whose entropies are equal *to the last bit*, and
-  which the two implementations then order oppositely. The archives differ by
-  1 byte in 86,027 and by 0.45% respectively; both decode correctly and each
-  implementation reads the other's output, so nothing is at risk except the
-  guarantee. It is a float-summation-order difference, not a tie-break-rule
-  one; reproducers are in `CLAUDE.md`.
-- **The "never worse" guarantee does not currently hold.** The plain xz and
-  bzip2 fallbacks are only generated when no modelling trick fired, so a table
-  where one fired can lose to a fallback that was never run. 3 of the 100
-  unselected datasets do, one of them by 24.9%. Described in full under
-  [Where it loses](#where-it-loses); it is the top item in the backlog.
+- **Bit-identity with numpy is not achievable, and the codec no longer depends
+  on it.** `tests/test_cbin_corpus.py` — the first check of invariant 1 against
+  real data rather than constructed cases — found three C/Python divergences.
+  After the fixes it reports **108 of 108 datasets byte-identical**, with both
+  decoders reproducing every table.
+  Chasing the last two established why: `pairwise_sum()` in the C port
+  reproduces numpy's *documented scalar* algorithm exactly and agrees to the
+  last bit on a 23-bin marginal, but on a **13,147-bin joint histogram
+  `np.sum` does not match numpy's own documented algorithm** — it takes a SIMD
+  reduction whose grouping depends on the CPU's vector width. No portable C can
+  match that, and two numpy builds on different hardware need not match each
+  other. Entropy scores are therefore quantised to a ~1e-6 grid and compared as
+  integers, with ties falling to the lower column index. The last bit never
+  carried information; letting it choose a parent decided every byte after it.
+- **Encode got slower to make "never worse" true.** Every table now builds the
+  canonical CSV and checks the plain fallbacks against the modelled encoding.
+  Measured before the abort-early cap: **+63% encode time**. That bought the
+  guarantee — `xz`, `bzip2` and `zstd -22` all go to 100/100 — and it is the
+  right trade, but it is a real cost and it is not yet reclaimed on the C side,
+  which still compresses each candidate in full.
 - **Breadth is no longer the gap it was, but the corpus is still one genre.**
   100 unselected tables answers "you picked the files", and it does not answer
   "you picked the *kind* of file". Every one of them is a government

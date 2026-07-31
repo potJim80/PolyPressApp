@@ -1,16 +1,16 @@
 ==========================================================================
 EVERYTHING -- all 126 datasets across all four corpora
 ==========================================================================
-126 datasets measured, 1,359,937,128 bytes of CSV, 4,781,113 rows, 8008 columns in total
+126 datasets measured, 1,347,937,023 bytes of CSV, 4,768,710 rows, 8008 columns in total
 4 truncated at the size ceiling (every codec got the same truncated file)
 round-trip: 126 of 126 datasets decoded back to the exact input
-peak RSS across the whole sweep: 1965 MB
+peak RSS across the whole sweep: 1782 MB
 
 1. Polypress vs the best competitor on each table
 -------------------------------------------------
-wins 116 of 126 (92%)
-margin over the best other tool: median 1.25x, best 4.24x, worst 0.80x
-whole corpus: 90,801,656 B vs 113,451,346 B, 1.25x smaller in aggregate
+wins 119 of 126 (94%)
+margin over the best other tool: median 1.25x, best 4.24x, worst 0.92x
+whole corpus: 89,135,658 B vs 112,360,574 B, 1.26x smaller in aggregate
 compression ratio vs raw CSV: median 13.10x, best 217.93x, worst 1.32x
 
   strongest 15:
@@ -26,60 +26,57 @@ compression ratio vs raw CSV: median 13.10x, best 217.93x, worst 1.32x
   seattle_fire911.csv                                  1.85x  21.44x  xz -9e
   data_covid_19_vaccine_distribution_allocation_b7pe   1.78x  31.68x  brotli -q11
   wa_ev_population.csv                                 1.74x  35.10x  xz -9e
-  data_united_states_covid_19_community_levels_3nnm-   1.72x  29.86x  brotli -q11
+  data_dashboard_expenditures_mi_fbey-tu9a.csv         1.73x 164.74x  parquet+brotli
   data_civil_service_list_certification_a9md-ynri.cs   1.72x  58.77x  parquet+brotli
-  data_dashboard_expenditures_mi_fbey-tu9a.csv         1.71x 163.03x  parquet+brotli
+  data_united_states_covid_19_community_levels_3nnm-   1.70x  29.51x  brotli -q11
   weather_wide.csv                                     1.67x   8.28x  bzip2 -9
 
   weakest 15 (losses first):
   dataset                                            vs best  vs csv  best other
+  data_covid_19_vaccinations_in_the_united_stat_8xkx   1.03x  11.88x  xz -9e
+  datos_resultados_de_los_sorteos_loterías_i3kx-3zps   1.02x  14.73x  bzip2 -9
   data_lottery_daily_numbers_win_4_winning_numb_hsys   1.02x  10.29x  orc+zstd
   datahub_smart_city_challenge_finalists_project_p_4   1.02x   9.38x  brotli -q11
-  data_vaccines_gov_covid_19_vaccinating_provid_5jp2   1.01x  16.48x  xz -9e
   data_missouri_law_enforcement_agencies_cgbu-k38b.c   1.01x   4.21x  bzip2 -9
   mixed_types.csv                                      1.00x   6.62x  orc+zstd
+  data_traffic_incidents_35ra-9556.csv                 1.00x   8.89x  xz -9e
+  data_missouri_beer_wine_and_liquor_solicitor_mmn5-   1.00x   4.82x  bzip2 -9
   high_precision.csv                                   1.00x   2.34x  bzip2 -9
   wide_random.csv                                      1.00x   2.41x  orc+zlib
-  data_missouri_beer_wine_and_liquor_solicitor_mmn5-   0.99x   4.78x  bzip2 -9
   data_county_clerk_license_information_hbmv-rqk9.cs   0.99x  12.34x  brotli -q11
-  data_traffic_incidents_35ra-9556.csv                 0.99x   8.76x  xz -9e
   base64_blob.csv                                      0.98x   1.32x  orc+zstd
   uuid_keys.csv                                        0.97x   2.24x  orc+zstd
-  data_open_meetings_au6r-w9n3.csv                     0.92x   5.89x  brotli -q11
+  data_open_meetings_au6r-w9n3.csv                     0.92x   5.93x  brotli -q11
   random_text.csv                                      0.92x   1.33x  orc+zstd
-  data_covid_19_vaccinations_in_the_united_stat_8xkx   0.80x   9.27x  xz -9e
 
-  every loss, in full (10 of 126):
-  data_covid_19_vaccinations_in_the_united_stat_8xkx lost to xz -9e           by 24.9%
+  every loss, in full (7 of 126):
   random_text.csv                                    lost to orc+zstd         by 9.0%
-  data_open_meetings_au6r-w9n3.csv                   lost to brotli -q11      by 8.8%
+  data_open_meetings_au6r-w9n3.csv                   lost to brotli -q11      by 8.1%
   uuid_keys.csv                                      lost to orc+zstd         by 3.1%
   base64_blob.csv                                    lost to orc+zstd         by 2.6%
-  data_traffic_incidents_35ra-9556.csv               lost to xz -9e           by 1.2%
   data_county_clerk_license_information_hbmv-rqk9.cs lost to brotli -q11      by 1.0%
-  data_missouri_beer_wine_and_liquor_solicitor_mmn5- lost to bzip2 -9         by 0.9%
   wide_random.csv                                    lost to orc+zlib         by 0.1%
   high_precision.csv                                 lost to bzip2 -9         by 0.0%
 
 2. Head to head, one competitor at a time
 -----------------------------------------
   competitor                  n   ppz wins     median      worst
-  brotli -q11               126    121/126      1.36x      0.82x
-  bzip2 -9                  126    123/126      1.53x      0.99x
-  feather+lz4               114    114/114      5.69x      1.38x
-  feather+zstd              114    114/114      3.38x      1.03x
+  brotli -q11               126    122/126      1.36x      0.92x
+  bzip2 -9                  126    124/126      1.53x      1.00x
+  feather+lz4               114    114/114      5.76x      1.38x
+  feather+zstd              114    114/114      3.39x      1.03x
   gzip -9                   126    126/126      2.37x      1.00x
   lz4 -9                    126    126/126      2.74x      1.32x
-  orc+snappy                109    109/109      3.06x      1.06x
+  orc+snappy                109    109/109      3.09x      1.06x
   orc+zlib                  109    107/109      2.14x      0.94x
   orc+zstd                  109    105/109      2.03x      0.92x
   parquet+brotli            114    114/114      1.68x      1.00x
   parquet+gzip              114    114/114      1.91x      1.04x
-  parquet+snappy            114    114/114      2.62x      1.05x
+  parquet+snappy            114    114/114      2.64x      1.05x
   parquet+zstd              114    114/114      1.75x      1.00x
-  xz -9e                    126    124/126      1.31x      0.80x
-  zstd -19                  126    123/126      1.43x      0.95x
-  zstd -22                  126    123/126      1.41x      0.95x
+  xz -9e                    126    126/126      1.31x      1.00x
+  zstd -19                  126    124/126      1.43x      0.99x
+  zstd -22                  126    124/126      1.41x      0.99x
   zstd -3                   126    124/126      2.20x      0.99x
 
 3. Like for like: the same finisher on both sides
@@ -89,10 +86,10 @@ compression: xz', so Parquet cannot. These rows strip that
 advantage out by re-finishing the same modelled streams.
   polypress+zstd     vs parquet+zstd      114/114 wins   median   1.61x  worst   1.01x
   polypress+zstd     vs orc+zstd          101/109 wins   median   1.81x  worst   0.89x
-  polypress+zstd     vs feather+zstd      114/114 wins   median   3.04x  worst   1.03x
-  polypress+zstd     vs zstd -22          117/126 wins   median   1.28x  worst   0.83x
+  polypress+zstd     vs feather+zstd      114/114 wins   median   3.10x  worst   1.03x
+  polypress+zstd     vs zstd -22          118/126 wins   median   1.28x  worst   0.95x
   polypress+brotli   vs parquet+brotli    114/114 wins   median   1.67x  worst   1.01x
-  polypress+brotli   vs brotli -q11       121/126 wins   median   1.32x  worst   0.78x
+  polypress+brotli   vs brotli -q11       123/126 wins   median   1.32x  worst   1.00x
 
 4. Did the columnar formats reproduce the data exactly?
 -------------------------------------------------------
@@ -101,7 +98,7 @@ on 18 datasets, changed it on 92, and could not be checked on 16.
 Where it changed the text, part of any Parquet size win is
 discarded formatting rather than compression -- '1.50' becoming
 1.5 is a smaller file for a reason that is not the codec.
-  changed: noaa_gsoy_ord.csv, noaa_gsoy_sea.csv, usgs_quakes.csv, usgs_quakes_deep.csv, seattle_fire911.csv, austin_incidents.csv, nyc_311.csv, wa_ev_population.csv, chicago_permits.csv, mixed_types.csv, high_precision.csv, random_floats.csv, treasury_yields.csv, weather_wide.csv, weather_hourly.csv, data_daily_arrests_xhwt-7h2h.csv, data_open_meetings_au6r-w9n3.csv, data_covid_19_vaccine_distribution_alloc, data_covid_19_vaccine_distribution_alloc, data_lottery_powerball_winning_numbers_b
+  changed: data_daily_arrests_xhwt-7h2h.csv, data_open_meetings_au6r-w9n3.csv, data_covid_19_vaccine_distribution_alloc, data_covid_19_vaccine_distribution_alloc, data_lottery_powerball_winning_numbers_b, data_lottery_mega_millions_winning_numbe, data_affordable_rental_housing_developme, data_lottery_cash_4_life_winning_numbers, data_transportation_services_index_and_s, datos_lista_oficial_de_precios_unitarios, data_rates_of_covid_19_cases_or_deaths_b, data_missouri_alcohol_licenses_not_renew, data_providence_police_department_arrest, data_police_active_warrants_cab7-wvn5.cs, data_lottery_take_5_winning_numbers_begi, datos_tasa_de_cambio_representativa_del_, data_county_clerk_license_information_hb, data_provisional_covid_19_deaths_by_week, data_tlc_new_driver_application_status_d, data_lottery_daily_numbers_win_4_winning
   ...and 72 more
 
 5. Speed, indicative only
@@ -120,23 +117,23 @@ every one of them would really pay. Read the columnar rows and the
 polypress row against each other; read either against gzip only as
 a rough guide.
   codec                  enc MB/s     dec MB/s
-  brotli -q11                 1.0        452.3
-  bzip2 -9                   19.1         75.5
-  feather+lz4              2462.1       4416.4
-  feather+zstd             2274.3       4240.7
-  gzip -9                    23.1        828.0
-  lz4 -9                     72.3        502.5
-  orc+snappy                405.4       1175.1
-  orc+zlib                  200.8        626.0
-  orc+zstd                  360.3       1013.0
-  parquet+brotli              2.4       1649.7
-  parquet+gzip               92.1       1758.4
-  parquet+snappy            506.7        206.3
-  parquet+zstd               29.9       3082.5
-  polypress                   3.4        106.9
-  xz -9e                      3.7        191.8
-  zstd -19                    3.9        762.2
-  zstd -22                    2.7        759.8
-  zstd -3                   172.4        647.3
+  brotli -q11                 1.1        475.9
+  bzip2 -9                   19.5         80.4
+  feather+lz4              2675.2       4468.0
+  feather+zstd             2389.6       4329.9
+  gzip -9                    23.4        897.6
+  lz4 -9                     71.5        528.4
+  orc+snappy                413.2       1192.1
+  orc+zlib                  201.9        634.1
+  orc+zstd                  363.7       1076.4
+  parquet+brotli              2.4       1670.7
+  parquet+gzip               93.1       1838.7
+  parquet+snappy            512.7        210.7
+  parquet+zstd               30.1       3204.6
+  polypress                   2.0        121.1
+  xz -9e                      3.9        194.3
+  zstd -19                    4.0        810.3
+  zstd -22                    2.9        816.9
+  zstd -3                   175.7        664.3
 
 wrote results/all-results.csv

@@ -1,16 +1,16 @@
 ==========================================================================
 Curated 13 -- hand-picked government datasets, kept for per-shape detail
 ==========================================================================
-13 datasets measured, 287,028,323 bytes of CSV, 1,082,965 rows, 527 columns in total
+13 datasets measured, 275,028,218 bytes of CSV, 1,070,562 rows, 527 columns in total
 4 truncated at the size ceiling (every codec got the same truncated file)
 round-trip: 13 of 13 datasets decoded back to the exact input
-peak RSS across the whole sweep: 1965 MB
+peak RSS across the whole sweep: 1766 MB
 
 1. Polypress vs the best competitor on each table
 -------------------------------------------------
 wins 13 of 13 (100%)
 margin over the best other tool: median 1.35x, best 2.26x, worst 1.12x
-whole corpus: 14,925,282 B vs 21,320,527 B, 1.43x smaller in aggregate
+whole corpus: 13,923,771 B vs 20,229,755 B, 1.45x smaller in aggregate
 compression ratio vs raw CSV: median 17.31x, best 217.93x, worst 6.47x
 
   strongest 13:
@@ -25,7 +25,7 @@ compression ratio vs raw CSV: median 17.31x, best 217.93x, worst 6.47x
   nyc_baby_names.csv                                   1.27x  28.42x  parquet+brotli
   usgs_quakes.csv                                      1.26x   6.47x  bzip2 -9
   usgs_quakes_deep.csv                                 1.22x   6.58x  bzip2 -9
-  chicago_permits.csv                                  1.13x  11.36x  xz -9e
+  chicago_permits.csv                                  1.15x  11.11x  xz -9e
   noaa_gsoy_sea.csv                                    1.12x   9.71x  bzip2 -9
   noaa_gsoy_ord.csv                                    1.12x   8.98x  brotli -q11
 
@@ -41,7 +41,7 @@ compression ratio vs raw CSV: median 17.31x, best 217.93x, worst 6.47x
   nyc_baby_names.csv                                   1.27x  28.42x  parquet+brotli
   usgs_quakes.csv                                      1.26x   6.47x  bzip2 -9
   usgs_quakes_deep.csv                                 1.22x   6.58x  bzip2 -9
-  chicago_permits.csv                                  1.13x  11.36x  xz -9e
+  chicago_permits.csv                                  1.15x  11.11x  xz -9e
   noaa_gsoy_sea.csv                                    1.12x   9.71x  bzip2 -9
   noaa_gsoy_ord.csv                                    1.12x   8.98x  brotli -q11
 
@@ -103,21 +103,21 @@ every one of them would really pay. Read the columnar rows and the
 polypress row against each other; read either against gzip only as
 a rough guide.
   codec                  enc MB/s     dec MB/s
-  brotli -q11                 1.0        522.3
-  bzip2 -9                   19.4         77.2
-  feather+lz4              2396.7       4917.4
-  feather+zstd             2205.0       4353.4
-  gzip -9                    20.0       1036.4
-  lz4 -9                    117.9        633.0
-  orc+snappy                429.8       1175.1
-  orc+zlib                  221.7        634.9
-  orc+zstd                  393.7       1083.6
-  parquet+brotli              1.8       2336.4
-  parquet+gzip               89.3       2650.2
-  parquet+snappy            620.2        661.6
-  parquet+zstd               23.9       4064.1
-  polypress                   2.6         85.2
-  xz -9e                      3.5        222.2
-  zstd -19                    3.8       1066.6
-  zstd -22                    2.4       1110.7
-  zstd -3                   218.8        840.0
+  brotli -q11                 1.0        561.3
+  bzip2 -9                   19.9         83.5
+  feather+lz4              2666.8       5564.6
+  feather+zstd             2300.4       4337.9
+  gzip -9                    20.9       1065.3
+  lz4 -9                    123.0        638.8
+  orc+snappy                444.8       1192.1
+  orc+zlib                  227.9        653.6
+  orc+zstd                  406.0       1121.1
+  parquet+brotli              2.0       2426.7
+  parquet+gzip               93.6       2656.7
+  parquet+snappy            613.5        676.1
+  parquet+zstd               25.3       3873.0
+  polypress                   1.6         95.8
+  xz -9e                      3.8        220.2
+  zstd -19                    4.0       1129.5
+  zstd -22                    2.7       1099.0
+  zstd -3                   224.2        837.9

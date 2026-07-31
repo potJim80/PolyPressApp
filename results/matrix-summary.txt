@@ -3,7 +3,7 @@ Matrix-shaped tables -- the planar predictor's own case
 ==========================================================================
 3 datasets measured, 9,559,745 bytes of CSV, 122,982 rows, 45 columns in total
 round-trip: 3 of 3 datasets decoded back to the exact input
-peak RSS across the whole sweep: 529 MB
+peak RSS across the whole sweep: 562 MB
 
 1. Polypress vs the best competitor on each table
 -------------------------------------------------
@@ -82,21 +82,21 @@ every one of them would really pay. Read the columnar rows and the
 polypress row against each other; read either against gzip only as
 a rough guide.
   codec                  enc MB/s     dec MB/s
-  brotli -q11                 0.9        229.9
-  bzip2 -9                   24.6         69.8
-  feather+lz4              1976.9       4256.4
-  feather+zstd             1666.0       2713.9
-  gzip -9                     5.7        522.4
-  lz4 -9                     14.8        304.7
-  orc+snappy                357.8       1378.6
-  orc+zlib                  129.4        473.6
-  orc+zstd                  237.3        568.9
-  parquet+brotli              1.7       1620.9
-  parquet+gzip               89.4       2329.0
-  parquet+snappy            446.1        117.9
-  parquet+zstd               47.6       3607.0
-  polypress                   2.3         52.3
-  xz -9e                      3.3        100.5
-  zstd -19                    4.4        381.3
-  zstd -22                    3.7        399.4
-  zstd -3                   125.9        372.0
+  brotli -q11                 1.0        235.0
+  bzip2 -9                   24.9         72.0
+  feather+lz4              2137.7       4174.5
+  feather+zstd             1881.8       3155.3
+  gzip -9                     5.8        521.7
+  lz4 -9                     15.0        333.9
+  orc+snappy                364.6       1429.0
+  orc+zlib                  131.4        484.5
+  orc+zstd                  240.6        579.1
+  parquet+brotli              1.7       1647.5
+  parquet+gzip               92.0       2510.9
+  parquet+snappy            451.3        123.9
+  parquet+zstd               48.3       3912.9
+  polypress                   1.7         75.3
+  xz -9e                      3.8        103.7
+  zstd -19                    5.1        413.9
+  zstd -22                    3.8        417.1
+  zstd -3                   128.8        401.6

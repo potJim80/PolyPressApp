@@ -70,8 +70,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="sweep")
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--out", required=True, help="JSONL results file")
-    ap.add_argument("--max-mb", type=float, default=40.0,
-                    help="truncate inputs larger than this (default 40)")
+    # 28, not 40. Restoring invariant 2 means every encode now also builds the
+    # canonical CSV and parses it back for the round-trip check, which costs
+    # roughly another copy of the table: measured, chicago_permits at 40 MB went
+    # from 1,965 MB peak to 2,120 MB and tripped the ceiling. At 28 MB the same
+    # table peaks at 1,658 MB. Raise it only with --rss-abort watching.
+    ap.add_argument("--max-mb", type=float, default=28.0,
+                    help="truncate inputs larger than this (default 28)")
     ap.add_argument("--rss-abort", type=float, default=2000.0,
                     help="stop if a worker's measured peak RSS exceeds this")
     ap.add_argument("--timeout", type=float, default=3600.0,
