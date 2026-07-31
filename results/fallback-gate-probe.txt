@@ -1,0 +1,37 @@
+dataset                                        modelled       xz9e     probe1      r   t_enc  t_full t_probe
+--------------------------------------------------------------------------------------------------------------
+data_missouri_zip_codes_by_county_city_im7g-      9,680     12,144     13,324   1.10    0.0s    0.0s    0.0s
+data_covid_19_vaccine_distribution_allocatio      2,877      5,137      6,709   1.31    0.0s    0.0s    0.0s
+data_affordable_rental_housing_developments_     31,218     32,576     38,829   1.19    0.1s    0.0s    0.0s
+datos_lista_oficial_de_precios_unitarios_fij     23,946     27,363     30,983   1.13    0.1s    0.0s    0.0s
+data_providence_police_department_arrests_an     35,018     43,951     51,751   1.18    0.1s    0.1s    0.0s
+data_provisional_covid_19_deaths_by_week_sex     20,398     29,504     44,188   1.50    0.0s    0.1s    0.0s
+data_active_trademark_registrations_ny3n-dx3    159,936    176,156    203,976   1.16    0.6s    0.3s    0.0s
+data_equine_death_and_breakdown_q6ts-kwhk.cs    236,444    268,982    317,430   1.18    0.6s    0.3s    0.0s
+data_hhs_provider_relief_fund_kh8y-3es6.csv     518,466    621,177    709,621   1.14    0.9s    0.6s    0.1s
+opendata_howard_county_police_department_cal    333,101    422,119    599,195   1.42    1.4s    1.2s    0.1s
+data_provisional_covid_19_death_counts_by_we    141,207    280,758    443,639   1.58    0.5s    4.0s    0.1s
+data_united_states_covid_19_community_levels    243,535    412,792    564,926   1.37    0.7s    1.9s    0.1s
+datos_información_financiera_con_fines_de_su    197,023    336,083    471,021   1.40    0.3s    3.9s    0.1s
+datos_beneficiarios_más_familias_en_acción_x    137,597    268,288    493,237   1.84    0.7s    2.0s    0.1s
+data_yourmoney_active_pension_members_44xg-b    610,772    830,273  1,062,638   1.28    1.1s    3.5s    0.2s
+data_delaware_business_licenses_5zy2-grhr.cs  1,139,313  1,387,257  1,726,387   1.24    8.8s    3.7s    0.3s
+data_traffic_incidents_35ra-9556.csv          1,559,403  1,536,950  2,215,945   1.44   11.8s    4.3s    0.3s
+data_police_dispatched_incidents_98cc-bc7d.c  1,207,769  1,765,699  2,511,825   1.42    7.6s    4.5s    0.4s
+health_food_service_establishment_last_inspe  1,443,654  1,869,478  2,859,722   1.53   12.5s    5.5s    0.4s
+datos_código_único_de_medicamentos_vigentes_  1,040,545  1,190,481  3,362,644   2.82    8.3s    7.6s    0.5s
+data_food_inspections_4ijn-s7e5.csv           2,169,624  2,445,225  4,651,218   1.90   15.3s   11.3s    0.7s
+data_building_permits_c2es-76ed.csv           2,841,615  3,260,328  4,622,400   1.42   32.5s   10.5s    0.7s
+
+22 datasets
+worst probe1/xz9e ratio r = 2.825   (the gate must sit above this)
+
+cost of always running the real fallbacks : +63% encode time
+cost of running only the preset-1 probe   : +4% encode time
+  gate at 3/2 = 1.50x : builds the fallback on  8/22 datasets, MISSES 0
+  gate at 2/1 = 2.00x : builds the fallback on 13/22 datasets, MISSES 0
+  gate at 5/2 = 2.50x : builds the fallback on 19/22 datasets, MISSES 0
+  gate at 3/1 = 3.00x : builds the fallback on 19/22 datasets, MISSES 0
+
+fallback would actually win on 1 of 22 datasets here
+  data_traffic_incidents_35ra-9556.csv         modelled 1,559,403 vs fallback 1,536,954  (+1.5%)

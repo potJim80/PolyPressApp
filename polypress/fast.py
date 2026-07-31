@@ -405,6 +405,40 @@ def _counts_entropy(counts: np.ndarray, n: int) -> float:
     return float(-np.sum(p * np.log2(p)))
 
 
+# Entropy scores are COMPARED as integers, never as floats.
+#
+# The parent search ranks columns by entropy differences, and for a long time
+# both implementations tried to agree on those differences bit for bit. That is
+# not achievable and the attempt was hiding a real defect. `np.sum` is pairwise
+# for small arrays -- which `csrc/ppz_encode.c:pairwise_sum` reproduces exactly,
+# and for a 23-bin marginal the two agree to the last bit -- but on a 13,147-bin
+# joint histogram numpy takes a SIMD reduction whose grouping depends on the
+# CPU's vector width. Measured on this machine: `np.sum` differs from numpy's
+# own documented scalar algorithm at that size. So no portable C can match it,
+# and two numpy builds on different hardware need not match each other either.
+#
+# The last bit was never meaningful. A gain of 0.4912703838362144 and one of
+# 0.4912703838362162 say the same thing about a column, and letting the
+# difference between them choose a parent -- and therefore every byte of the
+# archive after it -- is the bug. Scores are quantised to a grid about 1e-6
+# wide and compared as int64. Anything closer than that is a tie, and ties fall
+# to the lower column index in both implementations, which is a rule they can
+# actually both keep.
+#
+# `floor(x * SCALE + 0.5)` rather than round(): Python's round() is
+# banker's rounding and C's llround() is half-away-from-zero, and every score
+# here is non-negative.
+_SCORE_SCALE = 1 << 20
+
+
+def _score(x: float) -> int:
+    return int(math.floor(x * _SCORE_SCALE + 0.5))
+
+
+# The nomination floor, 0.05 bits, on the same integer grid.
+_MIN_GAIN_SCORE = _score(0.05)
+
+
 # Above this many joint bins, counting by bincount would allocate more than
 # it saves and np.unique's sort is the better trade. Real survey columns have
 # cardinalities in the tens, so the product is tiny and this never trips.
@@ -504,12 +538,12 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
         for b in dict_pos:
             if a == b:
                 continue
-            g = base[b] - _cond_entropy_corrected(sample[a], sample[b],
-                                                  sizes[b], ha, ma)
-            if g > 0.05:
+            g = _score(base[b] - _cond_entropy_corrected(
+                sample[a], sample[b], sizes[b], ha, ma))
+            if g > _MIN_GAIN_SCORE:
                 gain[b][a] = g
 
-    root = min(dict_pos, key=lambda p: base[p])
+    root = min(dict_pos, key=lambda p: _score(base[p]))
     placed, order = {root}, [root]
     parent: Dict[int, Optional[int]] = {root: None}
 
@@ -530,7 +564,7 @@ def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
                 if a in placed and (best is None or g > best[2]):
                     best = (b, a, g)
         if best is None:
-            b = min(remaining, key=lambda p: base[p])
+            b = min(remaining, key=lambda p: _score(base[p]))
             parent[b] = None
         else:
             b, a, _ = best
@@ -648,9 +682,9 @@ def pick_text_parents(plan, nrows, parent, order) -> Dict[int, Optional[int]]:
         ranked = []
         for dp in dict_pos:
             ha, ma = dbase[dp]
-            g = base_t - _cond_entropy_corrected(dsample[dp], ids, len(uniq),
-                                                 ha, ma)
-            if g > 0.05:
+            g = _score(base_t - _cond_entropy_corrected(
+                dsample[dp], ids, len(uniq), ha, ma))
+            if g > _MIN_GAIN_SCORE:
                 ranked.append((g, dp))
         if not ranked:
             continue
@@ -980,6 +1014,44 @@ def _from_canonical(data: bytes):
     return dtz.Table(rows[0], rows[1:])
 
 
+# Input block size for the capped compressors below. Only affects how often
+# the output is checked against the cap, never the bytes produced: LZMA2 and
+# bzip2 are streams, and feeding one in pieces gives the identical output to a
+# single call. Verified for both.
+_CAP_CHUNK = 1 << 20
+
+
+def _compress_capped(data: bytes, cap: int, kind: str) -> Optional[bytes]:
+    """`data` compressed, or None as soon as the result cannot fit in `cap`.
+
+    The point is to make "always check the fallback" affordable. Compressed
+    output only grows, so once it has passed the cap the candidate has lost and
+    the rest of the input is wasted work. On a table the modelling wins
+    handsomely -- which is most of them -- that abort happens early, because
+    the modelled archive is a small fraction of what the plain CSV compresses
+    to.
+
+    Aborting cannot change the answer, only the time taken: the bytes returned
+    when it does NOT abort are exactly `lzma.compress`/`bz2.compress` would
+    have produced.
+    """
+    comp = (lzma.LZMACompressor(**XZ) if kind == "xz"
+            else bz2.BZ2Compressor(9))
+    out, total = [], 0
+    for i in range(0, len(data), _CAP_CHUNK):
+        piece = comp.compress(data[i:i + _CAP_CHUNK])
+        total += len(piece)
+        if total >= cap:
+            return None
+        out.append(piece)
+    piece = comp.flush()
+    total += len(piece)
+    if total >= cap:
+        return None
+    out.append(piece)
+    return b"".join(out)
+
+
 def _raw_candidates(table, limit: int) -> Optional[bytes]:
     """Smallest standard-codec encoding of the whole table, or None.
 
@@ -987,22 +1059,33 @@ def _raw_candidates(table, limit: int) -> Optional[bytes]:
     CSV quoting is not lossless for every conceivable cell, so the candidate
     is parsed back and compared before it is allowed to win. A fallback that
     corrupts data is worse than losing by 11%.
+
+    Called on every table now, not only when no trick fired. The compressors
+    are capped at `limit` so a hopeless candidate is abandoned part-way rather
+    than finished and then thrown away.
     """
     canon = _canonical_bytes(table)
     try:
-        if _from_canonical(canon).rows != table.rows:
-            return None
-        if _from_canonical(canon).columns != table.columns:
+        # Parsed ONCE. This used to call _from_canonical twice, once for the
+        # rows and once for the columns, which was affordable while the
+        # fallback ran only on tables where no trick fired and is not now that
+        # it runs on every table.
+        back = _from_canonical(canon)
+        if back.rows != table.rows or back.columns != table.columns:
             return None
     except Exception:
         return None
 
     best = None
-    for magic, blob in ((MAGIC_RAW_XZ, lzma.compress(canon, **XZ)),
-                        (MAGIC_RAW_BZ, bz2.compress(canon, 9))):
-        cand = magic + blob
-        if len(cand) < limit and (best is None or len(cand) < len(best)):
-            best = cand
+    for magic, kind in ((MAGIC_RAW_XZ, "xz"), (MAGIC_RAW_BZ, "bz2")):
+        # 4 bytes of magic ride in front, so the compressor's own budget is
+        # that much smaller than the archive it has to beat.
+        cap = (len(best) if best is not None else limit) - len(magic)
+        if cap <= 0:
+            continue
+        blob = _compress_capped(canon, cap, kind)
+        if blob is not None:
+            best = magic + blob
     return best
 
 
@@ -1075,8 +1158,16 @@ def encode(table) -> bytes:
         if len(alt) < len(blob):
             blob, fired = alt, alt_fired
 
-    if fired:
-        return blob
+    # The fallbacks are ALWAYS considered. They used to be skipped whenever any
+    # trick fired, on the theory that a table where one fired cannot lose to
+    # plain xz. That theory was measured against 18 tables and held; measured
+    # against 100 unselected ones it fails on 3, once by 28.1% -- the shipped
+    # archive was 2,830,752 bytes where the xz fallback nobody ran was
+    # 2,210,086. Invariant 2 says "never worse, MEASURED, not assumed", and a
+    # gate that decides which encodings are even built is exactly an assumption.
+    #
+    # It is affordable because `_raw_candidates` stops compressing the moment
+    # the candidate cannot win; see there.
     alt = _raw_candidates(table, len(blob))
     return alt if alt is not None else blob
 

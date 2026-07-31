@@ -221,7 +221,19 @@ def check_fallback() -> list:
     if fast.decode(fast.encode(nasty)).rows != nasty.rows:
         bad.append("nasty-cell table did not round-trip")
 
-    # a structured table must NOT pay for the fallback, and must be unchanged
+    # A structured table must get whichever encoding is SMALLER -- which is not
+    # always the modelled one, and assuming otherwise was a real bug.
+    #
+    # This assertion used to read "a structured table must NOT pay for the
+    # fallback": `fast.encode(structured) != sblob` was a failure. That encoded
+    # the same assumption `encode()` itself was making, so the test could never
+    # have caught the defect -- it agreed with it. On this very table the
+    # modelled container is 294 B and plain xz over the canonical CSV is
+    # 122 B, **2.4x smaller**, and a trick did fire, so the old gate shipped
+    # the larger one and called it a win.
+    #
+    # What is actually required is invariant 2: never worse than the plain
+    # fallback, measured. So compare against both and require the minimum.
     structured = dtz.Table(
         ["zip", "city"],
         [[["98101", "98402", "98501"][i % 3],
@@ -229,8 +241,27 @@ def check_fallback() -> list:
     sblob, sfired, _sngroups, _snlax = fast._encode_plan(structured)
     if not sfired:
         bad.append("structured table fired no tricks")
-    if fast.encode(structured) != sblob:
-        bad.append("structured table was diverted to a fallback")
+    schosen = fast.encode(structured)
+    salt = fast._raw_candidates(structured, 1 << 30)
+    floor = min(len(sblob), len(salt) if salt is not None else len(sblob))
+    if len(schosen) > floor:
+        bad.append("structured table got {} B; the smaller of modelled {} B "
+                   "and fallback {} B was available"
+                   .format(len(schosen), len(sblob),
+                           len(salt) if salt is not None else None))
+    if fast.decode(schosen).rows != structured.rows:
+        bad.append("structured table did not round-trip")
+
+    # And the same rule stated once more, directly: for every table here, the
+    # shipped archive is never larger than the plain fallback. This is the
+    # check that was missing entirely.
+    for name, tbl in (("noise", noise), ("nasty", nasty),
+                      ("structured", structured)):
+        got = fast.encode(tbl)
+        raw = fast._raw_candidates(tbl, 1 << 30)
+        if raw is not None and len(got) > len(raw):
+            bad.append("{}: shipped {} B but the plain fallback was {} B"
+                       .format(name, len(got), len(raw)))
     return bad
 
 

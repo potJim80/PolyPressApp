@@ -690,6 +690,27 @@ static Group *find_2d_groups(ColPlan *plan, size_t nc, size_t nrows,
 
 /* ------------------------------------------------------------ parent search */
 
+/* Entropy scores are COMPARED as integers, never as floats. See the long note
+ * at fast._score -- the short version is that pairwise_sum() below reproduces
+ * numpy's documented scalar algorithm exactly and still cannot match np.sum on
+ * a 13,000-bin joint histogram, because numpy takes a SIMD reduction whose
+ * grouping depends on the CPU's vector width. Bit-identity with numpy is not
+ * achievable from portable C, and two numpy builds on different hardware need
+ * not agree either.
+ *
+ * The last bit was never meaningful. Quantising to a ~1e-6 grid and comparing
+ * int64 makes the parent choice depend on the part of the number that carries
+ * information, and ties fall to the lower column index on both sides.
+ *
+ * floor(x*SCALE + 0.5), not llround(): it has to match Python's
+ * math.floor(x * SCALE + 0.5) exactly, and every score here is non-negative. */
+#define SCORE_SCALE 1048576.0
+
+static int64_t score_of(double x)
+{
+    return (int64_t)floor(x * SCORE_SCALE + 0.5);
+}
+
 static double counts_entropy(const int64_t *counts, size_t nc, size_t n)
 {
     double *t = malloc((nc ? nc : 1) * sizeof(double));
@@ -815,25 +836,28 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
         base[i] = entropy_of(sample[i], sn, &distinct[i]);
     }
 
-    /* gain[b][a] for a != b, stored dense; -1 means "no usable gain" */
-    double *gain = malloc(nd * nd * sizeof(double));
+    /* gain[b][a] for a != b, stored dense as a QUANTISED score; -1 means
+     * "no usable gain". See score_of(). */
+    int64_t *gain = malloc(nd * nd * sizeof(int64_t));
     if (!gain) { for (size_t i = 0; i < nd; i++) free(sample[i]);
                  free(sample); free(base); free(distinct); free(dict_pos);
                  free(parent); free(order); return R; }
-    for (size_t i = 0; i < nd * nd; i++) gain[i] = -1.0;
+    for (size_t i = 0; i < nd * nd; i++) gain[i] = -1;
+    const int64_t min_gain = score_of(0.05);
     for (size_t ai = 0; ai < nd; ai++) {
         for (size_t bi = 0; bi < nd; bi++) {
             if (ai == bi) continue;
-            double g = base[bi] - cond_entropy_corrected(
+            int64_t g = score_of(base[bi] - cond_entropy_corrected(
                 sample[ai], sample[bi], sn,
-                (int64_t)plan[dict_pos[bi]].nalpha, base[ai], distinct[ai]);
-            if (g > 0.05) gain[bi * nd + ai] = g;
+                (int64_t)plan[dict_pos[bi]].nalpha, base[ai], distinct[ai]));
+            if (g > min_gain) gain[bi * nd + ai] = g;
         }
     }
 
     /* root = the lowest-entropy column; min() over a list takes the first */
     size_t root = 0;
-    for (size_t i = 1; i < nd; i++) if (base[i] < base[root]) root = i;
+    for (size_t i = 1; i < nd; i++)
+        if (score_of(base[i]) < score_of(base[root])) root = i;
 
     char *placed = calloc(nd, 1);
     size_t *remaining = malloc(nd * sizeof(size_t));
@@ -847,15 +871,15 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
 
     while (rn) {
         long bb = -1, ba = -1;
-        double bg = 0.0;
+        int64_t bg = 0;
         /* iterate remaining in column order, and `a` in column order too --
          * strictly greater, so the first maximum wins */
         for (size_t ri = 0; ri < rn; ri++) {
             size_t b = remaining[ri];
             for (size_t a = 0; a < nd; a++) {
                 if (a == b || !placed[a]) continue;
-                double g = gain[b * nd + a];
-                if (g < 0.0) continue;
+                int64_t g = gain[b * nd + a];
+                if (g < 0) continue;
                 if (bb < 0 || g > bg) { bb = (long)b; ba = (long)a; bg = g; }
             }
         }
@@ -863,7 +887,8 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
         if (bb < 0) {
             size_t mi = 0;
             for (size_t ri = 1; ri < rn; ri++)
-                if (base[remaining[ri]] < base[remaining[mi]]) mi = ri;
+                if (score_of(base[remaining[ri]])
+                        < score_of(base[remaining[mi]])) mi = ri;
             chosen = remaining[mi];
             parent[dict_pos[chosen]] = -1;
         } else {
@@ -928,7 +953,7 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
 
 #define TEXT_PARENT_CANDIDATES 5
 
-typedef struct { double g; size_t dp; } Cand;
+typedef struct { int64_t g; size_t dp; } Cand;   /* g is a quantised score_of() */
 
 static int cand_cmp(const void *a, const void *b)
 {
@@ -1027,10 +1052,11 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
 
         Cand *cands = malloc(nd * sizeof(Cand));
         size_t ncand = 0;
+        const int64_t min_gain_t = score_of(0.05);
         for (size_t di = 0; di < nd; di++) {
-            double g = base_t - cond_entropy_corrected(
-                dsample[di], ids, sn, (int64_t)u, dbase[di], ddist[di]);
-            if (g > 0.05) { cands[ncand].g = g; cands[ncand].dp = di; ncand++; }
+            int64_t g = score_of(base_t - cond_entropy_corrected(
+                dsample[di], ids, sn, (int64_t)u, dbase[di], ddist[di]));
+            if (g > min_gain_t) { cands[ncand].g = g; cands[ncand].dp = di; ncand++; }
         }
         free(tmp); free(srt); free(ids);
         if (!ncand) { free(cands); continue; }
@@ -1832,11 +1858,20 @@ int ppz_encode(const Table *t, Buf *out)
         buf_free(&alt);
     }
 
-    /* Only when none of the three tricks fired -- that is precisely the case
-     * where this codec has degenerated into "split into columns, then xz" and
-     * a different finisher may well beat it. Running the candidates
-     * unconditionally would roughly double encode time for nothing. */
-    if (fired) return 0;
+    /* ALWAYS considered, exactly as fast.encode does. This used to read
+     * `if (fired) return 0;` -- skip the plain candidates whenever any
+     * modelling trick fired, on the theory that such a table cannot lose to
+     * plain xz. Measured against 100 unselected datasets the theory fails on
+     * 3, once by 28.1%: the shipped archive was 2,830,752 bytes where the xz
+     * fallback nobody ran was 2,210,086. Invariant 2 is "never worse,
+     * MEASURED, not assumed", and a gate deciding which encodings get built is
+     * an assumption.
+     *
+     * Python caps its compressors at `limit` so a hopeless candidate is
+     * abandoned part-way. That is a speed optimisation only -- it cannot
+     * change which candidate wins -- so this side simply compresses and
+     * compares, and stays byte-identical. */
+    (void)fired;
     raw_candidates(t, out->len, out);
     return 0;
 }
