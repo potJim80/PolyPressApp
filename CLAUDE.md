@@ -285,35 +285,26 @@ sole gateway to the planar predictor.
   silent divergence that guarantee forbids. The loop now starts at `P.norder`.
   **`tests/test_cbin.py` passed throughout**; only real data with that shape
   exposed it.
-- **>>> OPEN, 2026-07-30: exact-tie parent ordering, 2 of 122 real datasets.
-  <<<** `tests/test_cbin_corpus.py` over every corpus here gives **120 of 122
-  byte-identical**. Both exceptions have the **same** root cause: a pair of
-  columns whose base entropies are *exactly* equal, ordered oppositely by the
-  two implementations.
+- **>>> FIXED 2026-07-31, and the lesson is the fix. Bit-identity with numpy
+  is NOT achievable, so nothing may depend on the last bit. <<<**
+  `tests/test_cbin_corpus.py` found 2 of 122 datasets where C and Python
+  disagreed, both a column pair holding the same information twice
+  (`condition`/`icd10_codes`; `longitude`/`location` = `"POINT (lon lat)"`), so
+  the entropies tied and the two implementations ordered them oppositely.
 
-  | dataset | the tied pair | H (identical to the last bit) | python | C |
-  |---|---|---|---|---|
-  | `..._covid_19_deat_hk9y-quqm` | `condition` / `icd10_codes` | 4.5235329837568745148 | 86,027 | 86,028 |
-  | `data_food_inspections_4ijn-s7e5` | `longitude` / `location` | 12.923597062545605141 | 2,169,624 | 2,179,486 |
+  Chasing it established something worth keeping: **`pairwise_sum()` faithfully
+  reproduces numpy's documented scalar algorithm, and on a 23-bin marginal the
+  two agree to the last bit — but on a 13,147-bin joint histogram `np.sum` does
+  not match numpy's own documented algorithm**, because it takes a SIMD
+  reduction whose grouping depends on the CPU's vector width. No portable C can
+  match that, and two numpy builds on different hardware need not match either.
 
-  In both cases the pair is **the same information written twice** — an ICD
-  code and its label, a longitude and a `"POINT (lon lat)"` string — so the
-  mapping is a bijection and `==` on the entropies is True. Python places one
-  first, C the other, and every string group downstream shifts. Both archives
-  decode correctly and each implementation reads the other's output; nothing is
-  at risk but invariant 1 itself.
-
-  **It is NOT a tie-break-rule bug.** The documented rule (lowest column index
-  wins; `remaining` is a list, not a set) is implemented on both sides. It is
-  the `pairwise_sum` family: somewhere in `_cond_entropy_corrected` the C port
-  accumulates in a different order from numpy, so a pair that ties in Python
-  does not tie in C. The signature is visible in the same table — columns 1 and
-  2 differ only in the last three bits (`1.8817034640742975604` vs
-  `1.8817034640742971163`). **Do not assume the existing `pairwise_sum()`
-  covers every accumulation.** Reproduce with either file above.
-
-  Note the second one is also a free illustration of the cross-column
-  redundancy backlog item: `location` stores the longitude a second time.
+  So the fix is not a better `pairwise_sum`. **Entropy scores are quantised to
+  a ~1e-6 grid by `_score()` / `score_of()` and compared as int64** — in
+  `pick_parents`, the 0.05 nomination floor, the root choice, and
+  `pick_text_parents`. Ties fall to the lower column index, a rule both sides
+  can actually keep. **Do not reintroduce a float comparison on an entropy
+  score anywhere in the parent search.**
 - **Known divergence, recorded not fixed:** a CSV containing a NUL byte is
   *refused* by Python (`_csv.Error: line contains NUL`) and *accepted* by the
   C reader. Not data loss and not invariant 1 — which is about two encoders
@@ -387,11 +378,15 @@ quote that next to a Parquet size comparison.
 
 **Two things the bigger corpus exposed that 18 datasets could not:**
 
-1. **The "never worse" guarantee does not hold.** The plain fallbacks are only
-   generated when no trick fired, so a table where one fired can lose to a
-   fallback never run — 3 of 100, worst **24.9%**. This is invariant 2 broken
-   and it is the top backlog item. Fixing it means a cheap probe as nominator
-   and a real compression as decider, in **both** implementations in one commit.
+1. ~~**The "never worse" guarantee does not hold.**~~ **FIXED 2026-07-31.** The
+   plain fallbacks were only generated when no trick fired, so a table where
+   one fired could lose to a fallback never run — 3 of 100, worst **28.1%**.
+   They are now always considered; the Python compressors are capped at the
+   size they must beat and abandon a hopeless candidate part-way, which cannot
+   change the winner. A preset-1 probe as nominator was measured and rejected:
+   sound only above a 3.0x threshold (worst observed ratio 2.825), which fires
+   on 19 of 22 datasets and saves almost nothing. See
+   `benchmarks/probe_fallback_gate.py`.
 2. **The C binary compressed a `.parquet` as text** and its own verification
    passed, because the check is downstream of the misparse. Fixed; see the
    traps section.
