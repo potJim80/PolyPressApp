@@ -1,0 +1,123 @@
+==========================================================================
+Adversarial suite -- tables built to break specific assumptions
+==========================================================================
+10 datasets measured, 16,027,828 bytes of CSV, 324,001 rows, 5223 columns in total
+round-trip: 10 of 10 datasets decoded back to the exact input
+peak RSS across the whole sweep: 723 MB
+
+1. Polypress vs the best competitor on each table
+-------------------------------------------------
+wins 5 of 10 (50%)
+margin over the best other tool: median 1.00x, best 4.24x, worst 0.92x
+whole corpus: 7,520,509 B vs 7,506,896 B, 1.00x smaller in aggregate
+compression ratio vs raw CSV: median 2.51x, best 36.93x, worst 1.32x
+
+  strongest 10:
+  dataset                                            vs best  vs csv  best other
+  anticorrelated.csv                                   4.24x  36.93x  xz -9e
+  single_wide_row.csv                                  1.17x   3.65x  xz -9e
+  random_floats.csv                                    1.16x   2.60x  bzip2 -9
+  shuffled_cats.csv                                    1.04x   5.25x  bzip2 -9
+  mixed_types.csv                                      1.00x   6.62x  orc+zstd
+  high_precision.csv                                   1.00x   2.34x  bzip2 -9
+  wide_random.csv                                      1.00x   2.41x  orc+zlib
+  base64_blob.csv                                      0.98x   1.32x  orc+zstd
+  uuid_keys.csv                                        0.97x   2.24x  orc+zstd
+  random_text.csv                                      0.92x   1.33x  orc+zstd
+
+  weakest 10 (losses first):
+  dataset                                            vs best  vs csv  best other
+  anticorrelated.csv                                   4.24x  36.93x  xz -9e
+  single_wide_row.csv                                  1.17x   3.65x  xz -9e
+  random_floats.csv                                    1.16x   2.60x  bzip2 -9
+  shuffled_cats.csv                                    1.04x   5.25x  bzip2 -9
+  mixed_types.csv                                      1.00x   6.62x  orc+zstd
+  high_precision.csv                                   1.00x   2.34x  bzip2 -9
+  wide_random.csv                                      1.00x   2.41x  orc+zlib
+  base64_blob.csv                                      0.98x   1.32x  orc+zstd
+  uuid_keys.csv                                        0.97x   2.24x  orc+zstd
+  random_text.csv                                      0.92x   1.33x  orc+zstd
+
+  every loss, in full (5 of 10):
+  random_text.csv                                    lost to orc+zstd         by 9.0%
+  uuid_keys.csv                                      lost to orc+zstd         by 3.1%
+  base64_blob.csv                                    lost to orc+zstd         by 2.6%
+  wide_random.csv                                    lost to orc+zlib         by 0.1%
+  high_precision.csv                                 lost to bzip2 -9         by 0.0%
+
+2. Head to head, one competitor at a time
+-----------------------------------------
+  competitor                  n   ppz wins     median      worst
+  brotli -q11                10       8/10      1.12x      0.99x
+  bzip2 -9                   10       8/10      1.09x      1.00x
+  feather+lz4                10      10/10      2.04x      1.38x
+  feather+zstd               10      10/10      1.52x      1.03x
+  gzip -9                    10      10/10      1.29x      1.00x
+  lz4 -9                     10      10/10      1.72x      1.32x
+  orc+snappy                  9        9/9      1.45x      1.06x
+  orc+zlib                    9        7/9      1.12x      0.94x
+  orc+zstd                    9        5/9      1.00x      0.92x
+  parquet+brotli             10      10/10      1.49x      1.00x
+  parquet+gzip               10      10/10      1.74x      1.04x
+  parquet+snappy             10      10/10      2.21x      1.05x
+  parquet+zstd               10      10/10      1.65x      1.00x
+  xz -9e                     10      10/10      1.12x      1.01x
+  zstd -19                   10       8/10      1.18x      0.99x
+  zstd -22                   10       8/10      1.18x      0.99x
+  zstd -3                    10       8/10      1.26x      0.99x
+
+3. Like for like: the same finisher on both sides
+-------------------------------------------------
+Polypress finishes with xz. pyarrow answers 'Unsupported
+compression: xz', so Parquet cannot. These rows strip that
+advantage out by re-finishing the same modelled streams.
+  polypress+zstd     vs parquet+zstd        10/10 wins   median   1.55x  worst   1.01x
+  polypress+zstd     vs orc+zstd              4/9 wins   median   0.98x  worst   0.89x
+  polypress+zstd     vs feather+zstd        10/10 wins   median   1.44x  worst   1.03x
+  polypress+zstd     vs zstd -22             6/10 wins   median   1.08x  worst   0.95x
+  polypress+brotli   vs parquet+brotli      10/10 wins   median   1.40x  worst   1.01x
+  polypress+brotli   vs brotli -q11          8/10 wins   median   1.09x  worst   1.00x
+
+4. Did the columnar formats reproduce the data exactly?
+-------------------------------------------------------
+Parquet read with type inference gave back the exact printed text
+on 7 datasets, changed it on 3, and could not be checked on 0.
+Where it changed the text, part of any Parquet size win is
+discarded formatting rather than compression -- '1.50' becoming
+1.5 is a smaller file for a reason that is not the codec.
+  changed: mixed_types.csv, high_precision.csv, random_floats.csv
+
+5. Speed, indicative only
+-------------------------
+One timing pass per codec, taken while the sweep had the machine
+to itself but with no attempt to quiet it. Sizes are exact and
+reproducible; these numbers are not. Read them for order of
+magnitude and nothing finer.
+
+And they are NOT measured on the same basis, which matters more
+than the noise does. The general-purpose tools are handed the raw
+CSV bytes, because that is what compressing a CSV actually is.
+Parquet, ORC, Feather and Polypress are handed an already-parsed
+table, so none of them is charged for reading the CSV -- the cost
+every one of them would really pay. Read the columnar rows and the
+polypress row against each other; read either against gzip only as
+a rough guide.
+  codec                  enc MB/s     dec MB/s
+  brotli -q11                 1.2        102.9
+  bzip2 -9                   20.8         40.9
+  feather+lz4              1765.1       3922.4
+  feather+zstd             1355.5       2342.8
+  gzip -9                    27.7        241.2
+  lz4 -9                     35.1        158.8
+  orc+snappy                603.8       1526.5
+  orc+zlib                  103.0        434.6
+  orc+zstd                  381.0       1175.6
+  parquet+brotli              0.5        312.2
+  parquet+gzip               31.7        538.4
+  parquet+snappy            234.6         47.4
+  parquet+zstd                9.1       1047.2
+  polypress                   3.5         47.0
+  xz -9e                      6.3         45.2
+  zstd -19                    5.5        174.7
+  zstd -22                    4.2        180.2
+  zstd -3                    97.9        181.1

@@ -1,0 +1,123 @@
+==========================================================================
+Curated 13 -- hand-picked government datasets, kept for per-shape detail
+==========================================================================
+13 datasets measured, 287,028,323 bytes of CSV, 1,082,965 rows, 527 columns in total
+4 truncated at the size ceiling (every codec got the same truncated file)
+round-trip: 13 of 13 datasets decoded back to the exact input
+peak RSS across the whole sweep: 1965 MB
+
+1. Polypress vs the best competitor on each table
+-------------------------------------------------
+wins 13 of 13 (100%)
+margin over the best other tool: median 1.35x, best 2.26x, worst 1.12x
+whole corpus: 14,925,282 B vs 21,320,527 B, 1.43x smaller in aggregate
+compression ratio vs raw CSV: median 17.31x, best 217.93x, worst 6.47x
+
+  strongest 13:
+  dataset                                            vs best  vs csv  best other
+  cdc_nndss.csv                                        2.26x 217.93x  orc+zstd
+  seattle_fire911.csv                                  1.85x  21.44x  xz -9e
+  wa_ev_population.csv                                 1.74x  35.10x  xz -9e
+  austin_incidents.csv                                 1.61x  21.43x  xz -9e
+  nyc_collisions.csv                                   1.46x  17.31x  xz -9e
+  chicago_crimes.csv                                   1.44x  15.03x  xz -9e
+  nyc_311.csv                                          1.35x  26.70x  xz -9e
+  nyc_baby_names.csv                                   1.27x  28.42x  parquet+brotli
+  usgs_quakes.csv                                      1.26x   6.47x  bzip2 -9
+  usgs_quakes_deep.csv                                 1.22x   6.58x  bzip2 -9
+  chicago_permits.csv                                  1.13x  11.36x  xz -9e
+  noaa_gsoy_sea.csv                                    1.12x   9.71x  bzip2 -9
+  noaa_gsoy_ord.csv                                    1.12x   8.98x  brotli -q11
+
+  weakest 13 (losses first):
+  dataset                                            vs best  vs csv  best other
+  cdc_nndss.csv                                        2.26x 217.93x  orc+zstd
+  seattle_fire911.csv                                  1.85x  21.44x  xz -9e
+  wa_ev_population.csv                                 1.74x  35.10x  xz -9e
+  austin_incidents.csv                                 1.61x  21.43x  xz -9e
+  nyc_collisions.csv                                   1.46x  17.31x  xz -9e
+  chicago_crimes.csv                                   1.44x  15.03x  xz -9e
+  nyc_311.csv                                          1.35x  26.70x  xz -9e
+  nyc_baby_names.csv                                   1.27x  28.42x  parquet+brotli
+  usgs_quakes.csv                                      1.26x   6.47x  bzip2 -9
+  usgs_quakes_deep.csv                                 1.22x   6.58x  bzip2 -9
+  chicago_permits.csv                                  1.13x  11.36x  xz -9e
+  noaa_gsoy_sea.csv                                    1.12x   9.71x  bzip2 -9
+  noaa_gsoy_ord.csv                                    1.12x   8.98x  brotli -q11
+
+2. Head to head, one competitor at a time
+-----------------------------------------
+  competitor                  n   ppz wins     median      worst
+  brotli -q11                13      13/13      1.49x      1.12x
+  bzip2 -9                   13      13/13      1.70x      1.12x
+  feather+lz4                11      11/11      7.57x      3.58x
+  feather+zstd               11      11/11      5.85x      2.46x
+  gzip -9                    13      13/13      2.75x      1.49x
+  lz4 -9                     13      13/13      3.29x      1.99x
+  orc+snappy                 11      11/11      3.61x      2.21x
+  orc+zlib                   11      11/11      2.72x      1.56x
+  orc+zstd                   11      11/11      2.54x      1.66x
+  parquet+brotli             11      11/11      2.08x      1.27x
+  parquet+gzip               11      11/11      2.21x      1.39x
+  parquet+snappy             11      11/11      2.81x      1.69x
+  parquet+zstd               11      11/11      2.13x      1.37x
+  xz -9e                     13      13/13      1.44x      1.13x
+  zstd -19                   13      13/13      1.64x      1.17x
+  zstd -22                   13      13/13      1.52x      1.17x
+  zstd -3                    13      13/13      2.83x      1.70x
+
+3. Like for like: the same finisher on both sides
+-------------------------------------------------
+Polypress finishes with xz. pyarrow answers 'Unsupported
+compression: xz', so Parquet cannot. These rows strip that
+advantage out by re-finishing the same modelled streams.
+  polypress+zstd     vs parquet+zstd        11/11 wins   median   1.98x  worst   1.20x
+  polypress+zstd     vs orc+zstd            11/11 wins   median   2.14x  worst   1.51x
+  polypress+zstd     vs feather+zstd        11/11 wins   median   5.19x  worst   2.26x
+  polypress+zstd     vs zstd -22            13/13 wins   median   1.39x  worst   1.10x
+  polypress+brotli   vs parquet+brotli      11/11 wins   median   2.01x  worst   1.31x
+  polypress+brotli   vs brotli -q11         13/13 wins   median   1.44x  worst   1.14x
+
+4. Did the columnar formats reproduce the data exactly?
+-------------------------------------------------------
+Parquet read with type inference gave back the exact printed text
+on 2 datasets, changed it on 9, and could not be checked on 2.
+Where it changed the text, part of any Parquet size win is
+discarded formatting rather than compression -- '1.50' becoming
+1.5 is a smaller file for a reason that is not the codec.
+  changed: noaa_gsoy_ord.csv, noaa_gsoy_sea.csv, usgs_quakes.csv, usgs_quakes_deep.csv, seattle_fire911.csv, austin_incidents.csv, nyc_311.csv, wa_ev_population.csv, chicago_permits.csv
+
+5. Speed, indicative only
+-------------------------
+One timing pass per codec, taken while the sweep had the machine
+to itself but with no attempt to quiet it. Sizes are exact and
+reproducible; these numbers are not. Read them for order of
+magnitude and nothing finer.
+
+And they are NOT measured on the same basis, which matters more
+than the noise does. The general-purpose tools are handed the raw
+CSV bytes, because that is what compressing a CSV actually is.
+Parquet, ORC, Feather and Polypress are handed an already-parsed
+table, so none of them is charged for reading the CSV -- the cost
+every one of them would really pay. Read the columnar rows and the
+polypress row against each other; read either against gzip only as
+a rough guide.
+  codec                  enc MB/s     dec MB/s
+  brotli -q11                 1.0        522.3
+  bzip2 -9                   19.4         77.2
+  feather+lz4              2396.7       4917.4
+  feather+zstd             2205.0       4353.4
+  gzip -9                    20.0       1036.4
+  lz4 -9                    117.9        633.0
+  orc+snappy                429.8       1175.1
+  orc+zlib                  221.7        634.9
+  orc+zstd                  393.7       1083.6
+  parquet+brotli              1.8       2336.4
+  parquet+gzip               89.3       2650.2
+  parquet+snappy            620.2        661.6
+  parquet+zstd               23.9       4064.1
+  polypress                   2.6         85.2
+  xz -9e                      3.5        222.2
+  zstd -19                    3.8       1066.6
+  zstd -22                    2.4       1110.7
+  zstd -3                   218.8        840.0

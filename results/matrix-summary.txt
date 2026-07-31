@@ -1,0 +1,102 @@
+==========================================================================
+Matrix-shaped tables -- the planar predictor's own case
+==========================================================================
+3 datasets measured, 9,559,745 bytes of CSV, 122,982 rows, 45 columns in total
+round-trip: 3 of 3 datasets decoded back to the exact input
+peak RSS across the whole sweep: 529 MB
+
+1. Polypress vs the best competitor on each table
+-------------------------------------------------
+wins 3 of 3 (100%)
+margin over the best other tool: median 1.92x, best 2.18x, worst 1.67x
+whole corpus: 940,374 B vs 1,830,866 B, 1.95x smaller in aggregate
+compression ratio vs raw CSV: median 11.48x, best 13.86x, worst 8.28x
+
+  strongest 3:
+  dataset                                            vs best  vs csv  best other
+  weather_hourly.csv                                   2.18x  11.48x  xz -9e
+  treasury_yields.csv                                  1.92x  13.86x  xz -9e
+  weather_wide.csv                                     1.67x   8.28x  bzip2 -9
+
+  weakest 3 (losses first):
+  dataset                                            vs best  vs csv  best other
+  weather_hourly.csv                                   2.18x  11.48x  xz -9e
+  treasury_yields.csv                                  1.92x  13.86x  xz -9e
+  weather_wide.csv                                     1.67x   8.28x  bzip2 -9
+
+2. Head to head, one competitor at a time
+-----------------------------------------
+  competitor                  n   ppz wins     median      worst
+  brotli -q11                 3        3/3      2.15x      1.97x
+  bzip2 -9                    3        3/3      2.30x      1.67x
+  feather+lz4                 3        3/3      6.04x      5.10x
+  feather+zstd                3        3/3      3.20x      3.04x
+  gzip -9                     3        3/3      3.16x      2.27x
+  lz4 -9                      3        3/3      3.94x      2.91x
+  orc+snappy                  3        3/3      3.84x      3.81x
+  orc+zlib                    3        3/3      2.91x      2.87x
+  orc+zstd                    3        3/3      2.92x      2.83x
+  parquet+brotli              3        3/3      2.42x      1.97x
+  parquet+gzip                3        3/3      2.82x      2.11x
+  parquet+snappy              3        3/3      3.48x      2.36x
+  parquet+zstd                3        3/3      2.67x      2.08x
+  xz -9e                      3        3/3      1.92x      1.81x
+  zstd -19                    3        3/3      2.25x      2.01x
+  zstd -22                    3        3/3      2.25x      2.01x
+  zstd -3                     3        3/3      3.47x      2.47x
+
+3. Like for like: the same finisher on both sides
+-------------------------------------------------
+Polypress finishes with xz. pyarrow answers 'Unsupported
+compression: xz', so Parquet cannot. These rows strip that
+advantage out by re-finishing the same modelled streams.
+  polypress+zstd     vs parquet+zstd          3/3 wins   median   2.53x  worst   2.03x
+  polypress+zstd     vs orc+zstd              3/3 wins   median   2.84x  worst   2.68x
+  polypress+zstd     vs feather+zstd          3/3 wins   median   3.03x  worst   2.96x
+  polypress+zstd     vs zstd -22              3/3 wins   median   2.21x  worst   1.96x
+  polypress+brotli   vs parquet+brotli        3/3 wins   median   2.42x  worst   2.01x
+  polypress+brotli   vs brotli -q11           3/3 wins   median   2.21x  worst   2.01x
+
+4. Did the columnar formats reproduce the data exactly?
+-------------------------------------------------------
+Parquet read with type inference gave back the exact printed text
+on 0 datasets, changed it on 3, and could not be checked on 0.
+Where it changed the text, part of any Parquet size win is
+discarded formatting rather than compression -- '1.50' becoming
+1.5 is a smaller file for a reason that is not the codec.
+  changed: treasury_yields.csv, weather_wide.csv, weather_hourly.csv
+
+5. Speed, indicative only
+-------------------------
+One timing pass per codec, taken while the sweep had the machine
+to itself but with no attempt to quiet it. Sizes are exact and
+reproducible; these numbers are not. Read them for order of
+magnitude and nothing finer.
+
+And they are NOT measured on the same basis, which matters more
+than the noise does. The general-purpose tools are handed the raw
+CSV bytes, because that is what compressing a CSV actually is.
+Parquet, ORC, Feather and Polypress are handed an already-parsed
+table, so none of them is charged for reading the CSV -- the cost
+every one of them would really pay. Read the columnar rows and the
+polypress row against each other; read either against gzip only as
+a rough guide.
+  codec                  enc MB/s     dec MB/s
+  brotli -q11                 0.9        229.9
+  bzip2 -9                   24.6         69.8
+  feather+lz4              1976.9       4256.4
+  feather+zstd             1666.0       2713.9
+  gzip -9                     5.7        522.4
+  lz4 -9                     14.8        304.7
+  orc+snappy                357.8       1378.6
+  orc+zlib                  129.4        473.6
+  orc+zstd                  237.3        568.9
+  parquet+brotli              1.7       1620.9
+  parquet+gzip               89.4       2329.0
+  parquet+snappy            446.1        117.9
+  parquet+zstd               47.6       3607.0
+  polypress                   2.3         52.3
+  xz -9e                      3.3        100.5
+  zstd -19                    4.4        381.3
+  zstd -22                    3.7        399.4
+  zstd -3                   125.9        372.0

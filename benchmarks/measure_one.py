@@ -65,6 +65,7 @@ CLI_TOOLS = [
 
 PARQUET_CODECS = (("snappy", None), ("gzip", 9), ("brotli", 11), ("zstd", 22))
 ORC_CODECS = ("SNAPPY", "ZLIB", "ZSTD")
+ORC_MAX_COLUMNS = 1000      # see the note in arrow_rows(); ORC is a memory hog
 FEATHER_CODECS = ("lz4", "zstd")
 
 
@@ -181,7 +182,17 @@ def arrow_rows(path: str, mb: float, rows: list) -> bool:
         except Exception:
             pass
 
-    for name in ORC_CODECS:
+    # ORC buffers roughly half a megabyte per column while writing a stripe, so
+    # a very wide table costs gigabytes regardless of how little data it holds.
+    # Measured: the 78 KB, 1-row x 5,000-column `single_wide_row` peaks at
+    # 2,363 MB in pyarrow's ORC writer, against 98 MB for Parquet, 77 MB for
+    # Feather and 115 MB for Polypress. That aborted a sweep on its RSS ceiling.
+    #
+    # Skipping is recorded, not silent: `report.py` prints an `n` column per
+    # competitor, so a format that sat out some datasets is visible rather than
+    # quietly averaged over the ones it managed.
+    orc_ok = len(table.schema) <= ORC_MAX_COLUMNS
+    for name in (ORC_CODECS if orc_ok else ()):
         try:
             def write():
                 buf = io.BytesIO()
