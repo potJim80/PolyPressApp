@@ -1,0 +1,47 @@
+CROSS-COLUMN REDUNDANCY -- measured ceiling
+==============================================================
+datasets probed              : 100
+with a derivable column      : 40
+aggregate ceiling over those : 1,719,087 of 26,212,507 archive bytes = 6.56%
+per-dataset ceiling, of those: min -1.98%  median 3.42%  max 47.35%
+
+Corpus-wide the share is strictly LOWER than the figure above: the
+60 datasets with no derivable column gain nothing and still count
+in the denominator.
+
+how many of the 100 probed clear a bar
+   >=  1%   25 datasets  (25% of the corpus)
+   >=  2%   21 datasets  (21% of the corpus)
+   >=  5%   16 datasets  (16% of the corpus)
+   >= 10%    9 datasets  (9% of the corpus)
+   >= 20%    4 datasets  (4% of the corpus)
+
+largest ceilings
+    47.35%     35,098 B  data_dashboard_expenditures_mi_fbey-tu9a.csv
+    25.88%     86,219 B  opendata_howard_county_police_department_call_for_
+    20.91%    201,639 B  data_crimes_2001_to_present_ijzp-q8t2.csv
+    20.30%    268,061 B  data_building_permits_c2es-76ed.csv
+    19.31%    102,185 B  data_yourmoney_agency_payroll_iqwc-r2w7.csv
+    17.84%    142,897 B  data_motor_vehicle_collisions_crashes_h9gi-nx95.cs
+    17.18%    153,630 B  datacatalog_medical_examiner_case_archive_cjeq-bs8
+    16.16%     85,794 B  data_311_service_requests_from_2020_to_presen_erm2
+    15.35%    210,198 B  data_traffic_incidents_35ra-9556.csv
+     9.44%     42,032 B  data_active_businesses_all_tckn-sxa6.csv
+
+tables where removing the redundancy made the archive BIGGER: 6
+    -1.98%  data_traffic_crashes_crashes_85ca-t3if.csv   crash_date <- crash_hour
+    -0.55%  data_equine_death_and_breakdown_q6ts-kwhk.cs incident_date <- year
+    -0.46%  data_yourmoney_active_pension_members_44xg-b current_employer_salary_amt <- all_employers_salary_amt
+    -0.43%  data_solar_electric_programs_reported_by_nys georeference <- latitude, georeference <- longitude
+    -0.06%  data_crime_data_from_2020_to_2024_2nrs-mtv8. crm_cd <- crm_cd_1
+    -0.03%  data_vaccines_gov_covid_19_vaccinating_provi monday_hours <- tuesday_hours, monday_hours <- thursday_hour
+
+These are the reason a never-worse guard is mandatory rather than
+optional: the relation is real but coding it costs more than it
+saves, and only a measurement can tell which case you are in.
+
+relations found, by kind
+     69  embed
+     20  embed_rounded
+      7  affine
+      7  duplicate

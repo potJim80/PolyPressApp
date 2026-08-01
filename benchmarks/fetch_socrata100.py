@@ -33,6 +33,15 @@ content:
 silently drops what it cannot handle is the same cherry-picking with extra
 steps. `--manifest-only` reprints the record without downloading.
 
+Resuming
+--------
+The output filename is derived from catalog metadata alone, so it is known
+*before* the download. If that file is already on disk it is measured in place
+and not fetched again, and the manifest is rewritten after every accepted
+dataset. Five hundred datasets is several gigabytes over a network; a run that
+loses all of it to one dropped connection is not usable. `--refetch` forces
+the download anyway.
+
 Size handling
 -------------
 `$limit` caps the row count at the source. If the CSV still comes back over
@@ -52,6 +61,7 @@ import io
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,10 +74,34 @@ MIN_ROWS = 20
 MIN_COLS = 2
 
 
-def _get(url: str, timeout: int = 300) -> bytes:
+class TooSlow(Exception):
+    """The download was still going after its whole-transfer deadline."""
+
+
+def _get(url: str, timeout: int = 120, deadline: float = 300.0) -> bytes:
+    """Fetch a URL under BOTH a socket timeout and a total-transfer deadline.
+
+    `timeout` alone is not enough. It is a per-read idle timeout, so a portal
+    that keeps dribbling bytes never trips it: Chicago's Taxi Trips table --
+    a billion rows, from which the portal has to materialise fifty thousand --
+    blocked one run for over half an hour and stalled everything behind it.
+    One pathological dataset must not be able to hold up a five-hundred
+    dataset fetch, so the transfer is read in chunks against a wall clock.
+    """
     req = urllib.request.Request(url, headers=UA)
+    started = time.time()
+    chunks, total = [], 0
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        while True:
+            if time.time() - started > deadline:
+                raise TooSlow("still downloading after {:.0f}s ({:,} bytes)"
+                              .format(time.time() - started, total))
+            chunk = r.read(1 << 18)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    return b"".join(chunks)
 
 
 def catalog_page(offset: int, limit: int = 100) -> list:
@@ -133,6 +167,8 @@ def main(argv) -> int:
     ap.add_argument("--scan-limit", type=int, default=1200,
                     help="give up after considering this many catalog entries")
     ap.add_argument("--manifest-only", action="store_true")
+    ap.add_argument("--refetch", action="store_true",
+                    help="download again even if the file is already on disk")
     a = ap.parse_args(argv[1:])
 
     os.makedirs(a.outdir, exist_ok=True)
@@ -148,6 +184,22 @@ def main(argv) -> int:
     max_bytes = int(a.max_mb * 1e6)
     taken, rejected, seen_digest = [], [], {}
     offset, considered = 0, 0
+
+    def write_manifest() -> dict:
+        m = {
+            "source": "Socrata open-data catalog, ordered by page_views_total",
+            "catalog_url": CATALOG,
+            "requested": a.count,
+            "row_limit": a.rows,
+            "max_mb": a.max_mb,
+            "considered": considered,
+            "taken": taken,
+            "rejected": rejected,
+        }
+        with open(mpath + ".part", "w") as fh:
+            json.dump(m, fh, indent=1)
+        os.replace(mpath + ".part", mpath)
+        return m
 
     while len(taken) < a.count and considered < a.scan_limit:
         try:
@@ -183,14 +235,25 @@ def main(argv) -> int:
             sys.stderr.write("[{:>4}] {:<28} {:<38} ".format(
                 rank, domain[:28], name[:38]))
             sys.stderr.flush()
-            try:
-                body = _get(url)
-            except Exception as exc:
-                rec["reason"] = "download failed: {}".format(
-                    str(exc)[:80])
-                rejected.append(rec)
-                sys.stderr.write("SKIP (download)\n")
-                continue
+
+            # The name depends only on catalog metadata, so an interrupted run
+            # can be resumed without refetching. The bytes then go through the
+            # identical filters below, so a resumed record is the same record.
+            fname = slug(domain, name, ident) + ".csv"
+            fpath = os.path.join(a.outdir, fname)
+            cached = os.path.exists(fpath) and not a.refetch
+            if cached:
+                with open(fpath, "rb") as fh:
+                    body = fh.read()
+            else:
+                try:
+                    body = _get(url)
+                except Exception as exc:
+                    rec["reason"] = "download failed: {}".format(
+                        str(exc)[:80])
+                    rejected.append(rec)
+                    sys.stderr.write("SKIP (download)\n")
+                    continue
 
             if len(body) < MIN_BYTES:
                 rec["reason"] = "only {} bytes, under the {} KB floor".format(
@@ -215,31 +278,23 @@ def main(argv) -> int:
                 sys.stderr.write("SKIP (duplicate)\n")
                 continue
 
-            fname = slug(domain, name, ident) + ".csv"
-            with open(os.path.join(a.outdir, fname), "wb") as fh:
-                fh.write(body)
+            if not cached:
+                # Written under a temporary name and renamed, so an interrupted
+                # run never leaves a half file that the next run would trust.
+                with open(fpath + ".part", "wb") as fh:
+                    fh.write(body)
+                os.replace(fpath + ".part", fpath)
             seen_digest[digest] = fname
             rec.update({"file": fname, "bytes": len(body),
                         "rows": nrow, "cols": ncol,
                         "truncated": len(body) >= max_bytes - 4096,
                         "url": url})
             taken.append(rec)
-            sys.stderr.write("ok  {:>10,} B  {:>7,}x{:<4}\n".format(
-                len(body), nrow, ncol))
+            write_manifest()
+            sys.stderr.write("{}  {:>10,} B  {:>7,}x{:<4}\n".format(
+                "cached" if cached else "ok    ", len(body), nrow, ncol))
 
-    manifest = {
-        "source": "Socrata open-data catalog, ordered by page_views_total",
-        "catalog_url": CATALOG,
-        "requested": a.count,
-        "row_limit": a.rows,
-        "max_mb": a.max_mb,
-        "considered": considered,
-        "taken": taken,
-        "rejected": rejected,
-    }
-    with open(mpath, "w") as fh:
-        json.dump(manifest, fh, indent=1)
-    report(manifest)
+    report(write_manifest())
     return 0
 
 

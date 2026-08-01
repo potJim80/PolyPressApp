@@ -347,11 +347,30 @@ Remaining backlog, in value order — see the memory directory for detail:
 1. **Numeric extraction from text.** `"1234 N HALSTED ST"` → skeleton
    `"# N HALSTED ST"` (low cardinality → dict → gets a parent) + number 1234
    (numeric → delta-coded). Unblocked now that dict parents are measured.
-2. **Cross-column redundancy.** `chicago_permits` stores the same point *five
-   times* — `xcoordinate`, `ycoordinate`, `latitude`, `longitude`, and
+2. **Cross-column redundancy — MEASURED 2026-08-01, and it is alive.**
+   `chicago_permits` stores the same point *five times* — `xcoordinate`,
+   `ycoordinate`, `latitude`, `longitude`, and
    `location = "POINT (-87.62 41.89)"` — at different precisions. No general
-   compressor can see through it; a table codec can. Most speculative, biggest
-   ceiling.
+   compressor can see through it; a table codec can.
+
+   `benchmarks/probe_cross_column.py` measures the **ceiling** without building
+   the predictor: detect derivable columns, then encode the table twice, whole
+   and with the redundant *part* stripped. On the unselected 100:
+   **40 of 100 tables have one, 9 clear 10%, 4 clear 20%, best 47.35%, median
+   of those 40 is 3.42%.** Record in `results/cross-column-summary.txt`.
+
+   Two narrow patterns do nearly all of it: **geometry republished as text**
+   (`location`/`point`/WKT/GeoJSON from lat+lon, 15–21%) and **concatenated
+   keys** (`row_id` = four columns pasted together, 47%; `full_name` = first +
+   last, 19%). Build those two, not a general scheme.
+
+   **Two traps, both already paid for.** A *substring* detector finds almost
+   nothing — real duplication is at a different **precision**
+   (`-87.67584459801843` vs `POINT (-87.675844598018 ...)`), and switching to
+   numeric-token matching took `chicago_permits` from 0.49% to 5.47%. And
+   **6 of the 40 get *worse*** when the redundancy is removed, worst −1.98%:
+   the relation is real, coding it costs more than it saves. Invariant 2
+   applies — measure, do not assume.
 3. ~~**The C encoder never tries the plain fallbacks.**~~ **DONE** — it now
    builds the same canonical CSV, round-trip checks it, and picks the smallest
    of xz / bzip2 / modelled, exactly as `fast.encode` does. Worth 52.6% across

@@ -22,6 +22,7 @@ csrc/*.o
 # on the record.
 corpus/
 corpus100/
+corpus500/
 corpus_matrix/
 corpus_hostile/
 
@@ -32,3 +33,5 @@ results/truncated/
 results/*.log
 benchmarks/*-fetch.log
 benchmarks/*-gen.log
+benchmarks/cross-column.log
+benchmarks/overnight.log
