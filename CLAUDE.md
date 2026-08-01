@@ -382,18 +382,34 @@ Remaining backlog, in value order — see the memory directory for detail:
 
 ## Honest status
 
-**The headline is now the unselected corpus, measured 2026-07-30.** 100
-datasets taken from the Socrata catalog in page-view order, not chosen:
-**95 of 100 beaten against the best of 20 competitors**, median margin
-**1.25x**, aggregate **1.23x**, **100 of 100 round-trip exact**. Against
-Parquet specifically it is **90/90 at all four codecs**, and still 90/90 when
-re-finished with Parquet's own codec — which forecloses "you just picked a
-better finisher". Full record in `results/socrata100-summary.txt`, per-codec
-rows in `results/socrata100-results.csv`, selection record in
-`benchmarks/socrata100-manifest.json`.
+**The headline is now 500 unselected datasets, measured 2026-08-01.** Taken
+from the Socrata catalog in page-view order, not chosen: **478 of 500 beaten
+against the best of 17 competitors** (the earlier README said 20 — it was
+miscounting our own three rows as rivals), median margin **1.25x**, aggregate
+**1.26x**, **500 of 500 round-trip exact**, peak RSS **1,148 MB**. Against
+Parquet it is **449/450 at three codecs and 450/450 at snappy**, and still
+449/450 when re-finished with Parquet's own codec. Full record in
+`results/socrata500-summary.txt`, per-codec rows in
+`results/socrata500-results.csv`. Rebuild with `./benchmarks/run_sweep_500.sh`.
 
-**Parquet did not reproduce the exact printed text on 77 of the 100.** Always
+**Parquet did not reproduce the exact printed text on 356 of the 500.** Always
 quote that next to a Parquet size comparison.
+
+**The 22 losses decompose, and only one is real.** Twelve are to `brotli -q 11`,
+which is not a carried fallback. Nine are to `bzip2 -9` **run on the original
+file**: our fallback compresses the table re-rendered through `csv.writer`, and
+on those tables normalising the quoting removed redundancy the BWT was
+exploiting — the canonical CSV is 79 KB *smaller as text* and still compresses
+117 bytes *worse*. The guarantee is "never worse than our own plain fallback",
+not "never worse than any tool on your original bytes"; say so. That leaves
+**one** genuine loss, `sars_cov_2_variant_proportions` at **0.65x** to
+`orc+zstd`, the worst result in the corpus and **undiagnosed**.
+
+**At 500 datasets the sweep must be run by `benchmarks/run_sweep_500.sh`**, not
+by hand: it pins every numeric library to one thread, runs `nice`, caps inputs
+at 16 MB and re-passes to pick up datasets that arrive while it is running. The
+16 MB cap is lower than the 100-corpus's 28 MB, so **absolute byte totals from
+the two sweeps are not comparable** — ratios are.
 
 **Two things the bigger corpus exposed that 18 datasets could not:**
 

@@ -2,7 +2,7 @@
 
 A lossless compressor for data tables.
 
-## The headline: 100 datasets nobody chose
+## The headline: 500 datasets nobody chose
 
 The obvious objection to any compression result is **"you picked the files"**,
 and there is no way to answer it by picking more files. So the main benchmark
@@ -10,73 +10,90 @@ does not pick.
 
 `benchmarks/fetch_socrata100.py` asks the Socrata open-data catalog — the index
 behind several hundred government portals — for its datasets **in descending
-order of page views**, and takes the first hundred that survive four mechanical
+order of page views**, and takes the first N that survive four mechanical
 filters: the CSV downloads, it has at least 2 columns and 20 rows, it is at
 least 50 KB, and it is not a byte-identical duplicate of one already taken.
 Rank order is public and fixed, so the list reproduces. Nothing is skipped for
-what is in it, and **all 13 rejections are recorded with their reasons** in
-`benchmarks/socrata100-manifest.json`.
+what is in it, and **every rejection is recorded with its reason** in the
+manifest.
 
-That gives **100 tables, 1.05 GB of CSV, 3.25 million rows, 2,213 columns**,
-spread over **28 portals in three countries** (United States, Colombia,
-Canada) and two languages, measured against **20 competing codecs**:
+That gives **500 tables, 3.57 GB of CSV, 14.3 million rows, 10,557 columns**,
+measured against **17 competing codecs** (plus two re-finishes of our own
+output, which are not competitors):
 
 ```bash
-python3 benchmarks/fetch_socrata100.py corpus100/ --count 100
-python3 benchmarks/sweep.py corpus100/*.csv --out results/socrata100.jsonl
-python3 benchmarks/report.py results/socrata100.jsonl --title "Socrata 100"
+python3 benchmarks/fetch_socrata100.py corpus500/ --count 500 --scan-limit 3000
+./benchmarks/run_sweep_500.sh
 ```
 
 | | result |
 |---|---|
-| **Round-trips exactly** | **100 of 100** |
-| **Smaller than the best of all 20 competitors** | **98 of 100** |
-| Margin over the best other tool | median **1.25x**, best **2.30x**, worst 0.92x |
-| Whole corpus, aggregate | 66,751,004 B vs 82,793,057 B — **1.24x smaller** |
-| Compression vs raw CSV | median **13.84x**, best 164.74x, worst 3.99x |
+| **Round-trips exactly** | **500 of 500** |
+| **Smaller than the best of all 17 competitors** | **478 of 500 (96%)** |
+| Margin over the best other tool | median **1.25x**, best **2.73x**, worst 0.65x |
+| Whole corpus, aggregate | 222,835,247 B vs 280,201,750 B — **1.26x smaller** |
+| Compression vs raw CSV | median **14.35x**, best 231.78x, worst 3.49x |
+| Peak memory, whole sweep | 1,148 MB |
 
-Beaten by the *best of twenty* on 98 tables out of 100 is the honest headline,
-because someone storing a table uses the best tool they have, not the average
-one. Against each competitor individually it is stronger:
+Beaten by the *best of seventeen* on 478 tables out of 500 is the honest
+headline, because someone storing a table uses the best tool they have, not
+the average one. Against each competitor individually it is stronger:
 
 | competitor | polypress wins | median | worst |
 |---|---|---|---|
-| `parquet+zstd` | **90/90** | 1.74x | 1.22x |
-| `parquet+brotli` | **90/90** | 1.68x | 1.18x |
-| `parquet+gzip` | **90/90** | 1.91x | 1.26x |
-| `parquet+snappy` | **90/90** | 2.62x | 1.39x |
-| `orc+zstd` | 86/86 | 2.02x | 1.02x |
-| `orc+zlib` | 86/86 | 2.14x | 1.04x |
-| `feather+zstd` | 90/90 | 3.39x | 1.68x |
-| **`xz -9e`** | **100/100** | 1.29x | 1.00x |
-| **`bzip2 -9`** | **100/100** | 1.51x | 1.00x |
-| **`zstd -22 ultra`** | **100/100** | 1.41x | 1.06x |
-| `brotli -q 11` | 98/100 | 1.33x | 0.92x |
-| `gzip -9` | 100/100 | 2.37x | 1.26x |
+| `parquet+zstd` | **449/450** | 1.71x | 0.74x |
+| `parquet+brotli` | **449/450** | 1.64x | 0.68x |
+| `parquet+gzip` | **449/450** | 1.87x | 0.81x |
+| `parquet+snappy` | **450/450** | 2.56x | 1.04x |
+| `orc+zstd` | 435/436 | 2.00x | 0.65x |
+| `orc+zlib` | 435/436 | 2.11x | 0.71x |
+| `feather+zstd` | **450/450** | 3.36x | 1.34x |
+| **`xz -9e`** | **500/500** | 1.30x | 1.00x |
+| **`zstd -22 ultra`** | **500/500** | 1.39x | 1.02x |
+| **`gzip -9`** | **500/500** | 2.24x | 1.12x |
+| **`lz4 -9`** | **500/500** | 2.65x | 1.37x |
+| `bzip2 -9` | 491/500 | 1.46x | 0.98x |
+| `brotli -q 11` | 487/500 | 1.32x | 0.91x |
 
-(The counts differ because pyarrow could not read every CSV: 10 files defeated
-its Parquet/Feather reader and 14 its ORC writer. Those datasets keep their
+(The counts differ because pyarrow could not read every CSV: 50 files defeated
+its Parquet/Feather reader and 64 its ORC writer. Those datasets keep their
 general-purpose competitors and lose their columnar ones.)
 
-**It beat Parquet on every single table it could be compared on**, at all four
-of the codecs Parquet supports. **It also beat plain `xz`, `bzip2` and
-`zstd -22` on all 100** — that is the "never worse" guarantee holding, and it
-only holds because a defect found by this corpus was fixed (below). The two
-remaining losses are both to `brotli -q 11`, by 8.1% and 1.0%, and are listed
-in full under [Where it loses](#where-it-loses) — because a compressor whose
+**It beat plain `xz`, `zstd -22`, `gzip` and `lz4` on all 500** — that is the
+"never worse" guarantee holding, and it only holds because a defect found by
+the 100-dataset version of this corpus was fixed. All 22 losses are listed in
+full under [Where it loses](#where-it-loses), because a compressor whose
 failure cases are unknown is one nobody should trust with their data.
 
-### Parquet did not reproduce the data on 77 of the 100 tables
+### The nine losses to `bzip2 -9`, and what the guarantee actually says
+
+Worth being precise, because it looks like the guarantee failing and is not.
+`bzip2` **is** one of the fallback candidates, and on those nine tables
+Polypress did ship its own bzip2 fallback and did beat it. What beat *us* was
+`bzip2` run on the **original file**, and the fallback compresses the table
+re-rendered through Python's `csv.writer`.
+
+On `data_current_sla_pending_licenses` the canonical rendering is 565,806 bytes
+against the original's 645,280 — **79 KB smaller as text** — and yet
+`bzip2(original)` is 107,692 against `bzip2(canonical)` 107,809. Normalising
+the quoting removed redundancy the Burrows-Wheeler transform had been
+exploiting.
+
+So the guarantee is **"never worse than our own plain fallback"**, not "never
+worse than any tool run on your original bytes". The gap is 0.1%–1.6% on nine
+of 500 tables. It is stated here rather than left for someone else to find.
+
+### Parquet did not reproduce the data on 356 of the 500 tables
 
 Worth stating before any size comparison. Parquet read with type inference —
 the way a data engineer actually reads a CSV — gave back **the exact printed
-text on only 9 of the 100 datasets**. It changed it on 77, and the check could
-not run on 14.
+text on only 81 of the 500 datasets**. It changed it on 356, and the check
+could not run on 63.
 
 Turning `"1.50"` into `1.5`, or `007` into `7`, makes a smaller file for a
 reason that has nothing to do with compression. Polypress guarantees the exact
-printed cell. So on three quarters of this corpus the Parquet columns above are
-**flattering to Parquet**, and it still loses every one.
+printed cell. So on **71% of this corpus** the Parquet columns above are
+**flattering to Parquet**, and it still loses all but one of them.
 
 ### Is the win the modelling, or just a better final compressor?
 
@@ -86,16 +103,16 @@ with xz, and **Parquet cannot use xz at all** — pyarrow answers
 lz4. So part of the margin above could be nothing but a better finisher.
 
 It is not. Re-finishing the *same modelled streams* with the competitor's own
-entropy coder, across all 100 datasets:
+entropy coder, across all 500 datasets:
 
 | like for like | polypress wins | median | worst |
 |---|---|---|---|
-| `polypress+zstd` vs `parquet+zstd` | **90/90** | 1.58x | 1.06x |
-| `polypress+zstd` vs `orc+zstd` | 83/86 | 1.81x | 0.95x |
-| `polypress+zstd` vs `feather+zstd` | 90/90 | 3.10x | 1.44x |
-| `polypress+brotli` vs `parquet+brotli` | **90/90** | 1.66x | 1.14x |
-| `polypress+zstd` vs plain `zstd -22` | 96/100 | 1.27x | 0.96x |
-| `polypress+brotli` vs plain `brotli -q 11` | 99/100 | 1.31x | 1.00x |
+| `polypress+zstd` vs `parquet+zstd` | **449/450** | 1.57x | 0.74x |
+| `polypress+zstd` vs `orc+zstd` | 430/436 | 1.83x | 0.66x |
+| `polypress+zstd` vs `feather+zstd` | **450/450** | 3.02x | 1.24x |
+| `polypress+brotli` vs `parquet+brotli` | **449/450** | 1.63x | 0.68x |
+| `polypress+zstd` vs plain `zstd -22` | 490/500 | 1.27x | 0.96x |
+| `polypress+brotli` vs plain `brotli -q 11` | 493/500 | 1.31x | 0.95x |
 
 **Strip xz out entirely and the gap barely moves. The win is the modelling.**
 
@@ -105,23 +122,24 @@ still beats Parquet on every table.
 
 ### All four corpora together
 
-The 100 unselected tables are the claim. The other three corpora exist to
+The 500 unselected tables are the claim. The other three corpora exist to
 attack it from directions the catalog cannot: a hand-picked set spanning
 deliberately different *shapes*, the matrix-shaped tables the planar predictor
 was built for, and ten tables written specifically to break it.
 
 | corpus | datasets | wins | median margin | worst |
 |---|---|---|---|---|
-| **Socrata 100** (unselected) | 100 | **98** | 1.25x | 0.92x |
+| **Socrata 500** (unselected) | 500 | **478 (96%)** | 1.25x | 0.65x |
 | Curated (by shape) | 13 | **13** | 1.35x | 1.13x |
 | Matrix-shaped | 3 | **3** | 1.92x | 1.67x |
 | Adversarial (built to break it) | 10 | 5 | 1.00x | 0.92x |
-| **all** | **126** | **119 (94%)** | **1.25x** | 0.92x |
+| **all** | **526** | **499 (95%)** | **1.25x** | 0.65x |
 
-**126 of 126 round-trip to the exact input**, and the whole 1.35 GB comes to
-89,135,658 B against 112,360,574 B for the best competitor on each table —
-**1.26x smaller in aggregate**. Peak memory across the whole sweep was
-1,782 MB. The adversarial row is meant to be the bad one:
+**526 of 526 round-trip to the exact input.** Peak memory across the 500-table
+sweep was 1,148 MB, with inputs truncated at 16 MB — lower than the earlier
+28 MB ceiling, so the absolute byte totals here are **not** comparable with
+those of the 100-table sweep, though every codec was still handed the identical
+truncated file. The adversarial row is meant to be the bad one:
 those tables are random text, UUIDs and base64 by construction, and a tie there
 is the correct outcome.
 
@@ -612,16 +630,41 @@ itself. Three of six test encodings destroyed data that way.
 
 ## Where it loses
 
-### The two losses out of 100, in full
+### The 22 losses out of 500, in full
 
-| dataset | lost to | by | shape |
-|---|---|---|---|
-| `open_meetings` | `brotli -q 11` | 8.1% | 147 x 31 |
-| `county_clerk_license_information` | `brotli -q 11` | 1.0% | — |
+| dataset | lost to | by |
+|---|---|---|
+| `sars_cov_2_variant_proportions` | `orc+zstd` | **53.1%** |
+| `energy_star_certified_smart_thermostats` | `brotli -q 11` | 10.1% |
+| `open_meetings` | `brotli -q 11` | 8.1% |
+| `maryland_port_administration_general_cargo` | `brotli -q 11` | 7.1% |
+| `new_york_state_budget_vetoes_2013_14` | `brotli -q 11` | 6.4% |
+| `missouri_river_water_trail_access_points` | `brotli -q 11` | 4.9% |
+| `covid_19_vaccination_trends_in_the_united_states` | `brotli -q 11` | 3.9% |
+| `covid_19_vaccinations_in_the_united_states` | `brotli -q 11` | 3.4% |
+| `salary_steps_by_job_classification` | `brotli -q 11` | 2.4% |
+| `2015_street_tree_census_tree_data` | `brotli -q 11` | 2.3% |
+| `listado_de_medicamentos_en_venta_libre` | `bzip2 -9` | 1.6% |
+| `county_clerk_license_information` | `brotli -q 11` | 1.0% |
+| `naloxone365_nj_free_naloxone_at_pharmacies` | `bzip2 -9` | 0.9% |
+| `medical_examiner_unidentified_persons` | `brotli -q 11` | 0.7% |
+| `american_rescue_plan_arp_rural_payments` | `bzip2 -9` | 0.6% |
+| `energy_star_certified_residential_clothes_washers` | `brotli -q 11` | 0.5% |
+| `tca_all_approved_grants_fy25` | `bzip2 -9` | 0.4% |
+| `csric_best_practices` | `bzip2 -9` | 0.3% |
+| `tca_all_approved_grants_fy24` | `bzip2 -9` | 0.2% |
+| `current_sla_pending_licenses` | `bzip2 -9` | 0.1% |
+| `presubmission_community_meetings` | `bzip2 -9` | 0.1% |
+| `provider_relief_fund_covid_19_high_impact` | `bzip2 -9` | 0.1% |
 
-Both are to brotli, which is not carried as a fallback candidate — see the note
-at the end of this section. Against every codec Polypress *does* carry, and
-against every columnar format, it wins all 100.
+**Twelve of the 22 are to `brotli -q 11`, which is not carried as a fallback
+candidate** — see the note at the end of this section. **Nine are to `bzip2 -9`
+run on the original file rather than on the canonical rendering**, explained
+above under the guarantee. That leaves **one** real loss.
+
+`sars_cov_2_variant_proportions` is that one, and it is the worst result in the
+corpus at 0.65x. `orc+zstd` beats it by 53%. This is the shape the codec is
+weakest on and it has not been diagnosed.
 
 ### The 24.9% loss that used to be here was a bug, and it is fixed
 
@@ -891,18 +934,18 @@ candidate, and brotli beat it outright.
 
 ## The results write-up
 
-> **Out of date as of 2026-07-30.** `docs/Polypress-Results.pdf` was written
-> against the 13 hand-picked datasets and knows nothing about the 100
-> unselected ones, the 20-codec lineup, or the "never worse" defect. Do not
-> quote it. The current record is `results/socrata100-summary.txt` and
-> `results/socrata100-results.csv`; regenerate the PDF before showing it to
-> anyone.
-
 `docs/Polypress-Results.pdf` is a summary of every measurement here, including
-a page stating plainly what is not done. Regenerate it with:
+a page stating plainly what is not done. **It is generated from the sweep
+output, not written from it** — every figure in it is computed from the JSONL,
+so it cannot drift from the evidence the way the previous version did. That one
+carried each number as a literal and was still asserting "beats every
+compressor tested, on every dataset tested" two sessions after that stopped
+being true.
+
+Regenerate it whenever the codec or the corpus changes:
 
 ```bash
-python3 docs/report.py docs/Polypress-Results.pdf
+python3 docs/report.py docs/Polypress-Results.pdf results/socrata500.jsonl
 ```
 
 ## Tests and benchmarks
