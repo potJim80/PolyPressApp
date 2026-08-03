@@ -50,7 +50,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from polypress import dtz, fast
+from polypress import dtz, fast, turbo
 
 CLI_TOOLS = [
     ("gzip -9",        ["gzip", "-9", "-c"],                   ["gzip", "-dc"]),
@@ -278,7 +278,24 @@ def measure(path: str) -> dict:
                          None, None])
         except Exception:
             pass
-    del blob, t
+    del blob
+
+    # The turbo fork, measured the same way and round-trip checked the same
+    # way. It is a different container (PPZT) with no C port, so it is a
+    # separate row rather than a replacement for the one above -- the point of
+    # this sweep is to see both against the same competitors on the same
+    # tables, not to pick one.
+    try:
+        tblob, te = clock(lambda: turbo.encode(t))
+        tback, td = clock(lambda: turbo.decode(tblob))
+        out["turbo_roundtrip"] = (tback.columns == t.columns
+                                  and tback.rows == t.rows)
+        del tback
+        rows.append(["polypress-turbo", len(tblob), mb / te, mb / td])
+        del tblob
+    except Exception as exc:                                    # noqa: BLE001
+        out["turbo_error"] = str(exc)[:120]
+    del t
 
     out["results"] = {r[0]: {"bytes": r[1], "enc_mbs": r[2], "dec_mbs": r[3]}
                       for r in rows}

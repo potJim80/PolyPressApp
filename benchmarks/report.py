@@ -39,6 +39,7 @@ import sys
 # Everything polypress produces, so "the competition" can be defined by
 # exclusion rather than by an allow-list that silently drops a new codec.
 OURS = "polypress"
+OURS_ROW = "polypress"
 
 
 def load(paths):
@@ -73,11 +74,24 @@ def main(argv=None) -> int:
     ap.add_argument("--title", default="Polypress benchmark")
     ap.add_argument("--csv", default=None,
                     help="also write one row per dataset per codec")
+    ap.add_argument("--ours", default="polypress",
+                    help="which row is the subject of the report; "
+                         "'polypress-turbo' headlines the turbo fork instead. "
+                         "Everything starting 'polypress' is excluded from "
+                         "the competition either way.")
     ap.add_argument("--top", type=int, default=12,
                     help="how many best/worst datasets to list")
     a = ap.parse_args(argv)
+    globals()["OURS_ROW"] = a.ours
 
     recs, bad = load(a.paths)
+    # A record without the subject row cannot be reported on -- turbo is
+    # allowed to fail on a table without invalidating the rest of the sweep.
+    missing = [r for r in recs if OURS_ROW not in r.get("results", {})]
+    recs = [r for r in recs if OURS_ROW in r.get("results", {})]
+    if missing:
+        print("note: {} record(s) have no '{}' row and are excluded"
+              .format(len(missing), OURS_ROW))
     if not recs:
         print("no usable records in {}".format(", ".join(a.paths)))
         return 1
@@ -111,7 +125,7 @@ def main(argv=None) -> int:
     wins, margins, rows = 0, [], []
     for r in recs:
         comp = competitors(r)
-        ours = r["results"][OURS]["bytes"]
+        ours = r["results"][OURS_ROW]["bytes"]
         blabel, bbytes = min(((k, v["bytes"]) for k, v in comp.items()),
                              key=lambda kv: kv[1])
         margin = bbytes / ours
@@ -125,7 +139,7 @@ def main(argv=None) -> int:
     print("margin over the best other tool: median {}, best {}, worst {}"
           .format(fmt_ratio(statistics.median(margins)),
                   fmt_ratio(max(margins)), fmt_ratio(min(margins))))
-    ours_total = sum(r["results"][OURS]["bytes"] for r in recs)
+    ours_total = sum(r["results"][OURS_ROW]["bytes"] for r in recs)
     best_total = sum(min(v["bytes"] for v in competitors(r).values())
                      for r in recs)
     print("whole corpus: {:,} B vs {:,} B, {} smaller in aggregate"
@@ -163,7 +177,7 @@ def main(argv=None) -> int:
     print("  {:<18} {:>10} {:>10} {:>10} {:>10}".format(
         "competitor", "n", "ppz wins", "median", "worst"))
     for lab in labels:
-        pairs = [(r["results"][lab]["bytes"], r["results"][OURS]["bytes"])
+        pairs = [(r["results"][lab]["bytes"], r["results"][OURS_ROW]["bytes"])
                  for r in recs if lab in r["results"]]
         if not pairs:
             continue
