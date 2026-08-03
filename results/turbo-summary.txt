@@ -1,0 +1,85 @@
+POLYPRESS TURBO -- the speed fork, measured 2026-08-03
+======================================================
+
+branch `turbo`, polypress/turbo.py, container PPZT.
+Reproduce: python3 benchmarks/bench_turbo.py <dir> --enc fast turbo
+Every archive is decoded and compared cell for cell before its size
+is allowed to count.
+
+UNSELECTED -- quote this one
+----------------------------
+Every corpus100 dataset at or under 12 MB, taken in size order,
+not chosen. This is the honest headline.
+
+  datasets            63
+  input               255.2 MB
+  fast   (master)       13,628,554 B     101.5s    2.51 MB/s
+  turbo                 13,638,428 B      49.0s    5.20 MB/s
+  size                +0.07%
+  speed               2.07x
+  turbo smaller on 8, larger on 13, within 0.5% on 42
+  speedup  median 1.48x   min 0.70x   max 10.60x
+  round-trip exact    63/63
+
+  largest size regressions:
+    data_nys_attorney_registrations_eqw2-r5nb       1,057,437 ->  1,083,298   +2.45%
+    data_health_care_provider_credential_data_qxh8    759,752 ->    766,868   +0.94%
+    data_commissioned_nys_notaries_public_rwbv-mz6    683,348 ->    688,065   +0.69%
+    data_film_permits_tg4x-b46p                       319,769 ->    321,727   +0.61%
+    data_2020_general_election_mail_ballot_reques_    286,942 ->    288,509   +0.55%
+  largest size gains:
+    data_missouri_active_alcohol_license_data_yyhn    545,969 ->    544,514   -0.27%
+    data_weekly_provisional_counts_of_deaths_by_s_    120,710 ->    117,698   -2.50%
+    data_yourmoney_active_pension_members_44xg-bsw    610,772 ->    606,245   -0.74%
+    data_civil_service_list_active_vx8i-nprf          568,515 ->    560,167   -1.47%
+    data_covid_19_tests_cases_and_deaths_by_town_2    546,470 ->    527,814   -3.41%
+
+BENCH SET -- built to contain the pathological shapes
+-----------------------------------------------------
+Eight datasets picked to cover every shape the repo has evidence
+about. It OVERSTATES: it deliberately includes the tables that
+cross-column modelling rescues.
+
+  datasets            8
+  input               70.7 MB
+  fast   (master)        5,072,712 B      50.3s    1.41 MB/s
+  turbo                  4,517,169 B      17.8s    3.98 MB/s
+  size                -10.95%
+  speed               2.83x
+  turbo smaller on 2, larger on 2, within 0.5% on 4
+  speedup  median 2.99x   min 1.85x   max 4.16x
+  round-trip exact    8/8
+
+  largest size regressions:
+    mixed_wide                                        439,294 ->    445,069   +1.31%
+    numeric_smooth                                    472,280 ->    476,847   +0.97%
+    text_heavy                                        903,713 ->    907,989   +0.47%
+    coded_admin                                        39,879 ->     40,055   +0.44%
+    ev_pop                                            274,425 ->    274,452   +0.01%
+  largest size gains:
+    coded_admin                                        39,879 ->     40,055   +0.44%
+    ev_pop                                            274,425 ->    274,452   +0.01%
+    sideways                                          884,578 ->    884,580   +0.00%
+    text_dissimilar                                   521,589 ->    436,101  -16.39%
+    traffic                                         1,536,954 ->  1,052,076  -31.55%
+
+WHAT TURBO CHANGES
+------------------
+
+  * independent binary streams, so every decision is measured on the
+    column itself instead of by encoding the whole table twice
+  * the string groups stay in ONE pile -- splitting them costs up to 13.2%
+  * numeric cross-column prediction (a column as its difference from
+    another column) -- 26.2% of the packed numeric payload on nested
+    aggregates
+  * derived string columns (a column as a template over other columns) --
+    traffic_incidents -32.7%, its `point` and `id` become formulas
+  * threads: lzma and bz2 release the GIL
+
+WHAT IT GIVES UP
+
+  * no byte-identity with the C encoder; there is no C port
+  * no 2D planar predictor
+  * the row-wise candidate is chosen by a sample nominator plus a measured
+    race, not by always encoding both ways
+
