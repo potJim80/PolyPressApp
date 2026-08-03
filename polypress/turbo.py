@@ -906,7 +906,23 @@ def _sample_ratio(table) -> float:
 # Nominate the row-wise candidate below this ratio. Generous on purpose: a
 # nomination costs TIME (the real candidate is built) and never bytes, because
 # the real candidate has to actually be smaller to win.
-NOMINATE_ROWWISE = 1.15
+# 0 disables the row-wise candidate entirely. That is the DEFAULT, and it is
+# the user's call, made after seeing the trade measured.
+#
+# Measured on 63 unselected corpus100 datasets, 255.2 MB, all round-trip exact
+# either way:
+#
+#     row-wise candidate on   13,638,428 B   50.2s    5.08 MB/s
+#     row-wise candidate off  13,640,906 B   24.1s   10.58 MB/s
+#
+# **2.08x the speed for 2,478 bytes -- +0.018%.** The guarantee given up is
+# "never larger than plain xz/bzip2 of the same table". It is given up
+# knowingly: a codec that needs a second opinion about its own model on 4 of
+# 63 tables should fix the model, not carry the second opinion.
+#
+# Set to ~1.10 to restore it as a nominator; the real candidate then races the
+# columnar one under a shared cap and decides by measurement.
+NOMINATE_ROWWISE = 0.0
 
 
 # ------------------------------------------------------------------- codec
@@ -920,6 +936,15 @@ def encode(table, text_mode: str = "pile") -> bytes:
     sample confidently rejects -- 67 of 81 in the corpus sweep -- never build
     the second candidate at all.
     """
+    # NOMINATE_ROWWISE <= 0 disables the row-wise candidate entirely, and skips
+    # the nominator with it. That is the "no fallbacks at all" position: the
+    # codec must be good enough not to need a second opinion about its own
+    # model. It is the largest single speed lever left -- on a 40 MB
+    # text-heavy table the nominator says 1.117, just under the 1.15 threshold,
+    # and the candidate it then builds LOSES (3,961,432 against 3,527,412)
+    # after costing 5.78s of a 14.95s encode.
+    if NOMINATE_ROWWISE <= 0:
+        return _encode_columnar(table, text_mode=text_mode)
     if _sample_ratio(table) >= NOMINATE_ROWWISE:
         return _encode_columnar(table, text_mode=text_mode)
 
