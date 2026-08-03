@@ -78,6 +78,9 @@ SAMPLE_ROWS = 4000
 SAMPLE_MARGIN_NUM, SAMPLE_MARGIN_DEN = 95, 100
 
 _CPUS = max(1, (os.cpu_count() or 2) - 1)
+# Least binary payload worth giving its own compressor. Below this the thread
+# saves no wall-clock and the lost cross-column sharing is pure cost.
+BIN_GROUP_BYTES = 4 << 20
 # Each concurrent lzma encoder wants its own dictionary. Measured 2026-08-03:
 # 4 threads on a 10 MB table cost +486 MB. Cap the pool by input size so a big
 # table cannot walk through the 1-2 GB ceiling.
@@ -645,32 +648,54 @@ def pick_text_parents(plan, nrows, order) -> Dict[int, Optional[int]]:
 
 
 def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
-    """Front-code decision, per group, decided locally.
+    """Which string groups to front-code, decided on the WHOLE pile.
 
-    Master cannot decide this per group -- it measured three such designs and
-    all lost, because the groups share one stream so a locally better group can
-    make the pile worse. That reasoning is a consequence of the shared stream.
-    Here each group is confirmed against itself, which is the whole cost.
+    An earlier version of this decided per group, measuring each group against
+    itself, on the reasoning that turbo's streams are independent so local is
+    global. **That reasoning does not apply here.** The binary payloads are
+    independent; the string groups are deliberately NOT -- they stay in one
+    pile because splitting them costs up to 13.2%. So a group that is smaller
+    on its own can still make the pile bigger, which is exactly the trap
+    CLAUDE.md records from three separate per-group designs that all lost.
+
+    Deciding on the whole pile costs up to three trials. Master pays for those
+    at full strength; here they run at the probe preset, so the pile is
+    compressed cheaply three times rather than dearly three times. The
+    candidates are ranked by bytes AT STAKE, not by ratio -- a numeric
+    column's exception group is a run of identical values sharing 98% of its
+    bytes and would otherwise outrank everything while having nothing to win.
     """
-    front = set()
-    for i, g in enumerate(groups):
+    def pile(front):
+        return fast._pack_strings(groups, front)[0]
+
+    best = frozenset()
+    best_cost = _probe(pile(best))
+
+    if ndict:
+        alpha = frozenset(range(ndict))
+        c = _probe(pile(alpha))
+        if c < best_cost:
+            best, best_cost = alpha, c
+
+    cands = []
+    for i in range(ndict, len(groups)):
+        g = groups[i]
         if not g or len(g) < 8 or any("\n" in s for s in g):
             continue
         sh, tot = fast._prefix_stats(g)
         if sh <= 0 or tot <= 0 or sh * fast.FC_MIN_DEN <= tot * fast.FC_MIN_NUM:
             continue
-        # Rank by bytes AT STAKE, not by ratio. Master learned this the
-        # expensive way: a numeric column's exception group is a run of
-        # identical values sharing 98% of its bytes, so it outranks everything
-        # while having nothing to win. Without this floor every such group
-        # bought two compressions for a few dozen bytes.
         stake = sh * len(g) // min(len(g), 4000)
         if stake < fast.FC_MIN_BYTES:
             continue
-        plainb = "\n".join(g).encode("utf-8")
-        if _probe(fast._front_code(g)) < _probe(plainb):
-            front.add(i)
-    return frozenset(front)
+        cands.append((stake, i))
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    for _stake, i in cands[:fast.TEXT_FC_CANDIDATES]:
+        trial = frozenset(best | {i})
+        c = _probe(pile(trial))
+        if c < best_cost:
+            best, best_cost = trial, c
+    return best
 
 
 # ------------------------------------------------------------ the row-wise
@@ -848,11 +873,18 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
     nrows = len(table.rows)
     # Derived columns are resolved BEFORE the parent searches so those never
     # spend effort on a column that is about to become a formula.
-    if not probe:
-        for pos, d in find_derived(plan, nrows).items():
-            plan[pos] = {"kind": "drv", "j": plan[pos]["j"],
-                         "parts": d["parts"], "expos": d["expos"],
-                         "exvals": d["exvals"]}
+    #
+    # This runs in probe mode TOO, and it has to. The probe exists to decide
+    # whether the row-wise candidate is worth building, so it must model the
+    # columnar candidate as it will actually be built. Skipping the formulas
+    # here made the probe badly under-rate exactly the tables the formulas
+    # rescue: `traffic` ends up 32.7% SMALLER than master once its `point` and
+    # `id` columns become formulas, and it was still paying 2.5s to build a
+    # row-wise candidate that had already lost.
+    for pos, d in find_derived(plan, nrows).items():
+        plan[pos] = {"kind": "drv", "j": plan[pos]["j"],
+                     "parts": d["parts"], "expos": d["expos"],
+                     "exvals": d["exvals"]}
     # In probe mode skip BOTH parent searches. They are the dearest part of the
     # analysis -- on text_heavy the probe was 31% of total encode time, almost
     # all of it the O(columns^2) entropy search re-run on the sample -- and
@@ -917,18 +949,41 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
 
     front = _choose_front(sgroups, len(order))
     txt_data, smeta, length_arrays = fast._pack_strings(sgroups, front)
+    # "front is exactly the dictionary alphabets" is the common case, and one
+    # archive-level flag spells it in 7 bytes rather than 7 per group. On a
+    # small archive that is real money -- metadata was 2.7% of an 18 KB file.
+    compact = bool(order) and front == frozenset(range(len(order)))
+    if compact:
+        for m in smeta:
+            m.pop("fc", None)
     n_before = len(bins)
     bins.extend(fast.pack_ints(a) for a in length_arrays)
 
-    # --- the parallel part. Independent payloads, one compressor each.
-    if text_mode == "split":
-        parts = list(bins) + _split_pile(txt_data, smeta)
-        nstr = len(parts) - len(bins)
-    else:
-        parts = list(bins) + [txt_data]
-        nstr = 1
-    total = sum(len(p) for p in parts)
+    # --- the parallel part.
+    #
+    # One stream per column is what makes every decision above local, but it is
+    # not free: measured 2026-08-03, independence costs +0.2% to +5.2% on the
+    # binary payloads because neighbouring columns do help compress each other.
+    # Paying that in full is unnecessary -- the parallelism only needs as many
+    # independent pieces as there are threads, not as many as there are
+    # columns. So consecutive payloads are glued into a few groups, which keeps
+    # most of the sharing and still saturates the pool. Consecutive rather than
+    # scattered because adjacent columns are the ones that resemble each other.
+    strparts = (_split_pile(txt_data, smeta) if text_mode == "split"
+                else [txt_data])
+    total = sum(len(b) for b in bins) + len(txt_data)
     nthreads = threads or _pool_size(total)
+    # Group by BYTES, not by column count. Splitting a 1.4 MB payload sixteen
+    # ways buys no wall-clock -- it compresses in 0.16s either way -- and pays
+    # the full independence penalty, which on coded_admin is 4.2% of the binary
+    # payload and most of that table's whole deficit against master.
+    binbytes = sum(len(b) for b in bins)
+    ngroups = (max(1, min(len(bins), max(1, nthreads),
+                          binbytes // BIN_GROUP_BYTES)) if bins else 0)
+    chunk = max(1, -(-len(bins) // ngroups)) if ngroups else 1
+    bingroups = [b"".join(bins[i:i + chunk])
+                 for i in range(0, len(bins), chunk)]
+    parts = bingroups + strparts
     if nthreads > 1 and len(parts) > 1:
         with ThreadPoolExecutor(nthreads) as ex:
             blobs = list(ex.map(_xz, parts))
@@ -937,10 +992,12 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
 
     meta = {"columns": table.columns, "nrows": nrows, "cols": specs,
             "order": order, "smeta": smeta, "nlenbins": len(bins) - n_before,
-            "nbin": len(bins), "nstr": nstr,
+            "ngroups": len(bingroups), "nstr": len(strparts),
+            "binlens": [len(b) for b in bins],
             "numorder": _num_order(npred),
-            "sizes": [len(b) for b in blobs],
-            "raw": [len(p) for p in parts]}
+            "sizes": [len(b) for b in blobs]}
+    if compact:
+        meta["fc"] = 1
     meta_b = _xz(json.dumps(meta, separators=(",", ":")).encode())
     return (MAGIC + b"C" + len(meta_b).to_bytes(4, "big") + meta_b
             + b"".join(blobs))
@@ -976,17 +1033,19 @@ def decode(blob: bytes):
         parts.append(_unxz(blob[at:at + size]))
         at += size
 
-    nbin = meta["nbin"]
-    cuts = parts[:nbin]
-    if meta["nstr"] == 1:
-        txt_data = parts[nbin]
-    else:
-        txt_data = b"".join(parts[nbin:])
+    ng = meta["ngroups"]
+    binblob = b"".join(parts[:ng])
+    cuts, at = [], 0
+    for L in meta["binlens"]:
+        cuts.append(binblob[at:at + L])
+        at += L
+    txt_data = b"".join(parts[ng:])
 
     nrows, specs = meta["nrows"], meta["cols"]
     nlen = meta["nlenbins"]
     length_bins = cuts[len(cuts) - nlen:] if nlen else []
-    texts = fast._unpack_strings(txt_data, meta["smeta"], length_bins, 0)
+    legacy = len(meta["order"]) if meta.get("fc") else 0
+    texts = fast._unpack_strings(txt_data, meta["smeta"], length_bins, legacy)
 
     cols: List[Optional[List[str]]] = [None] * len(specs)
     ids_by_pos: Dict[int, np.ndarray] = {}
