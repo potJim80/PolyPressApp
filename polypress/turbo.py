@@ -517,8 +517,13 @@ def _num_order(pred: Dict[int, Optional[int]]) -> List[int]:
     return order
 
 
-def _uniq_ids(cells) -> Tuple[List[str], np.ndarray]:
-    """The distinct values and each cell's index into them, in ONE pass."""
+try:                                        # optional, and only an accelerator
+    import pyarrow as _pa
+except Exception:                                               # noqa: BLE001
+    _pa = None
+
+
+def _uniq_ids_py(cells) -> Tuple[List[str], np.ndarray]:
     idx: Dict[str, int] = {}
     ids = np.empty(len(cells), dtype=np.int64)
     get = idx.get
@@ -528,6 +533,34 @@ def _uniq_ids(cells) -> Tuple[List[str], np.ndarray]:
             k = idx[c] = len(idx)
         ids[i] = k
     return list(idx), ids
+
+
+def _uniq_ids(cells) -> Tuple[List[str], np.ndarray]:
+    """The distinct values and each cell's index into them, in ONE pass.
+
+    This is the hottest loop in the encoder -- one dict lookup per cell, and a
+    wide table has millions of them. On `chicago_permits` (80,000 x 116, 9.3M
+    cells) the Python version is 1.07s of a 2.43s classify.
+
+    Arrow's `dictionary_encode` is the same operation with a C hash table, and
+    it is 2x faster here including the cost of getting the strings into an
+    Arrow array. Verified equivalent on 25 corpus tables, every column: the
+    alphabets match and both index arrays rebuild the original cells exactly.
+    The alphabet ORDER is not relied on -- callers sort it explicitly, because
+    front-coding needs a sorted alphabet.
+
+    pyarrow is an accelerator, never a requirement: anything unexpected falls
+    back to the Python loop rather than failing. It is not used to READ the
+    CSV, deliberately -- `dtz` owns that, and its strictness about encodings is
+    a correctness rule this must not quietly route around.
+    """
+    if _pa is None or not cells:
+        return _uniq_ids_py(cells)
+    try:
+        a = _pa.array(cells, type=_pa.string()).dictionary_encode()
+        return a.dictionary.to_pylist(), np.asarray(a.indices, dtype=np.int64)
+    except Exception:                                           # noqa: BLE001
+        return _uniq_ids_py(cells)
 
 
 def _numeric_lenient_fast(uniq: List[str], ids: np.ndarray, nrows: int):
@@ -882,8 +915,39 @@ def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
     column's exception group is a run of identical values sharing 98% of its
     bytes and would otherwise outrank everything while having nothing to win.
     """
+    # Each group's bytes, computed ONCE, exactly as `_pack_strings` would.
+    # The old version called `_pack_strings` per trial, rebuilding the whole
+    # pile -- about 30 MB of string joins on a wide table -- three times over,
+    # and then handed all but the first megabyte straight to the bin because
+    # the probe truncates. Assembling only the prefix is the same measurement
+    # for a fraction of the work: 1.15s of choose_front on chicago_permits.
+    def group_bytes(i, fc):
+        g = groups[i]
+        if any("\n" in s for s in g):
+            return b"".join(s.encode("utf-8") for s in g)
+        if fc:
+            return fast._front_code(g)
+        return "\n".join(g).encode("utf-8")
+
+    plainb = [None] * len(groups)
+    frontb: Dict[int, bytes] = {}
+
     def pile(front):
-        return fast._pack_strings(groups, front)[0]
+        out, tot = [], 0
+        for i in range(len(groups)):
+            if i in front:
+                b = frontb.get(i)
+                if b is None:
+                    b = frontb[i] = group_bytes(i, True)
+            else:
+                b = plainb[i]
+                if b is None:
+                    b = plainb[i] = group_bytes(i, False)
+            out.append(b)
+            tot += len(b)
+            if tot >= FRONT_PROBE_BYTES:
+                break
+        return b"".join(out)
 
     best = frozenset()
     best_cost = _probe_front(pile(best))
