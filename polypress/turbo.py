@@ -1070,8 +1070,23 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
     # columns. So consecutive payloads are glued into a few groups, which keeps
     # most of the sharing and still saturates the pool. Consecutive rather than
     # scattered because adjacent columns are the ones that resemble each other.
+    # The string pile is ONE stream for size, which makes it one thread and,
+    # on a wide text-heavy table, the entire critical path -- measured on a
+    # 40 MB, 116-column table the pile was 15.3 MB taking 3.73s while the 6.0
+    # MB of binary payload took 0.96s beside it.
+    #
+    # Cutting it into contiguous chunks costs far less than splitting it by
+    # column, because a chunk keeps its neighbours: per-column splitting was
+    # measured at +13.1% on this table, contiguous chunking at +2.0% for four
+    # pieces. Same 4 MB rule as the binary side, so a small pile stays whole
+    # and pays nothing.
+    #
+    #     chunks   1: 3,510,950 B  3.73s
+    #              2: 3,558,501 B (+1.35%)  1.90s
+    #              4: 3,581,213 B (+2.00%)  1.08s   <- 3.47x
+    #              8: 3,717,415 B (+5.88%)  0.76s
     strparts = (_split_pile(txt_data, smeta) if text_mode == "split"
-                else [txt_data])
+                else _chunk(txt_data, BIN_GROUP_BYTES, _CPUS))
     total = sum(len(b) for b in bins) + len(txt_data)
     nthreads = threads or _pool_size(total)
     # Group by BYTES, not by column count. Splitting a 1.4 MB payload sixteen
@@ -1102,6 +1117,22 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
     meta_b = _xz(json.dumps(meta, separators=(",", ":")).encode())
     return (MAGIC + b"C" + len(meta_b).to_bytes(4, "big") + meta_b
             + b"".join(blobs))
+
+
+def _chunk(data: bytes, target: int, cap: int) -> List[bytes]:
+    """`data` in contiguous pieces of about `target` bytes, at most `cap`.
+
+    Contiguous on purpose: a chunk keeps its neighbours, so the compressor
+    still sees the local redundancy. Splitting the same pile by column instead
+    was measured at +13.1% against +2.0% for four contiguous chunks.
+    """
+    if not data:
+        return [data]
+    k = max(1, min(cap, len(data) // max(target, 1)))
+    if k <= 1:
+        return [data]
+    n = -(-len(data) // k)
+    return [data[i:i + n] for i in range(0, len(data), n)]
 
 
 def _split_pile(txt_data: bytes, smeta) -> List[bytes]:
