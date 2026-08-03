@@ -121,6 +121,329 @@ def _as_dict_or_text(cells, j, nrows) -> dict:
     return {"kind": "text", "cells": cells, "j": j}
 
 
+# Rows sampled when searching for a numeric column's predictor. The search is
+# O(numeric columns^2) array subtractions, so it runs on a sample and the
+# winner is confirmed on the full column.
+PRED_SAMPLE = 2500
+# A predictor must beat storing the column on its own by this much before it is
+# worth the metadata and the decode dependency.
+PRED_MARGIN_NUM, PRED_MARGIN_DEN = 15, 16
+
+
+def _packed_cost(a: np.ndarray) -> int:
+    k = fast.diff_order(a)
+    return fast.packed_len(np.diff(a, n=k) if k else a)
+
+
+def pick_num_parents(plan, nrows) -> Dict[int, Optional[int]]:
+    """Predict a numeric column from ANOTHER numeric column.
+
+    Polypress differences down a column (time) and never across (columns), so
+    a table of nested aggregates is invisible to it. `covid_19_vaccinations` is
+    80 columns of the same measurement sliced by age --
+    series_complete_5plus >= series_complete_12plus >= series_complete_18plus,
+    each a subset count of the last -- so a neighbouring column predicts this
+    one far better than its own past does. Measured 2026-08-03: 26.2% off the
+    packed numeric payload, with `booster_doses` going 84,413 -> 20,126 from
+    `booster_doses_5plus`.
+
+    That table is exactly where master loses 21.9% to plain compression, and
+    the reason is this: its redundancy runs ACROSS the row, and the only thing
+    in the codec that could see it was the row-wise candidate.
+
+    No compression is needed to decide. `pack_ints` already prices a residual,
+    so the whole search is integer subtraction and `packed_len`.
+
+    Cycles are impossible by construction: a column may only be predicted from
+    one already placed, exactly as `pick_parents` does for dictionaries, and
+    the resulting order is stored so the decoder can walk it.
+    """
+    nums = [i for i, c in enumerate(plan)
+            if c["kind"] == "num" and c["ints"].size == nrows]
+    out: Dict[int, Optional[int]] = {i: None for i in nums}
+    if len(nums) < 2 or nrows < fast.MIN_ROWS_FOR_PARENTS:
+        return out
+
+    step = max(1, nrows // PRED_SAMPLE)
+    samp = {i: np.ascontiguousarray(plan[i]["ints"][::step]) for i in nums}
+    own = {i: _packed_cost(samp[i]) for i in nums}
+
+    # Only commensurable columns: same decimal count, and magnitudes within a
+    # factor. Subtracting a percentage from a count is arithmetically fine and
+    # never smaller.
+    hi = {i: (int(np.abs(samp[i]).max()) or 1) for i in nums}
+    cand: Dict[int, List[Tuple[int, int]]] = {}
+    for i in nums:
+        row = []
+        for j in nums:
+            if i == j or plan[i]["dec"] != plan[j]["dec"]:
+                continue
+            if hi[i] > 64 * hi[j] or hi[j] > 64 * hi[i]:
+                continue
+            c = _packed_cost(samp[i] - samp[j])
+            if c * PRED_MARGIN_DEN < own[i] * PRED_MARGIN_NUM:
+                row.append((c, j))
+        row.sort(key=lambda r: (r[0], r[1]))
+        cand[i] = row
+
+    # Greedy, in the same shape as pick_parents: start from the column that is
+    # cheapest on its own, then repeatedly attach whichever remaining column
+    # gains most from something already placed.
+    placed = set()
+    root = min(nums, key=lambda i: (own[i], i))
+    placed.add(root)
+    remaining = [i for i in nums if i != root]
+    while remaining:
+        best = None
+        for i in remaining:
+            for c, j in cand[i]:
+                if j in placed:
+                    gain = own[i] - c
+                    if best is None or gain > best[0]:
+                        best = (gain, i, j)
+                    break
+        if best is None:
+            nxt = min(remaining, key=lambda i: (own[i], i))
+            out[nxt] = None
+            placed.add(nxt)
+            remaining.remove(nxt)
+            continue
+        _g, i, j = best
+        out[i] = j
+        placed.add(i)
+        remaining.remove(i)
+
+    # Confirm each choice on the FULL column -- the search ran on a sample and
+    # a sample of a differenced series exaggerates the residuals.
+    for i in nums:
+        j = out[i]
+        if j is None:
+            continue
+        full_own = _packed_cost(plan[i]["ints"])
+        full_pred = _packed_cost(plan[i]["ints"] - plan[j]["ints"])
+        if full_pred * PRED_MARGIN_DEN >= full_own * PRED_MARGIN_NUM:
+            out[i] = None
+    return out
+
+
+# --------------------------------------------------- derived string columns
+#
+# Real tables republish the same value in several columns at different
+# precisions and formats. `traffic_incidents` stores one point three times:
+#
+#   longitude = "-114.09470548026574"
+#   latitude  = "51.034986038356934"
+#   point     = "POINT (-114.09470548026574 51.034986038356934)"
+#   id        = "2026-07-31T00:38:59" + latitude + longitude
+#
+# No general compressor can see through that, because the copies are far apart
+# in the file and formatted differently -- and a COLUMN codec cannot either,
+# because it never compares two columns. It is the reason `traffic` is one of
+# the tables where master falls back to compressing the raw rows.
+#
+# Two patterns do nearly all of the available gain, measured on the unbiased
+# 100 (`results/cross-column-summary.txt`): geometry republished as text, and
+# keys built by pasting other columns together. Both are the same shape -- a
+# template of literals and slices of other columns -- so both are built here
+# and nothing more general is attempted.
+#
+# The trap already paid for: a SUBSTRING detector finds almost nothing, because
+# the duplication is usually at a different precision. Matching whole cell
+# values and their prefixes is what makes it fire.
+
+DERIVE_PROBE_ROWS = 200
+DERIVE_MIN_PART = 5
+# A SCREEN, not the decision. The decision is the measured never-worse check at
+# the bottom of find_derived, which compares the template plus its exceptions
+# against simply storing the column.
+#
+# This started at 5% and that was the all-or-nothing mistake CLAUDE.md warns
+# about. `traffic`'s `id` is start_dt + latitude + longitude for 62% of its
+# rows and something else for the rest, so a 5% cap threw away a formula that
+# covers nearly two thirds of a column holding 50,000 distinct 55-character
+# strings. A partly-right model is still worth far more than no model.
+DERIVE_MAX_EX_NUM, DERIVE_MAX_EX_DEN = 1, 2      # screen out below 50%
+
+
+def _build_template(target: str, srcs: List[Tuple[int, str]]):
+    """Cover `target` with literals and slices of other columns, left to right.
+
+    Greedy and longest-first. A part is either ("l", text) or
+    ("c", column, start, length) meaning that column's value sliced -- the
+    slice is what catches `id`, whose first field is a 19-character prefix of
+    `start_dt` rather than the whole of it.
+    """
+    parts, i, lit = [], 0, []
+    n = len(target)
+    while i < n:
+        best = None
+        for j, v in srcs:
+            if not v:
+                continue
+            # longest prefix of v that matches at i
+            m = 0
+            lim = min(len(v), n - i)
+            while m < lim and v[m] == target[i + m]:
+                m += 1
+            if m < DERIVE_MIN_PART:
+                continue
+            whole = (m == len(v))
+            # Prefer a whole-value match to a prefix of equal length, since it
+            # survives a source whose length varies between rows.
+            key = (m, 1 if whole else 0)
+            if best is None or key > (best[0], 1 if best[2] else 0):
+                best = (m, j, whole)
+        if best is None:
+            lit.append(target[i])
+            i += 1
+            continue
+        if lit:
+            parts.append(("l", "".join(lit)))
+            lit = []
+        m, j, whole = best
+        # A match that consumed the source's ENTIRE value is recorded as "the
+        # whole value" rather than "the first m characters". That distinction
+        # is the difference between working and not: `traffic`'s latitude runs
+        # 16 to 18 characters row to row, so a fixed-length slice built from
+        # one row reproduced only 124 rows in 200, while the same template with
+        # a whole-value part reproduces all of them.
+        parts.append(("c", j, 0, -1 if whole else m))
+        i += m
+    if lit:
+        parts.append(("l", "".join(lit)))
+    return parts
+
+
+def _apply_template(parts, rowvals: List[str]) -> str:
+    out = []
+    for p in parts:
+        if p[0] == "l":
+            out.append(p[1])
+        else:
+            v = rowvals[p[1]]
+            out.append(v[p[2]:p[2] + p[3]] if p[3] >= 0 else v[p[2]:])
+    return "".join(out)
+
+
+def _render(parts, rv: Dict[int, List[str]], k: int) -> str:
+    """Row k of a derived column, from only the columns it references."""
+    out = []
+    for p in parts:
+        if p[0] == "l":
+            out.append(p[1])
+        else:
+            v = rv[p[1]][k]
+            out.append(v[p[2]:p[2] + p[3]] if p[3] >= 0 else v[p[2]:])
+    return "".join(out)
+
+
+def _col_values(col) -> List[str]:
+    if col["kind"] == "text":
+        return col["cells"]
+    if col["kind"] == "dict":
+        alpha = col["alpha"]
+        return [alpha[i] for i in col["ids"].tolist()]
+    return None
+
+
+def find_derived(plan, nrows) -> Dict[int, dict]:
+    """Which string columns are a formula over other columns?
+
+    Sources are restricted to columns that are NOT themselves derived, so the
+    dependency graph is one level deep and no cycle is possible. Every
+    candidate is confirmed by rebuilding the whole column and counting the
+    rows it fails on; the failures are stored as exceptions, and a column with
+    too many is rejected outright rather than carried.
+    """
+    strcols = [i for i, c in enumerate(plan) if c["kind"] in ("text", "dict")]
+    if len(strcols) < 2 or nrows < 32:
+        return {}
+    vals = {i: _col_values(plan[i]) for i in strcols}
+    # A column can only be a source if it is smaller than the target, else the
+    # two would derive each other and the search would pick arbitrarily.
+    width = {i: sum(len(v) for v in vals[i][:DERIVE_PROBE_ROWS])
+             for i in strcols}
+
+    out: Dict[int, dict] = {}
+    for tgt in strcols:
+        srcpos = [j for j in strcols if j != tgt and width[j] < width[tgt]]
+        if not srcpos:
+            continue
+        # Build a template from a few rows and keep the one that verifies best
+        best = None
+        for r in range(0, min(nrows, 5)):
+            srcs = [(j, vals[j][r]) for j in srcpos]
+            parts = _build_template(vals[tgt][r], srcs)
+            if not any(p[0] == "c" for p in parts):
+                continue
+            # Only the columns the template actually references are gathered.
+            # Building a full row of every column here made this quadratic in
+            # table width for no reason.
+            refs = sorted({p[1] for p in parts if p[0] == "c"})
+            rv = {j: vals[j] for j in refs}
+            hits = 0
+            stride = max(1, nrows // min(nrows, DERIVE_PROBE_ROWS))
+            checked = 0
+            tv = vals[tgt]
+            for k in range(0, nrows, stride):
+                checked += 1
+                if _render(parts, rv, k) == tv[k]:
+                    hits += 1
+            if checked and (best is None or hits > best[0]):
+                best = (hits, checked, parts)
+        if best is None:
+            continue
+        hits, checked, parts = best
+        if hits * DERIVE_MAX_EX_DEN < checked * (DERIVE_MAX_EX_DEN
+                                                 - DERIVE_MAX_EX_NUM):
+            continue
+        # confirm over every row, collecting the exceptions
+        refs = sorted({p[1] for p in parts if p[0] == "c"})
+        rv = {j: vals[j] for j in refs}
+        tv = vals[tgt]
+        limit = nrows * DERIVE_MAX_EX_NUM // DERIVE_MAX_EX_DEN
+        expos, exvals, bailed = [], [], False
+        for k in range(nrows):
+            if _render(parts, rv, k) != tv[k]:
+                expos.append(k)
+                exvals.append(tv[k])
+                if len(expos) > limit:
+                    bailed = True
+                    break
+        if bailed:
+            continue
+        # Never worse: the template plus its exceptions has to beat storing the
+        # column. Measured on the column alone, which is sound here because the
+        # column really is its own stream.
+        keep = _probe("\n".join(vals[tgt]).encode("utf-8"))
+        got = _probe("\n".join(exvals).encode("utf-8")) + 40 * len(parts)
+        got += _probe(fast.pack_ints(
+            np.diff(np.array(expos, dtype=np.int64),
+                    prepend=np.int64(0)))) if expos else 0
+        if got >= keep:
+            continue
+        out[tgt] = {"parts": parts, "expos": expos, "exvals": exvals}
+    return out
+
+
+def _num_order(pred: Dict[int, Optional[int]]) -> List[int]:
+    """Positions in an order where every predictor precedes its dependant."""
+    order, seen = [], set()
+
+    def visit(i):
+        if i in seen:
+            return
+        seen.add(i)
+        p = pred.get(i)
+        if p is not None:
+            visit(p)
+        order.append(i)
+
+    for i in sorted(pred):
+        visit(i)
+    return order
+
+
 def classify(table) -> List[dict]:
     """fast.classify, with the lenient-numeric choice made PER COLUMN.
 
@@ -143,13 +466,54 @@ def classify(table) -> List[dict]:
     """
     plan = fast.classify(table, lenient=True)
     nrows = len(table.rows)
+    lax = [i for i, c in enumerate(plan) if c["kind"] == "num" and c.get("ex")]
+    if not lax:
+        return plan
+
+    # The demotion has to be judged WITH the cross-column predictor, not
+    # before it. `sideways` is the case: 43 of its 46 numeric columns are
+    # lenient, each one is worse than a dictionary on its own, and the version
+    # of this function that judged them alone demoted all 43 -- which deleted
+    # exactly the structure the predictor exists to exploit, taking the
+    # measured 26.2% saving with it. Judging a model before the model that
+    # depends on it exists is the same ordering trap as the numeric gate.
+    npred = pick_num_parents(plan, nrows)
     out = []
-    for c in plan:
-        if c["kind"] == "num" and c.get("ex") and not c.get("exp"):
-            out.append(_as_dict_or_text(table.column(c["j"]), c["j"], nrows))
-        else:
-            out.append(c)
+    for i, c in enumerate(plan):
+        if c["kind"] == "num" and c.get("ex"):
+            j = npred.get(i)
+            pints = plan[j]["ints"] if j is not None else None
+            if not _lenient_keeps(table.column(c["j"]), c, pints, nrows):
+                out.append(_as_dict_or_text(table.column(c["j"]), c["j"],
+                                            nrows))
+                continue
+        out.append(c)
     return out
+
+
+def _lenient_keeps(cells, col, pints, nrows) -> bool:
+    """Is this column cheaper as numbers-with-exceptions than as a dictionary?
+
+    `fast._lenient_promising` asks the same question but cannot see a
+    predictor, so it prices the column against its own past only.
+    """
+    a = col["ints"]
+    resid = a if pints is None else a - pints
+    k = fast.diff_order(resid)
+    num = fast._probe_bytes(
+        fast.pack_ints(np.diff(resid, n=k) if k else resid))
+    expos = col["ex"][0]
+    num += fast._probe_bytes(
+        fast.pack_ints(np.diff(expos, prepend=np.int64(0))))
+    uniq = sorted(set(cells))
+    if len(uniq) <= fast.DICT_MAX and len(uniq) * 2 <= max(nrows, 2):
+        idx = {v: i for i, v in enumerate(uniq)}
+        ids = np.array([idx[v] for v in cells], dtype=np.int64)
+        alt = fast._probe_bytes(
+            ids.astype(fast._width(len(uniq))).tobytes()) + fast._probe_len(uniq)
+    else:
+        alt = fast._probe_len(cells)
+    return num < alt
 
 
 def pick_parents(plan, nrows) -> Tuple[Dict[int, Optional[int]], List[int]]:
@@ -295,6 +659,14 @@ def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
         sh, tot = fast._prefix_stats(g)
         if sh <= 0 or tot <= 0 or sh * fast.FC_MIN_DEN <= tot * fast.FC_MIN_NUM:
             continue
+        # Rank by bytes AT STAKE, not by ratio. Master learned this the
+        # expensive way: a numeric column's exception group is a run of
+        # identical values sharing 98% of its bytes, so it outranks everything
+        # while having nothing to win. Without this floor every such group
+        # bought two compressions for a few dozen bytes.
+        stake = sh * len(g) // min(len(g), 4000)
+        if stake < fast.FC_MIN_BYTES:
+            continue
         plainb = "\n".join(g).encode("utf-8")
         if _probe(fast._front_code(g)) < _probe(plainb):
             front.add(i)
@@ -372,8 +744,13 @@ def _rowwise(table, cap: Optional[_Cap] = None) -> Optional[bytes]:
     del back
     if cap is None:
         cap = _Cap(len(canon))
+    # bzip2 FIRST. It is roughly 20x faster than xz at these settings, so
+    # running it first buys a real cap for almost nothing, and xz then abandons
+    # a hopeless candidate far sooner. Running xz first meant its cap was
+    # whatever the columnar encoder had published, which on a close table is no
+    # cap at all.
     best = None
-    for magic, kind in ((b"X", "xz"), (b"B", "bz2")):
+    for magic, kind in ((b"B", "bz2"), (b"X", "xz")):
         blob = _compress_capped(canon, cap, kind)
         if blob is not None and (best is None or len(blob) + 1 < len(best)):
             best = magic + blob
@@ -469,14 +846,31 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
                      probe: bool = False) -> bytes:
     plan = classify(table)
     nrows = len(table.rows)
-    parent, order = pick_parents(plan, nrows)
-    # In probe mode skip the text-parent search -- it is the dearest part of
-    # the analysis and omitting it only makes the columnar candidate look
-    # WORSE, which lowers the ratio and nominates the row-wise candidate more
-    # readily. Nominations cost time and never bytes, so the error is on the
-    # safe side by construction.
-    tparent = ({p: None for p, c in enumerate(plan) if c["kind"] == "text"}
-               if probe else pick_text_parents(plan, nrows, order))
+    # Derived columns are resolved BEFORE the parent searches so those never
+    # spend effort on a column that is about to become a formula.
+    if not probe:
+        for pos, d in find_derived(plan, nrows).items():
+            plan[pos] = {"kind": "drv", "j": plan[pos]["j"],
+                         "parts": d["parts"], "expos": d["expos"],
+                         "exvals": d["exvals"]}
+    # In probe mode skip BOTH parent searches. They are the dearest part of the
+    # analysis -- on text_heavy the probe was 31% of total encode time, almost
+    # all of it the O(columns^2) entropy search re-run on the sample -- and
+    # omitting them only makes the columnar candidate look WORSE, which lowers
+    # the ratio and nominates the row-wise candidate more readily. Nominations
+    # cost time and never bytes, so the error is on the safe side by
+    # construction, and a false nomination is now cheap because the row-wise
+    # candidate races under a cap that the columnar one tightens.
+    if probe:
+        dict_pos = [p for p, c in enumerate(plan) if c["kind"] == "dict"]
+        parent = {p: None for p in dict_pos}
+        order = list(dict_pos)
+        tparent = {p: None for p, c in enumerate(plan) if c["kind"] == "text"}
+    else:
+        parent, order = pick_parents(plan, nrows)
+        tparent = pick_text_parents(plan, nrows, order)
+    npred = ({i: None for i, c in enumerate(plan) if c["kind"] == "num"}
+             if probe else pick_num_parents(plan, nrows))
 
     bins: List[bytes] = []
     sgroups: List[List[str]] = []
@@ -503,12 +897,22 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
             sgroups.append(cells)
             specs[pos] = {"kind": "text"} if tp is None else \
                          {"kind": "text", "parent": tp}
+        elif col["kind"] == "drv":
+            specs[pos] = {"kind": "drv", "parts": col["parts"],
+                          "nex": len(col["expos"])}
+            if col["expos"]:
+                bins.append(fast.pack_ints(
+                    np.diff(np.array(col["expos"], dtype=np.int64),
+                            prepend=np.int64(0))))
+                sgroups.append(col["exvals"])
         elif col["kind"] == "num":
             a = col["ints"]
-            k = fast.diff_order(a)
-            bins.append(fast.pack_ints(np.diff(a, n=k) if k else a))
+            j = npred.get(pos)
+            resid = a if j is None else a - plan[j]["ints"]
+            k = fast.diff_order(resid)
+            bins.append(fast.pack_ints(np.diff(resid, n=k) if k else resid))
             specs[pos] = {"kind": "num", "dec": col["dec"], "k": k,
-                          "warm": a[:k].tolist()}
+                          "warm": resid[:k].tolist(), "pred": j}
             fast._emit_exceptions(col, specs[pos], bins, sgroups)
 
     front = _choose_front(sgroups, len(order))
@@ -534,6 +938,7 @@ def _encode_columnar(table, text_mode: str = "pile", threads: int = 0,
     meta = {"columns": table.columns, "nrows": nrows, "cols": specs,
             "order": order, "smeta": smeta, "nlenbins": len(bins) - n_before,
             "nbin": len(bins), "nstr": nstr,
+            "numorder": _num_order(npred),
             "sizes": [len(b) for b in blobs],
             "raw": [len(p) for p in parts]}
     meta_b = _xz(json.dumps(meta, separators=(",", ":")).encode())
@@ -602,8 +1007,25 @@ def decode(blob: bytes):
         cols[pos] = (np.array(alpha, dtype=object)[ids].tolist()
                      if alpha else [])
 
+    # A numeric column may be stored as its difference from another numeric
+    # column, and the predictor is not necessarily earlier in the file. So the
+    # payloads are unpacked in file order -- which needs no predictor -- and
+    # the additions are resolved afterwards in dependency order.
+    resid_by_pos: Dict[int, np.ndarray] = {}
+    ex_by_pos: Dict[int, Tuple[np.ndarray, List[str]]] = {}
+    drv: List[int] = []
+    drv_ex: Dict[int, Tuple[np.ndarray, List[str]]] = {}
+
     for pos, sp in enumerate(specs):
-        if sp["kind"] == "text":
+        if sp["kind"] == "drv":
+            drv.append(pos)
+            nex = sp.get("nex", 0)
+            if nex:
+                drv_ex[pos] = (
+                    np.cumsum(fast.unpack_ints(cuts[bi], nex)), texts[ti])
+                bi += 1
+                ti += 1
+        elif sp["kind"] == "text":
             cells = list(texts[ti])
             ti += 1
             tp = sp.get("parent")
@@ -618,12 +1040,45 @@ def decode(blob: bytes):
             k = sp["k"]
             d = fast.unpack_ints(cuts[bi], nrows - k)
             bi += 1
-            a = fast._undiff(d, np.array(sp["warm"], dtype=np.int64), k) \
-                if k else d
-            cells = fast.ints_to_cells(a, sp["dec"])
-            cells, bi, ti = fast._apply_exceptions(cells, sp, cuts, texts,
-                                                   bi, ti)
-            cols[pos] = cells
+            resid_by_pos[pos] = (
+                fast._undiff(d, np.array(sp["warm"], dtype=np.int64), k)
+                if k else d)
+            nex = sp.get("nex", 0)
+            if nex:
+                ex_by_pos[pos] = (
+                    np.cumsum(fast.unpack_ints(cuts[bi], nex)), texts[ti])
+                bi += 1
+                ti += 1
+
+    ints_by_pos: Dict[int, np.ndarray] = {}
+    for pos in meta.get("numorder", sorted(resid_by_pos)):
+        if pos not in resid_by_pos:
+            continue
+        j = specs[pos].get("pred")
+        ints_by_pos[pos] = (resid_by_pos[pos] if j is None
+                            else resid_by_pos[pos] + ints_by_pos[j])
+
+    for pos, a in ints_by_pos.items():
+        cells = fast.ints_to_cells(a, specs[pos]["dec"])
+        ex = ex_by_pos.get(pos)
+        if ex is not None:
+            expos, exvals = ex
+            for i, p in enumerate(expos.tolist()):
+                cells[p] = exvals[i]
+        cols[pos] = cells
+
+    # Derived columns last -- their sources are never themselves derived, so a
+    # single pass suffices and no ordering metadata is needed.
+    for pos in drv:
+        parts = [tuple(p) for p in specs[pos]["parts"]]
+        rv = {p[1]: cols[p[1]] for p in parts if p[0] == "c"}
+        cells = [_render(parts, rv, k) for k in range(nrows)]
+        ex = drv_ex.get(pos)
+        if ex is not None:
+            expos, exvals = ex
+            for i, p in enumerate(expos.tolist()):
+                cells[p] = exvals[i]
+        cols[pos] = cells
 
     rows = [list(r) for r in zip(*cols)]
     return dtz.Table(list(meta["columns"]), rows)
