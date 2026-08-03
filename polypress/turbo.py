@@ -387,6 +387,20 @@ def _render(parts, rv: Dict[int, List[str]], k: int) -> str:
     return "".join(out)
 
 
+def _stored_cost_bytes(col, vals: List[str]) -> bytes:
+    """The bytes this column would occupy if left alone, in its real form.
+
+    A dictionary column is ids plus a sorted alphabet, not its values joined.
+    Getting this wrong is what made `find_derived` fire on densely-coded
+    tables where it had nothing to win.
+    """
+    if col["kind"] == "dict":
+        w = fast._width(len(col["alpha"]))
+        return (col["ids"].astype(w).tobytes()
+                + "\n".join(col["alpha"]).encode("utf-8"))
+    return "\n".join(vals).encode("utf-8")
+
+
 def _col_values(col) -> List[str]:
     if col["kind"] == "text":
         return col["cells"]
@@ -465,7 +479,16 @@ def find_derived(plan, nrows) -> Dict[int, dict]:
         # Never worse: the template plus its exceptions has to beat storing the
         # column. Measured on the column alone, which is sound here because the
         # column really is its own stream.
-        keep = _probe("\n".join(vals[tgt]).encode("utf-8"))
+        #
+        # The alternative must be how the column would ACTUALLY be stored, not
+        # how it looks as raw text. A dictionary column costs ids plus an
+        # alphabet, which is far less than its values joined -- comparing
+        # against the joined text made every dictionary column look expensive
+        # and fired formulas that lost badly. On
+        # `covid_19_case_surveillance` that shipped 92,603 against master's
+        # 79,587: the formula's exceptions tripled the text pile, +16.35%, on
+        # exactly the densely-coded shape this codec is best at.
+        keep = _probe(_stored_cost_bytes(plan[tgt], vals[tgt]))
         got = _probe("\n".join(exvals).encode("utf-8")) + 40 * len(parts)
         got += _probe(fast.pack_ints(
             np.diff(np.array(expos, dtype=np.int64),
