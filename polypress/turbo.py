@@ -517,51 +517,170 @@ def _num_order(pred: Dict[int, Optional[int]]) -> List[int]:
     return order
 
 
-def classify(table) -> List[dict]:
-    """fast.classify, with the lenient-numeric choice made PER COLUMN.
+def _uniq_ids(cells) -> Tuple[List[str], np.ndarray]:
+    """The distinct values and each cell's index into them, in ONE pass."""
+    idx: Dict[str, int] = {}
+    ids = np.empty(len(cells), dtype=np.int64)
+    get = idx.get
+    for i, c in enumerate(cells):
+        k = get(c)
+        if k is None:
+            k = idx[c] = len(idx)
+        ids[i] = k
+    return list(idx), ids
 
-    Recovering a column that is numeric apart from a few cells is worth a great
-    deal where it applies -- 41% of the Treasury yield curve -- and a disaster
-    where it does not, because it also moves the column out of the dictionary
-    path. That is the trade CLAUDE.md records as making the reverted
-    ragged-decimal experiment 9-23% worse.
 
-    Master cannot decide it per column: its columns share one stream, so it
-    encodes the WHOLE TABLE both ways and keeps the smaller. Measured on the
-    bench set, that second encode is worth a lot -- ev_pop 420,588 lenient
-    against 274,425 strict, sideways 1,385,863 against 948,662 -- which is why
-    turbo v1, which always took the lenient plan, shipped 52% and 70% larger.
+def _numeric_lenient_fast(uniq: List[str], ids: np.ndarray, nrows: int):
+    """`fast._numeric_lenient`, decided on the DISTINCT values.
 
-    `fast._lenient_promising` already computes exactly the right comparison and
-    master uses it only as a nominator for the global double encode. Here it is
-    the decision, which is sound for the same reason everything else in this
-    module is: the column really is its own stream.
+    The original walks every cell twice with a regex. But the answer depends
+    only on the distinct values and how often each occurs, and distinct values
+    are a small fraction of cells -- measured on a 40 MB, 116-column table,
+    409,971 distinct against 4,725,260 cells, **8.7%**. So the per-cell regex
+    work becomes per-distinct-value work and the rest is numpy indexing.
+
+    This is the user's point: do not analyse and then bucket, bucket as you
+    analyse. The dictionary pass has to happen anyway for any column that is
+    not cleanly numeric, so the numeric question is answered out of work
+    already done rather than by another full scan.
+
+    Must agree with `fast._numeric_lenient` exactly -- `tests/test_turbo.py`
+    and `_check_lenient_agrees` below pin it.
     """
-    plan = fast.classify(table, lenient=True)
-    nrows = len(table.rows)
-    lax = [i for i, c in enumerate(plan) if c["kind"] == "num" and c.get("ex")]
-    if not lax:
-        return plan
+    n = nrows
+    if n == 0:
+        return None
+    limit = int(n * fast.EX_MAX_FRACTION)
+    mult = np.bincount(ids, minlength=len(uniq))
 
-    # The demotion has to be judged WITH the cross-column predictor, not
-    # before it. `sideways` is the case: 43 of its 46 numeric columns are
-    # lenient, each one is worse than a dictionary on its own, and the version
-    # of this function that judged them alone demoted all 43 -- which deleted
-    # exactly the structure the predictor exists to exploit, taking the
-    # measured 26.2% saving with it. Judging a model before the model that
-    # depends on it exists is the same ordering trap as the numeric gate.
+    counts: Dict[int, int] = {}
+    bad = 0
+    for i, c in enumerate(uniq):
+        m = int(mult[i])
+        if not fast._NUM_RE.match(c):
+            bad += m
+            if bad > limit:
+                return None
+            continue
+        k = c.find(".")
+        d = 0 if k < 0 else len(c) - k - 1
+        if d > fast.EX_MAX_DEC:
+            bad += m
+            if bad > limit:
+                return None
+            continue
+        counts[d] = counts.get(d, 0) + m
+    if not counts:
+        return None
+    dec = min(counts, key=lambda d: (-counts[d], d))
+
+    vals_u = np.zeros(len(uniq), dtype=np.int64)
+    okm = np.zeros(len(uniq), dtype=bool)
+    nex = 0
+    for i, c in enumerate(uniq):
+        v = fast._exact_int(c, dec)
+        if v is None:
+            nex += int(mult[i])
+            if nex > limit:
+                return None
+        else:
+            vals_u[i] = v
+            okm[i] = True
+
+    ok = okm[ids]
+    if ok.all():
+        return None                      # plain _numeric already handles this
+    if not ok.any():
+        return None
+    expos = np.flatnonzero(~ok)
+    exvals = [uniq[i] for i in ids[expos].tolist()]
+
+    # forward fill, then patch any leading run with the first good value --
+    # the same rule as the original, done with a running maximum instead of a
+    # Python loop
+    a_rows = vals_u[ids]
+    pos = np.where(ok, np.arange(n), -1)
+    np.maximum.accumulate(pos, out=pos)
+    first_ok = int(np.argmax(ok))
+    pos[pos < 0] = first_ok
+    a = a_rows[pos]
+    if a.size and int(np.abs(a).max()) >= fast.INT_LIMIT:
+        return None
+    return a, dec, expos, exvals
+
+
+def classify(table) -> List[dict]:
+    """Bucket as you analyse: ONE PASS over each column's cells, with every candidate bucket built from
+    that pass and the losers discarded.
+
+    `fast.classify` walks a column up to four times: parse it as strict
+    numbers; failing that, walk it again with a regex for the lenient numeric
+    test; then build a set for the dictionary; then build the ids. Measured on
+    a 40 MB, 116-column table, the lenient walk alone is 0.77s of a 1.70s
+    classify -- and it is entirely redundant, because the answer depends only
+    on the DISTINCT values and how often each occurs. Distinct values are 8.7%
+    of cells on that table.
+
+    So the distinct set and the ids are built once, and every later question --
+    is this numeric, is it numeric apart from a few cells, is it a dictionary
+    or free text -- is answered out of that one pass. A bucket that turns out
+    ineligible is simply dropped.
+    """
+    nrows = len(table.rows)
+    plan: List[dict] = []
+    for j in range(len(table.columns)):
+        cells = table.column(j)
+        num = fast._numeric(cells)          # strict, C-accelerated, cheap
+        if num is not None:
+            plan.append({"kind": "num", "ints": num[0], "dec": num[1],
+                         "j": j, "ex": None})
+            continue
+
+        uniq, ids = _uniq_ids(cells)
+        if len(uniq) <= fast.DICT_MAX and len(uniq) * 2 <= max(nrows, 2):
+            # the alphabet is stored SORTED -- front-coding depends on it
+            srt = sorted(range(len(uniq)), key=lambda i: uniq[i])
+            rank = np.empty(len(uniq), dtype=np.int64)
+            rank[srt] = np.arange(len(uniq))
+            alt = {"kind": "dict", "alpha": [uniq[i] for i in srt],
+                   "ids": rank[ids], "j": j}
+        else:
+            alt = {"kind": "text", "cells": cells, "j": j}
+
+        lax = _numeric_lenient_fast(uniq, ids, nrows)
+        if lax is None:
+            plan.append(alt)
+            continue
+        plan.append({"kind": "num", "ints": lax[0], "dec": lax[1], "j": j,
+                     "ex": (lax[2], lax[3]), "_alt": alt, "_cells": cells})
+
+    # The lenient-versus-dictionary decision has to be judged WITH the
+    # cross-column predictor, not before it. `sideways` is the case: 43 of its
+    # 46 numeric columns are lenient, each one is worse than a dictionary on
+    # its own, and judging them alone demoted all 43 -- deleting exactly the
+    # structure the predictor exists to exploit, and the measured 26.2% with
+    # it. Judging a model before the model that depends on it exists is the
+    # same ordering trap as the numeric gate.
+    pend = [i for i, c in enumerate(plan) if "_alt" in c]
+    if not pend:
+        return plan
     npred = pick_num_parents(plan, nrows)
-    out = []
-    for i, c in enumerate(plan):
-        if c["kind"] == "num" and c.get("ex"):
-            j = npred.get(i)
-            pints = plan[j]["ints"] if j is not None else None
-            if not _lenient_keeps(table.column(c["j"]), c, pints, nrows):
-                out.append(_as_dict_or_text(table.column(c["j"]), c["j"],
-                                            nrows))
-                continue
-        out.append(c)
-    return out
+    # Snapshot the predictor arrays BEFORE any demotion. The loop rewrites
+    # plan[i] in place, so a column demoted early no longer has "ints" and a
+    # later column's lookup of it would fail -- and every predictor here was
+    # chosen against the pre-demotion plan anyway, so the snapshot is also the
+    # correct thing to price against.
+    snap = {i: c["ints"] for i, c in enumerate(plan) if c["kind"] == "num"}
+    for i in pend:
+        c = plan[i]
+        k = npred.get(i)
+        pints = snap.get(k) if k is not None else None
+        if not _lenient_keeps(c["_cells"], c, pints, nrows):
+            plan[i] = c["_alt"]
+        else:
+            c.pop("_alt")
+            c.pop("_cells")
+    return plan
 
 
 def _lenient_keeps(cells, col, pints, nrows) -> bool:
