@@ -81,6 +81,16 @@ _CPUS = max(1, (os.cpu_count() or 2) - 1)
 # Least binary payload worth giving its own compressor. Below this the thread
 # saves no wall-clock and the lost cross-column sharing is pure cost.
 BIN_GROUP_BYTES = 4 << 20
+# How many string groups get a whole-pile front-coding trial.
+#
+# Turbo's trials are cheap probes rather than master's full-strength
+# compressions, so more of them LOOK affordable. Measured on the bench set,
+# more of them are worse: 1 -> -10.90%, 2 -> -10.25%, 3 -> -9.81%, 8 -> -9.19%,
+# monotonically. The reason is the same one that broke the row-wise probe --
+# a decision taken at preset 1 does not transfer to preset 9e, so every extra
+# trial is another chance to be confidently wrong. Cheap trials do not mean
+# more trials.
+FRONT_CANDIDATES = 1
 # Each concurrent lzma encoder wants its own dictionary. Measured 2026-08-03:
 # 4 threads on a 10 MB table cost +486 MB. Cap the pool by input size so a big
 # table cannot walk through the 1-2 GB ceiling.
@@ -106,6 +116,43 @@ def _unxz(b: bytes) -> bytes:
 
 def _probe(b: bytes) -> int:
     return len(lzma.compress(b, **PROBE))
+
+
+# The string pile is decided with a STRONGER probe than everything else, and
+# it has to be. Measured on `opendata_howard_county` 2026-08-03, varying only
+# the preset used for the front-coding trials:
+#
+#     preset 1   354,059  (+6.29% vs master)   0.66s
+#     preset 4   354,059  (+6.29%)             1.05s
+#     preset 6   333,124  (+0.01%)             1.37s
+#     preset 9e  333,124  (+0.01%)             1.45s
+#
+# The entire deficit on that table was the probe being too weak to rank the
+# candidates the way the real entropy stage would -- the same mismatch that
+# makes the row-wise sample probe unreliable. Preset 6 is where the ranking
+# converges, and it costs 0.7s where 9e costs 0.8s.
+#
+# It matters here and not elsewhere because this is the one decision taken over
+# the whole shared pile rather than over a single independent column.
+FRONT_PROBE = dict(format=lzma.FORMAT_RAW,
+                   filters=[{"id": lzma.FILTER_LZMA2, "preset": 6}])
+
+
+# The pile trials only have to RANK candidates, and a prefix ranks them the
+# same way the whole pile does. Measured on three tables, truncating to 0.5 MB
+# changed no decision at all while cutting the trial cost by a third:
+#
+#     howard_county   full 333,124 / 1.39s   0.5 MB 333,124 / 0.83s
+#     text_heavy      full 907,989 / 3.54s   0.5 MB 907,989 / 2.19s
+#     mixed_wide      full 445,069 / 1.55s   0.5 MB 445,069 / 1.01s
+#
+# 1 MB is used rather than 0.5 for margin -- the saving between them is small
+# and a prefix that misses a whole group would not.
+FRONT_PROBE_BYTES = 1 << 20
+
+
+def _probe_front(b: bytes) -> int:
+    return len(lzma.compress(b[:FRONT_PROBE_BYTES], **FRONT_PROBE))
 
 
 def _stable_perm(ids: np.ndarray) -> np.ndarray:
@@ -669,11 +716,11 @@ def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
         return fast._pack_strings(groups, front)[0]
 
     best = frozenset()
-    best_cost = _probe(pile(best))
+    best_cost = _probe_front(pile(best))
 
     if ndict:
         alpha = frozenset(range(ndict))
-        c = _probe(pile(alpha))
+        c = _probe_front(pile(alpha))
         if c < best_cost:
             best, best_cost = alpha, c
 
@@ -689,10 +736,16 @@ def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
         if stake < fast.FC_MIN_BYTES:
             continue
         cands.append((stake, i))
+    # Greedy over several candidates, each confirmed on the whole pile and
+    # kept only if it helps. Master stops at one because each of its trials
+    # costs a full-strength compression of the pile; here a trial is a cheap
+    # probe, so more of them are affordable -- and they are needed. Stopping at
+    # one left datasets whose date and code columns EACH want front-coding
+    # stuck at master's size when per-group had them 2.5% smaller.
     cands.sort(key=lambda c: (-c[0], c[1]))
-    for _stake, i in cands[:fast.TEXT_FC_CANDIDATES]:
+    for _stake, i in cands[:FRONT_CANDIDATES]:
         trial = frozenset(best | {i})
-        c = _probe(pile(trial))
+        c = _probe_front(pile(trial))
         if c < best_cost:
             best, best_cost = trial, c
     return best
