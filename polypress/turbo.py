@@ -1405,18 +1405,47 @@ def decode(blob: bytes):
                 cells[p] = exvals[i]
         cols[pos] = cells
 
-    # Derived columns last -- their sources are never themselves derived, so a
-    # single pass suffices and no ordering metadata is needed.
-    for pos in drv:
-        parts = [tuple(p) for p in specs[pos]["parts"]]
-        rv = {p[1]: cols[p[1]] for p in parts if p[0] == "c"}
-        cells = [_render(parts, rv, k) for k in range(nrows)]
-        ex = drv_ex.get(pos)
-        if ex is not None:
-            expos, exvals = ex
-            for i, p in enumerate(expos.tolist()):
-                cells[p] = exvals[i]
-        cols[pos] = cells
+    # Derived columns last, in DEPENDENCY order.
+    #
+    # An earlier version did this in position order, on the stated assumption
+    # that "their sources are never themselves derived". That assumption was
+    # never enforced and is false: on
+    # `data_real_property_tax_receivables_dkna-i698` columns 8 and 9 are both
+    # formulas over column 12, which is itself a formula over column 13. Built
+    # in position order, column 12 did not exist when 8 asked for it.
+    #
+    # It failed in the worst possible way -- `encode` SUCCEEDED and wrote an
+    # archive that could never be decoded. A crash on write costs nothing; a
+    # crash on read costs the data.
+    #
+    # Chains are legitimate and worth keeping, so the fix is to order rather
+    # than to refuse them. Cycles cannot occur: `find_derived` only accepts a
+    # source strictly narrower than its target, which is a strict order. The
+    # no-progress check is there anyway, because the decoder treats its input
+    # as hostile and a corrupt header must not spin forever.
+    pending = list(drv)
+    while pending:
+        progress = False
+        still = []
+        for pos in pending:
+            parts = [tuple(p) for p in specs[pos]["parts"]]
+            refs = [p[1] for p in parts if p[0] == "c"]
+            if any(r < 0 or r >= len(cols) or cols[r] is None for r in refs):
+                still.append(pos)
+                continue
+            rv = {r: cols[r] for r in refs}
+            cells = [_render(parts, rv, k) for k in range(nrows)]
+            ex = drv_ex.get(pos)
+            if ex is not None:
+                expos, exvals = ex
+                for i, p in enumerate(expos.tolist()):
+                    cells[p] = exvals[i]
+            cols[pos] = cells
+            progress = True
+        if not progress:
+            raise ValueError("derived columns do not resolve: "
+                             "cyclic or dangling reference in the header")
+        pending = still
 
     rows = [list(r) for r in zip(*cols)]
     return dtz.Table(list(meta["columns"]), rows)

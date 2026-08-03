@@ -80,6 +80,24 @@ def main() -> int:
     half = [[a, b, (f"POINT ({a} {b})" if i % 3 else f"junk{i}")]
             for i, (a, b) in enumerate(zip(lon, lat))]
     check("derived: 1/3 exceptions", t(["lon", "lat", "point"], half))
+    # A CHAIN: `wkt` is built from `pair`, which is itself built from lon/lat.
+    #
+    # This is the case that shipped an archive which encoded fine and could
+    # never be decoded, on a real corpus table where two columns were formulas
+    # over a third that was itself a formula. The decoder built derived columns
+    # in position order, so the middle one did not exist yet. Nothing in this
+    # suite generated a chain, which is why only the 500-dataset sweep found
+    # it. Ordering the decode by dependency is the fix; this pins it.
+    check("derived: CHAINED formulas", t(
+        ["lon", "lat", "pair", "wkt"],
+        [[a, b, a + " " + b, f"POINT ({a} {b})"]
+         for a, b in zip(lon, lat)]))
+    # and a chain three deep, to make sure one round of resolution is not
+    # quietly being relied on
+    check("derived: chain of three", t(
+        ["lon", "lat", "pair", "wkt", "label"],
+        [[a, b, a + " " + b, f"POINT ({a} {b})", f"[POINT ({a} {b})]"]
+         for a, b in zip(lon, lat)]))
     # reorder parents
     zips = [f"{random.randint(10000, 10040)}" for _ in range(n)]
     city = {z: f"city_{z}" for z in set(zips)}
