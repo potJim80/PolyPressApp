@@ -83,3 +83,32 @@ WHAT IT GIVES UP
   * the row-wise candidate is chosen by a sample nominator plus a measured
     race, not by always encoding both ways
 
+
+================================================================================
+SUPERSEDED BY THE 500-DATASET SWEEP -- see socrata500-polypress-turbo-summary.txt
+================================================================================
+The numbers above are from an 8-dataset bench set and a 63-dataset subset, and
+they UNDERSTATE the fork: the speedup grows with file size (2.07x under 12 MB,
+3.97x at 25 MB, 6.18x at 50 MB). The real record is the 500 sweep.
+
+    480 unselected datasets, 3.26 GB of CSV, 13.9M rows, 480/480 exact
+    turbo wins 440 of 480 (92%) against the best of 17 competitors
+    median margin 1.25x, best 2.73x, worst 0.65x, aggregate 1.27x
+
+AGAINST PARQUET, measured 2026-08-03 with benchmarks/bench_parquet.py against
+all-varchar zstd-19 (which IS byte-exact), both keeping original row order:
+
+    table              MB      turbo B  turbo s     parquet B   pq s  smaller  speed
+    coded_admin       9.0       40,055    0.34s       205,079  0.15s   80.5%   0.44x
+    cdc_nndss        20.8       97,442    0.75s       302,563  0.33s   67.8%   0.44x
+    chicago_crimes   43.4    2,244,787    4.21s     5,883,711  2.90s   61.8%   0.69x
+    seattle_fire911  26.9    1,144,963    2.53s     2,960,404  1.77s   61.3%   0.70x
+    nyc_311          50.0    1,894,507    3.16s     3,846,206  1.41s   50.7%   0.45x
+    wa_ev_population 54.6    1,547,564    1.83s     3,132,426  0.73s   50.6%   0.40x
+    nyc_collisions   36.7    1,859,369    2.56s     3,661,096  1.63s   49.2%   0.64x
+    chicago_permits  74.6    6,603,350    6.31s    10,422,530  4.97s   36.6%   0.79x
+
+SMALLER THAN PARQUET ON ALL EIGHT, BY 37-80%. FASTER ON NONE, BY 1.3-2.5x.
+
+Typed Parquet is NOT byte-exact at any size tested; all-varchar is. Sorted
+Parquet discards the original row order, which Polypress keeps for free.

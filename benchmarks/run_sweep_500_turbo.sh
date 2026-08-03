@@ -24,7 +24,7 @@ for pass_no in 1 2 3; do
     before=$(wc -l < "$OUT" 2>/dev/null || echo 0)
     echo "=== pass $pass_no started $(date) ==="
     nice -n 19 python3 benchmarks/sweep.py corpus500/*.csv \
-        --out "$OUT" --max-mb 16 --rss-abort 1400 --timeout 3600
+        --out "$OUT" --max-mb 12 --rss-abort 1400 --timeout 3600
     rc=$?
     after=$(wc -l < "$OUT" 2>/dev/null || echo 0)
     echo "=== pass $pass_no exited $rc at $(date), $before -> $after ==="
