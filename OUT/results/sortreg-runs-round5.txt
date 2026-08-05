@@ -1,0 +1,51 @@
+
+cdc_nndss.csv  7,666 rows x 16 cols, 875,174 bytes CSV (truncated)
+   method                         bytes   vs CSV   vs xz   secs  ok   breakdown
+   POLYPRESS (reference)          8,305  105.38x   0.17x    0.2  y   
+   SORTREG best first            14,180   61.72x   0.29x    2.6  y   hdr=43  name=86  dict=4,913  resid=238  perm=8,323  run=533
+   SORTREG best freq             14,245   61.44x   0.29x    2.6  y   hdr=43  name=86  dict=4,899  resid=238  perm=8,421  run=514
+   SORTREG best-perm             14,574   60.05x   0.30x    2.6  y   hdr=43  name=86  dict=4,888  resid=238  perm=8,738  run=537
+   SORTREG disp first            18,540   47.20x   0.38x    0.5  y   hdr=35  name=86  dict=4,913  resid=238  perm=12,691  run=533
+   SORTREG displacement          18,985   46.10x   0.39x    0.4  y   hdr=35  name=86  dict=4,888  resid=238  perm=13,157  run=537
+   SORTREG wave first            21,236   41.21x   0.44x    0.3  y   hdr=35  name=86  dict=4,913  resid=238  perm=15,387  run=533
+   SORTREG wavelet               24,556   35.64x   0.51x    0.3  y   hdr=35  name=86  dict=4,888  resid=238  perm=18,727  run=537
+   SORTREG gap first             25,532   34.28x   0.53x    0.4  y   hdr=35  name=86  dict=4,913  resid=238  perm=19,682  run=533
+   xz -9e (reference)            48,348   18.10x   1.00x    0.2  y   
+
+usgs_quakes.csv  5,530 rows x 22 cols, 1,046,511 bytes CSV (truncated)
+   method                         bytes   vs CSV   vs xz   secs  ok   breakdown
+   POLYPRESS (reference)        167,127    6.26x   0.76x    1.1  y   
+   xz -9e (reference)           219,968    4.76x   1.00x    0.2  y   
+   SORTREG best first           297,268    3.52x   1.35x    4.9  y   hdr=69  name=118  dict=239,263  resid=900  perm=52,949  run=3,923
+   SORTREG wave first           305,685    3.42x   1.39x    2.1  y   hdr=57  name=118  dict=239,263  resid=900  perm=61,378  run=3,923
+   SORTREG disp first           309,632    3.38x   1.41x    2.0  y   hdr=57  name=118  dict=239,263  resid=900  perm=65,325  run=3,923
+   SORTREG best freq            319,336    3.28x   1.45x    5.3  y   hdr=69  name=118  dict=231,779  resid=900  perm=84,032  run=2,392
+   SORTREG best-perm            321,130    3.26x   1.46x    5.4  y   hdr=69  name=118  dict=230,990  resid=900  perm=85,248  run=3,759
+   SORTREG wavelet              323,242    3.24x   1.47x    2.1  y   hdr=57  name=118  dict=230,990  resid=900  perm=87,372  run=3,759
+   SORTREG gap first            336,432    3.11x   1.53x    2.2  y   hdr=57  name=118  dict=239,263  resid=900  perm=92,125  run=3,923
+   SORTREG displacement         337,203    3.10x   1.53x    2.1  y   hdr=57  name=118  dict=230,990  resid=900  perm=101,333  run=3,759
+
+nyc_baby_names.csv  19,623 rows x 6 cols, 813,037 bytes CSV (truncated)
+   method                         bytes   vs CSV   vs xz   secs  ok   breakdown
+   POLYPRESS (reference)         37,854   21.48x   0.51x    0.3  y   
+   SORTREG wave first            40,143   20.25x   0.54x    0.4  y   dict=7,207  resid=114  perm=31,426  run=1,300
+   SORTREG best first            40,147   20.25x   0.54x    3.2  y   dict=7,207  resid=114  perm=31,426  run=1,300
+   SORTREG best freq             41,760   19.47x   0.56x    3.2  y   dict=7,144  resid=114  perm=33,651  run=751
+   SORTREG wavelet               43,595   18.65x   0.59x    0.4  y   dict=6,352  resid=114  perm=35,554  run=1,479
+   SORTREG best-perm             43,599   18.65x   0.59x    3.2  y   dict=6,352  resid=114  perm=35,554  run=1,479
+   SORTREG gap first             51,096   15.91x   0.69x    0.5  y   dict=7,207  resid=114  perm=42,379  run=1,300
+   SORTREG disp first            53,287   15.26x   0.72x    0.5  y   dict=7,207  resid=114  perm=44,570  run=1,300
+   SORTREG displacement          54,088   15.03x   0.73x    0.5  y   dict=6,352  resid=114  perm=46,047  run=1,479
+   xz -9e (reference)            74,100   10.97x   1.00x    0.1  y   
+
+=== totals ===
+   POLYPRESS (reference)        213,286    0.62x vs xz
+   xz -9e (reference)           342,416    1.00x vs xz
+   SORTREG best first           351,595    1.03x vs xz
+   SORTREG wave first           367,064    1.07x vs xz
+   SORTREG best freq            375,341    1.10x vs xz
+   SORTREG best-perm            379,303    1.11x vs xz
+   SORTREG disp first           381,459    1.11x vs xz
+   SORTREG wavelet              391,393    1.14x vs xz
+   SORTREG displacement         410,276    1.20x vs xz
+   SORTREG gap first            413,060    1.21x vs xz

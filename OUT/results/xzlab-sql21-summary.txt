@@ -1,0 +1,54 @@
+Databases as competitors -- 21 big tables, 2026-08-04
+
+Same 16 MB slices as the xzlab sweep. The duckdb and sqlite files are
+QUERYABLE: they carry page structure and stay usable in place, which an
+archive does not. Quote that next to every number here. Both engines are
+round-trip verified by copying the table back out and comparing every cell.
+
+EXCLUDED  datos_secop_ii_procesos_de_contratación_p6dx-8zbt.csv
+          duckdb: Invalid Input Error: Error when sniffing file "/tmp/claude-501/-Users-mahdiakbarin-Desktop-polypress/dac04072-98f5-4d6e-809b-d797450daa39/scratchpad/sqlcut.csv".
+It was not possible to automatically d
+
+20 of 21 tables carry every method. 301 MB of CSV.
+
+method                 total bytes   vs CSV   vs PP    secs  queryable
+POLYPRESS               23,468,996   12.82x  1.000x    294s  no
+brotli -q11             28,196,319   10.67x  0.832x    275s  no
+xz -9e                  28,239,200   10.65x  0.831x     79s  no
+xzlab BEST              28,498,084   10.56x  0.824x     71s  no
+sqlite+xz               34,106,632    8.82x  0.688x     99s  no
+parquet+zstd22          37,961,410    7.92x  0.618x     26s  no
+duckdb                 134,725,632    2.23x  0.174x      7s  YES
+sqlite                 347,451,392    0.87x  0.068x      6s  YES
+sqlite VACUUM          347,451,392    0.87x  0.068x      7s  YES
+
+   POLYPRESS smaller than duckdb on 20/20
+   xzlab BEST smaller than duckdb on 20/20
+   duckdb smaller than parquet+zstd22 on 0/20
+   duckdb smaller than xz -9e on 0/20
+   sqlite+xz smaller than POLYPRESS on 0/20
+
+   sqlite file LARGER than its source CSV on 20/20
+   duckdb is 5.00x bigger than Polypress at the median, 1.67x at best, 18.86x at worst
+
+table                                                     PP     xzlab      duckdb      sqlite
+NHAMCS Adult data.csv                                245,163   328,352   2,895,872  22,728,704
+controllerdata_checkbook_l_a_data_pggv-e4fn.csv      609,766   915,756   3,682,304  16,310,272
+dallasopendata_police_incidents_qv6i-rri7.csv      1,103,409 1,542,760   4,730,880  16,437,248
+data_311_service_requests_from_2020_to_presen_er     762,662 1,114,976   3,158,016  17,584,128
+data_assessment_parcels_d4mq-wa44.csv              1,330,610 1,364,464  11,022,336  17,731,584
+data_building_permits_c2es-76ed.csv                1,684,706 2,005,960  14,692,352  17,092,608
+data_building_permits_ydr8-5enu.csv                1,562,579 1,896,452   7,090,176  16,875,520
+data_dob_job_application_filings_ic3t-wcy2.csv     1,709,959 2,065,896   6,041,600  14,954,496
+data_dob_now_build_approved_permits_rbx6-tga4.cs   1,485,455 2,160,252   6,041,600  16,494,592
+data_dob_now_build_job_application_filings_w9ak-   1,436,634 1,915,988   5,779,456  16,281,600
+data_food_inspections_4ijn-s7e5.csv                1,307,318 1,442,208  24,653,824  20,045,824
+data_housing_maintenance_code_violations_wvxf-dw     883,598 1,348,400   5,517,312  16,101,376
+data_primary_land_use_tax_lot_output_pluto_64uk-   1,105,327 1,080,200   4,206,592  14,688,256
+data_traffic_crashes_crashes_85ca-t3if.csv         2,673,896 2,781,700   4,468,736  15,609,856
+data_well_permits_2655-qn8j.csv                    1,011,527 1,125,492   4,468,736  16,207,872
+datahub_issued_construction_permits_3syk-w9eu.cs   1,133,823 1,514,408   5,255,168  16,797,696
+datos_secop_i_procesos_de_compra_pública_f789-7h   1,051,151 1,236,812   5,255,168  19,718,144
+datos_secop_ii_contratos_electrónicos_jbjy-vk9h.   1,237,137 1,407,512   7,090,176  19,091,456
+datos_secop_integrado_rpmr-utcd.csv                  789,604   825,788   5,779,456  18,939,904
+health_food_service_establishment_inspections_b_     344,672   424,708   2,895,872  17,760,256

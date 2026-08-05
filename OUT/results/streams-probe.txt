@@ -1,0 +1,146 @@
+
+cdc_nndss.csv  61,100 rows x 16 cols, 8.4 MB read (truncated)  ~0.524 MB/column
+      dict  col/dict  variant              bytes   secs   vs one
+       64M      0.01  one                 37,568   0.8s  
+       64M      0.01  percol              40,296   0.8s    +7.26%
+       64M      0.01  percol+tune         40,293   0.8s    +7.25%
+       64M      0.01  bykind              37,665   0.8s    +0.26%
+       64M      0.01  bykind+tune         37,657   0.8s    +0.24%
+        4M      0.13  one                 37,568   0.8s  
+        4M      0.13  percol              40,296   0.8s    +7.26%
+        4M      0.13  percol+tune         40,293   0.8s    +7.25%
+        4M      0.13  bykind              37,665   0.8s    +0.26%
+        4M      0.13  bykind+tune         37,657   0.8s    +0.24%
+        1M      0.52  one                 37,512   0.8s  
+        1M      0.52  percol              40,286   0.8s    +7.39%
+        1M      0.52  percol+tune         40,283   0.8s    +7.39%
+        1M      0.52  bykind              37,662   0.8s    +0.40%
+        1M      0.52  bykind+tune         37,653   0.8s    +0.38%
+     0.25M      2.10  one                 45,636   0.8s  
+     0.25M      2.10  percol              48,338   0.8s    +5.92%
+     0.25M      2.10  percol+tune         48,336   0.8s    +5.92%
+     0.25M      2.10  bykind              45,796   0.8s    +0.35%
+     0.25M      2.10  bykind+tune         45,787   0.8s    +0.33%
+   0.0625M      8.39  one                 48,124   0.8s  
+   0.0625M      8.39  percol              49,935   0.8s    +3.76%
+   0.0625M      8.39  percol+tune         49,929   0.8s    +3.75%
+   0.0625M      8.39  bykind              48,321   0.8s    +0.41%
+   0.0625M      8.39  bykind+tune         48,311   0.7s    +0.39%
+    0.016M     32.77  one                 48,460   0.8s  
+    0.016M     32.77  percol              50,129   0.8s    +3.44%
+    0.016M     32.77  percol+tune         50,125   0.8s    +3.44%
+    0.016M     32.77  bykind              48,604   0.8s    +0.30%
+    0.016M     32.77  bykind+tune         48,595   0.8s    +0.28%
+
+nyc_311.csv  10,554 rows x 44 cols, 8.4 MB read (truncated)  ~0.191 MB/column
+      dict  col/dict  variant              bytes   secs   vs one
+       64M      0.00  one                581,100   1.4s  
+       64M      0.00  percol             692,203   1.3s   +19.12%
+       64M      0.00  percol+tune        692,174   1.3s   +19.11%
+       64M      0.00  bykind             580,865   1.4s    -0.04%
+       64M      0.00  bykind+tune        580,834   1.4s    -0.05%
+        4M      0.05  one                586,716   1.4s  
+        4M      0.05  percol             692,203   1.3s   +17.98%
+        4M      0.05  percol+tune        692,174   1.3s   +17.97%
+        4M      0.05  bykind             587,820   1.4s    +0.19%
+        4M      0.05  bykind+tune        587,789   1.4s    +0.18%
+        1M      0.19  one                589,296   1.4s  
+        1M      0.19  percol             692,528   1.3s   +17.52%
+        1M      0.19  percol+tune        692,499   1.3s   +17.51%
+        1M      0.19  bykind             590,077   1.4s    +0.13%
+        1M      0.19  bykind+tune        590,046   1.4s    +0.13%
+     0.25M      0.76  one                637,340   1.4s  
+     0.25M      0.76  percol             698,958   1.4s    +9.67%
+     0.25M      0.76  percol+tune        698,928   1.4s    +9.66%
+     0.25M      0.76  bykind             636,936   1.4s    -0.06%
+     0.25M      0.76  bykind+tune        636,905   1.4s    -0.07%
+   0.0625M      3.05  one                710,440   1.4s  
+   0.0625M      3.05  percol             724,480   1.3s    +1.98%
+   0.0625M      3.05  percol+tune        724,449   1.3s    +1.97%
+   0.0625M      3.05  bykind             711,569   1.4s    +0.16%
+   0.0625M      3.05  bykind+tune        711,539   1.3s    +0.15%
+    0.016M     11.92  one                787,724   1.3s  
+    0.016M     11.92  percol             794,860   1.3s    +0.91%
+    0.016M     11.92  percol+tune        794,830   1.3s    +0.90%
+    0.016M     11.92  bykind             788,399   1.3s    +0.09%
+    0.016M     11.92  bykind+tune        788,368   1.3s    +0.08%
+
+chicago_permits.csv  8,950 rows x 116 cols, 8.4 MB read (truncated)  ~0.072 MB/column
+      dict  col/dict  variant              bytes   secs   vs one
+       64M      0.00  one                993,884   1.9s  
+       64M      0.00  percol           1,126,779   1.8s   +13.37%
+       64M      0.00  percol+tune      1,126,529   1.7s   +13.35%
+       64M      0.00  bykind             994,503   1.9s    +0.06%
+       64M      0.00  bykind+tune        994,203   1.9s    +0.03%
+        4M      0.02  one                993,924   1.9s  
+        4M      0.02  percol           1,126,779   1.8s   +13.37%
+        4M      0.02  percol+tune      1,126,529   1.7s   +13.34%
+        4M      0.02  bykind             994,654   1.9s    +0.07%
+        4M      0.02  bykind+tune        994,354   1.9s    +0.04%
+        1M      0.07  one              1,002,496   1.9s  
+        1M      0.07  percol           1,126,991   1.8s   +12.42%
+        1M      0.07  percol+tune      1,126,740   2.1s   +12.39%
+        1M      0.07  bykind           1,003,936   2.1s    +0.14%
+        1M      0.07  bykind+tune      1,003,637   2.0s    +0.11%
+     0.25M      0.29  one              1,056,216   1.8s  
+     0.25M      0.29  percol           1,138,016   1.8s    +7.74%
+     0.25M      0.29  percol+tune      1,137,764   1.7s    +7.72%
+     0.25M      0.29  bykind           1,044,342   1.8s    -1.12%
+     0.25M      0.29  bykind+tune      1,044,041   1.8s    -1.15%
+   0.0625M      1.16  one              1,137,156   1.7s  
+   0.0625M      1.16  percol           1,173,029   1.7s    +3.15%
+   0.0625M      1.16  percol+tune      1,172,778   1.7s    +3.13%
+   0.0625M      1.16  bykind           1,139,428   1.7s    +0.20%
+   0.0625M      1.16  bykind+tune      1,139,129   1.7s    +0.17%
+    0.016M      4.52  one              1,235,316   1.6s  
+    0.016M      4.52  percol           1,255,273   1.6s    +1.62%
+    0.016M      4.52  percol+tune      1,255,024   1.6s    +1.60%
+    0.016M      4.52  bykind           1,234,547   1.6s    -0.06%
+    0.016M      4.52  bykind+tune      1,234,245   1.6s    -0.09%
+
+================================================================================
+SUMMARY -- 2026-08-04.  Does splitting the xz finish cost anything at scale?
+
+Read the "vs one" column only. Absolute bytes are NOT comparable across dict
+sizes: a shrunken window makes everything compress worse, and that is an
+artefact of the simulation, not a prediction about a real large table. The
+ratio is what carries over; the absolute context does not.
+
+PERCOL penalty vs one stream, by column/dictionary ratio:
+
+  ratio     cdc_nndss     nyc_311   chicago_permits
+           (16 cols)    (44 cols)      (116 cols)
+   ~0.0      +7.26%      +19.12%        +13.37%
+   ~0.2      +7.39%      +17.52%        +12.42%
+   ~0.3-0.8  +5.92%       +9.67%         +7.74%
+   ~1-3      +3.76%       +1.98%         +3.15%
+   ~5-33     +3.44%       +0.91%         +1.62%
+
+CONFIRMED, and it is the whole point: the cost of per-column streams collapses
+once the dictionary can no longer span a column. nyc_311 goes 19.1% -> 0.9%.
+The cross-column reach that `pool` exploits is a SMALL-TABLE effect; at scale
+it is already gone and splitting forfeits nothing that still existed.
+
+A 50 GB table sits at ratio 6.7 (116 cols) to ~98 (8 cols), i.e. at or past
+the right-hand end of this table. Expect percol to cost roughly 1-3% there.
+Magnitude is extrapolated -- the simulation matches the ratio, not the volume.
+
+TWO RESULTS THAT WERE NOT PREDICTED:
+
+1. BYKIND IS FREE AT EVERY RATIO. Two streams -- binary units (intp/dict/
+   pair/perm) and text units -- cost between -1.15% and +0.41% everywhere,
+   and are NEGATIVE on 5 of 18 points. Splitting binary from text loses no
+   cross-column matching worth having, because the matches that pay are
+   between columns of the same kind, and those stay in the same stream.
+
+2. PER-STREAM ENTROPY TUNING IS WORTH NOTHING. percol+tune vs percol differs
+   by 0.01-0.03% at every one of 18 points; bykind+tune likewise. The theory
+   was that one lc/lp/pb across mixed binary and text is a compromise and that
+   per-stream settings would recover it. It does not. Drop the theory -- do
+   not spend another session on per-column entropy parameters.
+
+CONSEQUENCE FOR THE BOUNDED-MEMORY DESIGN: use bykind, not percol. It is free
+at all scales AND it is compatible with an external transpose -- walk the
+column spill files twice, binary units into one stream and text into the
+other, one dictionary live at a time. percol is only worth its 1-3% if column
+parallelism or per-column random access is wanted for its own sake.

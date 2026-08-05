@@ -1,0 +1,464 @@
+xzlab -- eight layout ideas added one at a time, 2026-08-04
+Six corpus tables, 8 MB row cap, every xzlab size round-trip verified.
+
+IDEA-BY-IDEA, total bytes across all six:
+  v0 baseline (column blocks, no delimiters)   4,076,412
+  v1 +pool      vocabulary-sharing cols adjacent  4,051,232   KEEP  (-0.6%; -25% on cdc_nndss)
+  v2 +fixed     constant-width fields             4,013,364   KEEP  (-1.2%)
+  v3 +planes    integer byte planes split         3,968,148   KEEP  (-0.8%)
+  v4 +interleave correlated pairs                3,973,904   REJECT (+0.15%)
+  v5 +template  numbers split out of text        4,020,840   REJECT (+1.3%)
+  v6 +chunk 50k row blocking                     3,983,800   REJECT (+0.3%)
+  v6 +chunk 10k row blocking                     4,069,396   REJECT (+2.4%)
+  v7 +tune      lc=4 pb=0 on the entropy stage   3,962,796   MARGINAL (-0.24%)
+
+FINAL RUN
+
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   method                         bytes    ratio    secs  ok
+   POLYPRESS                     36,752  190.19x     1.5  y             
+   xzlab BEST                    37,544  186.18x     0.6  y   0.98x vs PP
+   xzlab v0  baseline            55,416  126.14x     0.5  y   0.66x vs PP
+   brotli -q11                  174,681   40.02x     6.6  y   0.21x vs PP
+   xz -9e                       184,664   37.85x     4.8  y   0.20x vs PP
+   parquet+zstd22               192,096   36.39x     0.2  y   0.19x vs PP
+
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   method                         bytes    ratio    secs  ok
+   POLYPRESS                    417,574   18.52x     5.0  y             
+   brotli -q11                  531,823   14.54x     4.3  y   0.79x vs PP
+   xz -9e                       537,288   14.39x     1.3  y   0.78x vs PP
+   xzlab BEST                   582,636   13.27x     1.3  y   0.72x vs PP
+   xzlab v0  baseline           596,908   12.96x     1.2  y   0.70x vs PP
+   parquet+zstd22               802,368    9.64x     0.4  y   0.52x vs PP
+
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   method                         bytes    ratio    secs  ok
+   POLYPRESS                    493,852   15.22x     4.7  y             
+   xz -9e                       777,420    9.67x     3.4  y   0.64x vs PP
+   brotli -q11                  834,502    9.01x     7.5  y   0.59x vs PP
+   xzlab v0  baseline           865,420    8.68x     1.5  y   0.57x vs PP
+   xzlab BEST                   869,888    8.64x     1.9  y   0.57x vs PP
+   parquet+zstd22             1,136,681    6.61x     0.5  y   0.43x vs PP
+
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   method                         bytes    ratio    secs  ok
+   POLYPRESS                    699,431   10.26x     7.1  y             
+   xz -9e                       905,508    7.92x     1.9  y   0.77x vs PP
+   brotli -q11                  912,537    7.86x     7.3  y   0.77x vs PP
+   xzlab BEST                   973,388    7.37x     1.6  y   0.72x vs PP
+   xzlab v0  baseline           999,372    7.18x     1.4  y   0.70x vs PP
+   parquet+zstd22             1,336,736    5.37x     0.6  y   0.52x vs PP
+
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   method                         bytes    ratio    secs  ok
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   brotli -q11                  448,092   16.52x     7.1  y   0.57x vs PP
+   xz -9e                       450,180   16.44x     1.7  y   0.57x vs PP
+   xzlab BEST                   506,184   14.62x     1.2  y   0.51x vs PP
+   parquet+zstd22               528,909   13.99x     0.2  y   0.49x vs PP
+   xzlab v0  baseline           533,524   13.87x     1.2  y   0.48x vs PP
+
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   method                         bytes    ratio    secs  ok
+   POLYPRESS                    850,207    8.63x     9.0  y             
+   brotli -q11                  963,917    7.61x     7.3  y   0.88x vs PP
+   xz -9e                       966,720    7.59x     1.7  y   0.88x vs PP
+   xzlab BEST                   993,156    7.39x     1.7  y   0.86x vs PP
+   xzlab v0  baseline         1,013,140    7.24x     1.5  y   0.84x vs PP
+   parquet+zstd22             1,351,786    5.43x     0.7  y   0.63x vs PP
+
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     29.6s
+   xz -9e                     3,821,780   0.721x vs PP     14.7s
+   brotli -q11                3,865,552   0.713x vs PP     40.0s
+   xzlab BEST                 3,962,796   0.695x vs PP      8.3s
+   xzlab v0  baseline         4,063,780   0.678x vs PP      7.3s
+   parquet+zstd22             5,348,576   0.515x vs PP      2.4s
+
+FULL PER-IDEA RUNS
+--- v1 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.6  y             
+   xzlab v1  +pool               41,524  168.34x     0.5  y   0.89x vs PP
+   xzlab v0  baseline            55,520  125.90x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     4.9  y             
+   xzlab v1  +pool              594,868   13.00x     1.1  y   0.70x vs PP
+   xzlab v0  baseline           596,900   12.96x     1.1  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     4.7  y             
+   xzlab v0  baseline           873,540    8.60x     1.5  y   0.57x vs PP
+   xzlab v1  +pool              873,540    8.60x     1.6  y   0.57x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     7.2  y             
+   xzlab v0  baseline         1,002,432    7.16x     1.4  y   0.70x vs PP
+   xzlab v1  +pool            1,002,432    7.16x     1.5  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   xzlab v0  baseline           533,972   13.86x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              533,972   13.86x     1.2  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x    10.2  y             
+   xzlab v1  +pool            1,005,528    7.30x     1.6  y   0.85x vs PP
+   xzlab v0  baseline         1,014,048    7.23x     1.6  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     30.9s
+   xzlab v1  +pool            4,051,864   0.680x vs PP      7.5s
+   xzlab v0  baseline         4,076,412   0.676x vs PP      7.4s
+--- v2 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.8  y             
+   xzlab v2  +fixed              41,504  168.42x     0.7  y   0.89x vs PP
+   xzlab v1  +pool               41,524  168.34x     0.5  y   0.89x vs PP
+   xzlab v0  baseline            55,520  125.90x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     5.2  y             
+   xzlab v2  +fixed             584,992   13.22x     1.4  y   0.71x vs PP
+   xzlab v1  +pool              594,868   13.00x     1.2  y   0.70x vs PP
+   xzlab v0  baseline           596,900   12.96x     1.2  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     5.1  y             
+   xzlab v2  +fixed             871,988    8.62x     2.0  y   0.57x vs PP
+   xzlab v0  baseline           873,540    8.60x     1.7  y   0.57x vs PP
+   xzlab v1  +pool              873,540    8.60x     1.8  y   0.57x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     7.3  y             
+   xzlab v2  +fixed             977,336    7.34x     1.6  y   0.72x vs PP
+   xzlab v0  baseline         1,002,432    7.16x     1.5  y   0.70x vs PP
+   xzlab v1  +pool            1,002,432    7.16x     1.5  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   xzlab v2  +fixed             522,436   14.17x     1.2  y   0.49x vs PP
+   xzlab v0  baseline           533,972   13.86x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              533,972   13.86x     1.2  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x     9.0  y             
+   xzlab v1  +pool            1,005,528    7.30x     1.5  y   0.85x vs PP
+   xzlab v2  +fixed           1,006,372    7.29x     1.8  y   0.84x vs PP
+   xzlab v0  baseline         1,014,048    7.23x     1.6  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     30.5s
+   xzlab v2  +fixed           4,004,628   0.688x vs PP      8.7s
+   xzlab v1  +pool            4,051,864   0.680x vs PP      7.7s
+   xzlab v0  baseline         4,076,412   0.676x vs PP      7.6s
+--- v3 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.6  y             
+   xzlab v3  +planes             37,768  185.08x     0.6  y   0.97x vs PP
+   xzlab v2  +fixed              41,504  168.42x     0.7  y   0.89x vs PP
+   xzlab v1  +pool               41,524  168.34x     0.5  y   0.89x vs PP
+   xzlab v0  baseline            55,520  125.90x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     5.0  y             
+   xzlab v3  +planes            580,732   13.32x     1.3  y   0.72x vs PP
+   xzlab v2  +fixed             584,992   13.22x     1.3  y   0.71x vs PP
+   xzlab v1  +pool              594,868   13.00x     1.1  y   0.70x vs PP
+   xzlab v0  baseline           596,900   12.96x     1.1  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     4.8  y             
+   xzlab v2  +fixed             871,988    8.62x     2.1  y   0.57x vs PP
+   xzlab v3  +planes            871,988    8.62x     2.0  y   0.57x vs PP
+   xzlab v0  baseline           873,540    8.60x     1.6  y   0.57x vs PP
+   xzlab v1  +pool              873,540    8.60x     1.6  y   0.57x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     7.1  y             
+   xzlab v3  +planes            971,564    7.38x     1.6  y   0.72x vs PP
+   xzlab v2  +fixed             977,336    7.34x     1.6  y   0.72x vs PP
+   xzlab v0  baseline         1,002,432    7.16x     1.4  y   0.70x vs PP
+   xzlab v1  +pool            1,002,432    7.16x     1.5  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   xzlab v3  +planes            507,836   14.57x     1.2  y   0.51x vs PP
+   xzlab v2  +fixed             522,436   14.17x     1.2  y   0.49x vs PP
+   xzlab v0  baseline           533,972   13.86x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              533,972   13.86x     1.2  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x     9.0  y             
+   xzlab v3  +planes          1,003,428    7.31x     1.8  y   0.85x vs PP
+   xzlab v1  +pool            1,005,528    7.30x     1.5  y   0.85x vs PP
+   xzlab v2  +fixed           1,006,372    7.29x     1.7  y   0.84x vs PP
+   xzlab v0  baseline         1,014,048    7.23x     1.5  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     29.6s
+   xzlab v3  +planes          3,973,316   0.693x vs PP      8.4s
+   xzlab v2  +fixed           4,004,628   0.688x vs PP      8.6s
+   xzlab v1  +pool            4,051,864   0.680x vs PP      7.4s
+   xzlab v0  baseline         4,076,412   0.676x vs PP      7.3s
+--- v4 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.6  y             
+   xzlab v3  +planes             37,768  185.08x     0.6  y   0.97x vs PP
+   xzlab v4  +interleave         37,768  185.08x     0.7  y   0.97x vs PP
+   xzlab v1  +pool               41,544  168.26x     0.5  y   0.88x vs PP
+   xzlab v2  +fixed              45,088  155.03x     0.7  y   0.82x vs PP
+   xzlab v0  baseline            55,432  126.10x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     4.9  y             
+   xzlab v3  +planes            581,892   13.29x     1.3  y   0.72x vs PP
+   xzlab v4  +interleave        581,892   13.29x     1.3  y   0.72x vs PP
+   xzlab v2  +fixed             586,848   13.18x     1.3  y   0.71x vs PP
+   xzlab v1  +pool              599,160   12.91x     1.2  y   0.70x vs PP
+   xzlab v0  baseline           600,668   12.88x     1.1  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     4.8  y             
+   xzlab v0  baseline           867,716    8.66x     1.5  y   0.57x vs PP
+   xzlab v1  +pool              867,716    8.66x     1.5  y   0.57x vs PP
+   xzlab v2  +fixed             869,744    8.64x     1.9  y   0.57x vs PP
+   xzlab v3  +planes            869,744    8.64x     1.9  y   0.57x vs PP
+   xzlab v4  +interleave        869,744    8.64x     1.9  y   0.57x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     7.1  y             
+   xzlab v3  +planes            967,192    7.42x     1.6  y   0.72x vs PP
+   xzlab v4  +interleave        973,256    7.37x     1.6  y   0.72x vs PP
+   xzlab v2  +fixed             980,452    7.32x     1.6  y   0.71x vs PP
+   xzlab v0  baseline         1,000,828    7.17x     1.4  y   0.70x vs PP
+   xzlab v1  +pool            1,000,828    7.17x     1.5  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   xzlab v3  +planes            507,656   14.58x     1.2  y   0.51x vs PP
+   xzlab v4  +interleave        507,656   14.58x     1.2  y   0.51x vs PP
+   xzlab v2  +fixed             522,876   14.16x     1.2  y   0.49x vs PP
+   xzlab v0  baseline           534,608   13.84x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              534,608   13.84x     1.2  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x     9.0  y             
+   xzlab v4  +interleave      1,003,588    7.31x     1.8  y   0.85x vs PP
+   xzlab v3  +planes          1,003,896    7.31x     1.7  y   0.85x vs PP
+   xzlab v1  +pool            1,007,376    7.28x     1.5  y   0.84x vs PP
+   xzlab v2  +fixed           1,008,356    7.28x     1.7  y   0.84x vs PP
+   xzlab v0  baseline         1,015,780    7.22x     1.5  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     29.6s
+   xzlab v3  +planes          3,968,148   0.694x vs PP      8.4s
+   xzlab v4  +interleave      3,973,904   0.693x vs PP      8.5s
+   xzlab v2  +fixed           4,013,364   0.686x vs PP      8.5s
+   xzlab v1  +pool            4,051,232   0.680x vs PP      7.4s
+   xzlab v0  baseline         4,075,032   0.676x vs PP      7.3s
+--- v5 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.7  y             
+   xzlab v3  +planes             37,768  185.08x     0.6  y   0.97x vs PP
+   xzlab v4  +interleave         37,768  185.08x     0.7  y   0.97x vs PP
+   xzlab v5  +template           38,108  183.43x     1.1  y   0.96x vs PP
+   xzlab v1  +pool               41,544  168.26x     0.5  y   0.88x vs PP
+   xzlab v2  +fixed              45,088  155.03x     0.7  y   0.82x vs PP
+   xzlab v0  baseline            55,432  126.10x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     4.9  y             
+   xzlab v3  +planes            581,892   13.29x     1.3  y   0.72x vs PP
+   xzlab v4  +interleave        581,892   13.29x     1.3  y   0.72x vs PP
+   xzlab v2  +fixed             586,848   13.18x     1.3  y   0.71x vs PP
+   xzlab v5  +template          588,404   13.14x     1.7  y   0.71x vs PP
+   xzlab v1  +pool              599,160   12.91x     1.1  y   0.70x vs PP
+   xzlab v0  baseline           600,668   12.88x     1.1  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     4.8  y             
+   xzlab v0  baseline           867,716    8.66x     1.5  y   0.57x vs PP
+   xzlab v1  +pool              867,716    8.66x     1.5  y   0.57x vs PP
+   xzlab v2  +fixed             869,744    8.64x     1.9  y   0.57x vs PP
+   xzlab v3  +planes            869,744    8.64x     1.9  y   0.57x vs PP
+   xzlab v4  +interleave        869,744    8.64x     1.9  y   0.57x vs PP
+   xzlab v5  +template          911,208    8.25x     2.1  y   0.54x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     7.1  y             
+   xzlab v3  +planes            967,192    7.42x     1.6  y   0.72x vs PP
+   xzlab v5  +template          967,192    7.42x     1.7  y   0.72x vs PP
+   xzlab v4  +interleave        973,256    7.37x     1.6  y   0.72x vs PP
+   xzlab v2  +fixed             980,452    7.32x     1.6  y   0.71x vs PP
+   xzlab v0  baseline         1,000,828    7.17x     1.5  y   0.70x vs PP
+   xzlab v1  +pool            1,000,828    7.17x     1.5  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.4  y             
+   xzlab v3  +planes            507,656   14.58x     1.2  y   0.51x vs PP
+   xzlab v4  +interleave        507,656   14.58x     1.3  y   0.51x vs PP
+   xzlab v5  +template          507,656   14.58x     1.4  y   0.51x vs PP
+   xzlab v2  +fixed             522,876   14.16x     1.3  y   0.49x vs PP
+   xzlab v0  baseline           534,608   13.84x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              534,608   13.84x     1.3  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x    10.2  y             
+   xzlab v4  +interleave      1,003,588    7.31x     1.8  y   0.85x vs PP
+   xzlab v3  +planes          1,003,896    7.31x     2.0  y   0.85x vs PP
+   xzlab v1  +pool            1,007,376    7.28x     1.7  y   0.84x vs PP
+   xzlab v5  +template        1,008,272    7.28x     2.3  y   0.84x vs PP
+   xzlab v2  +fixed           1,008,356    7.28x     1.9  y   0.84x vs PP
+   xzlab v0  baseline         1,015,780    7.22x     1.7  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     31.1s
+   xzlab v3  +planes          3,968,148   0.694x vs PP      8.6s
+   xzlab v4  +interleave      3,973,904   0.693x vs PP      8.6s
+   xzlab v2  +fixed           4,013,364   0.686x vs PP      8.7s
+   xzlab v5  +template        4,020,840   0.685x vs PP     10.4s
+   xzlab v1  +pool            4,051,232   0.680x vs PP      7.7s
+   xzlab v0  baseline         4,075,032   0.676x vs PP      7.5s
+--- v6 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.5  y             
+   xzlab v3  +planes             37,772  185.06x     0.6  y   0.97x vs PP
+   xzlab v4  +interleave         37,772  185.06x     0.7  y   0.97x vs PP
+   xzlab v5  +template           38,152  183.21x     1.1  y   0.96x vs PP
+   xzlab v6a +chunk 50k          38,656  180.83x     0.6  y   0.95x vs PP
+   xzlab v6b +chunk 10k          41,128  169.96x     0.6  y   0.89x vs PP
+   xzlab v1  +pool               41,464  168.58x     0.5  y   0.89x vs PP
+   xzlab v2  +fixed              41,688  167.67x     0.7  y   0.88x vs PP
+   xzlab v0  baseline            55,416  126.14x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     4.9  y             
+   xzlab v3  +planes            582,528   13.28x     1.3  y   0.72x vs PP
+   xzlab v4  +interleave        582,528   13.28x     1.3  y   0.72x vs PP
+   xzlab v6a +chunk 50k         582,528   13.28x     1.3  y   0.72x vs PP
+   xzlab v2  +fixed             585,996   13.20x     1.3  y   0.71x vs PP
+   xzlab v5  +template          586,984   13.18x     1.7  y   0.71x vs PP
+   xzlab v6b +chunk 10k         589,088   13.13x     1.3  y   0.71x vs PP
+   xzlab v0  baseline           596,908   12.96x     1.1  y   0.70x vs PP
+   xzlab v1  +pool              597,660   12.94x     1.1  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     4.7  y             
+   xzlab v0  baseline           865,420    8.68x     1.5  y   0.57x vs PP
+   xzlab v1  +pool              865,420    8.68x     1.5  y   0.57x vs PP
+   xzlab v2  +fixed             867,048    8.67x     1.9  y   0.57x vs PP
+   xzlab v3  +planes            867,048    8.67x     1.9  y   0.57x vs PP
+   xzlab v4  +interleave        867,048    8.67x     1.9  y   0.57x vs PP
+   xzlab v6a +chunk 50k         877,484    8.56x     2.0  y   0.56x vs PP
+   xzlab v6b +chunk 10k         909,832    8.26x     2.0  y   0.54x vs PP
+   xzlab v5  +template          910,644    8.25x     2.1  y   0.54x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     7.1  y             
+   xzlab v4  +interleave        974,240    7.36x     1.6  y   0.72x vs PP
+   xzlab v3  +planes            976,860    7.34x     1.5  y   0.72x vs PP
+   xzlab v5  +template          976,860    7.34x     1.6  y   0.72x vs PP
+   xzlab v6a +chunk 50k         976,860    7.34x     1.5  y   0.72x vs PP
+   xzlab v2  +fixed             982,400    7.30x     1.7  y   0.71x vs PP
+   xzlab v6b +chunk 10k         997,204    7.19x     1.6  y   0.70x vs PP
+   xzlab v0  baseline           999,372    7.18x     1.4  y   0.70x vs PP
+   xzlab v1  +pool              999,372    7.18x     1.5  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   xzlab v3  +planes            508,204   14.56x     1.2  y   0.51x vs PP
+   xzlab v4  +interleave        508,204   14.56x     1.2  y   0.51x vs PP
+   xzlab v5  +template          508,204   14.56x     1.4  y   0.51x vs PP
+   xzlab v6a +chunk 50k         508,204   14.56x     1.2  y   0.51x vs PP
+   xzlab v2  +fixed             523,240   14.15x     1.2  y   0.49x vs PP
+   xzlab v6b +chunk 10k         532,076   13.91x     1.3  y   0.48x vs PP
+   xzlab v0  baseline           533,524   13.87x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              533,524   13.87x     1.2  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x     8.9  y             
+   xzlab v3  +planes          1,000,068    7.34x     1.7  y   0.85x vs PP
+   xzlab v6a +chunk 50k       1,000,068    7.34x     1.7  y   0.85x vs PP
+   xzlab v6b +chunk 10k       1,000,068    7.34x     1.7  y   0.85x vs PP
+   xzlab v4  +interleave      1,003,652    7.31x     1.7  y   0.85x vs PP
+   xzlab v2  +fixed           1,007,776    7.28x     1.7  y   0.84x vs PP
+   xzlab v1  +pool            1,008,864    7.27x     1.5  y   0.84x vs PP
+   xzlab v5  +template        1,009,524    7.27x     2.3  y   0.84x vs PP
+   xzlab v0  baseline         1,013,140    7.24x     1.5  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     29.2s
+   xzlab v3  +planes          3,972,480   0.693x vs PP      8.2s
+   xzlab v4  +interleave      3,973,444   0.693x vs PP      8.4s
+   xzlab v6a +chunk 50k       3,983,800   0.692x vs PP      8.3s
+   xzlab v2  +fixed           4,008,148   0.687x vs PP      8.5s
+   xzlab v5  +template        4,030,368   0.684x vs PP     10.1s
+   xzlab v1  +pool            4,046,304   0.681x vs PP      7.4s
+   xzlab v0  baseline         4,063,780   0.678x vs PP      7.2s
+   xzlab v6b +chunk 10k       4,069,396   0.677x vs PP      8.5s
+--- v7 ---
+cdc_nndss.csv  61,100 rows x 16 cols, 6,989,991 bytes CSV (truncated)
+   POLYPRESS                     36,752  190.19x     1.5  y             
+   xzlab v7d +tune lc1pb0        37,356  187.12x     0.6  y   0.98x vs PP
+   xzlab v7b +tune lc0pb0        37,380  187.00x     0.6  y   0.98x vs PP
+   xzlab v7a +tune pb0           37,460  186.60x     0.6  y   0.98x vs PP
+   xzlab v7c +tune lc4pb0        37,544  186.18x     0.6  y   0.98x vs PP
+   xzlab v3  +planes             37,772  185.06x     0.6  y   0.97x vs PP
+   xzlab v4  +interleave         37,772  185.06x     0.7  y   0.97x vs PP
+   xzlab v5  +template           38,152  183.21x     1.1  y   0.96x vs PP
+   xzlab v6a +chunk 50k          38,656  180.83x     0.6  y   0.95x vs PP
+   xzlab v6b +chunk 10k          41,128  169.96x     0.6  y   0.89x vs PP
+   xzlab v1  +pool               41,464  168.58x     0.5  y   0.89x vs PP
+   xzlab v2  +fixed              41,688  167.67x     0.7  y   0.88x vs PP
+   xzlab v0  baseline            55,416  126.14x     0.5  y   0.66x vs PP
+nyc_311.csv  10,554 rows x 44 cols, 7,733,752 bytes CSV (truncated)
+   POLYPRESS                    417,574   18.52x     5.5  y             
+   xzlab v3  +planes            582,528   13.28x     1.4  y   0.72x vs PP
+   xzlab v4  +interleave        582,528   13.28x     1.4  y   0.72x vs PP
+   xzlab v6a +chunk 50k         582,528   13.28x     1.4  y   0.72x vs PP
+   xzlab v7d +tune lc1pb0       582,560   13.28x     1.4  y   0.72x vs PP
+   xzlab v7c +tune lc4pb0       582,636   13.27x     1.4  y   0.72x vs PP
+   xzlab v7a +tune pb0          582,736   13.27x     1.4  y   0.72x vs PP
+   xzlab v2  +fixed             585,996   13.20x     1.4  y   0.71x vs PP
+   xzlab v7b +tune lc0pb0       586,524   13.19x     1.4  y   0.71x vs PP
+   xzlab v5  +template          586,984   13.18x     1.8  y   0.71x vs PP
+   xzlab v6b +chunk 10k         589,088   13.13x     1.4  y   0.71x vs PP
+   xzlab v0  baseline           596,908   12.96x     1.2  y   0.70x vs PP
+   xzlab v1  +pool              597,660   12.94x     1.2  y   0.70x vs PP
+seattle_fire911.csv  62,469 rows x 7 cols, 7,514,978 bytes CSV (truncated)
+   POLYPRESS                    493,852   15.22x     5.8  y             
+   xzlab v0  baseline           865,420    8.68x     1.8  y   0.57x vs PP
+   xzlab v1  +pool              865,420    8.68x     1.8  y   0.57x vs PP
+   xzlab v2  +fixed             867,048    8.67x     2.3  y   0.57x vs PP
+   xzlab v3  +planes            867,048    8.67x     2.2  y   0.57x vs PP
+   xzlab v4  +interleave        867,048    8.67x     2.3  y   0.57x vs PP
+   xzlab v7c +tune lc4pb0       869,888    8.64x     2.3  y   0.57x vs PP
+   xzlab v7a +tune pb0          870,740    8.63x     2.2  y   0.57x vs PP
+   xzlab v7b +tune lc0pb0       874,320    8.60x     2.2  y   0.56x vs PP
+   xzlab v7d +tune lc1pb0       874,320    8.60x     2.2  y   0.56x vs PP
+   xzlab v6a +chunk 50k         877,484    8.56x     2.2  y   0.56x vs PP
+   xzlab v6b +chunk 10k         909,832    8.26x     2.3  y   0.54x vs PP
+   xzlab v5  +template          910,644    8.25x     2.3  y   0.54x vs PP
+chicago_crimes.csv  28,969 rows x 22 cols, 7,173,834 bytes CSV (truncated)
+   POLYPRESS                    699,431   10.26x     8.4  y             
+   xzlab v7d +tune lc1pb0       968,952    7.40x     1.5  y   0.72x vs PP
+   xzlab v7b +tune lc0pb0       970,476    7.39x     1.5  y   0.72x vs PP
+   xzlab v7c +tune lc4pb0       973,388    7.37x     1.6  y   0.72x vs PP
+   xzlab v4  +interleave        974,240    7.36x     1.8  y   0.72x vs PP
+   xzlab v7a +tune pb0          975,864    7.35x     1.6  y   0.72x vs PP
+   xzlab v3  +planes            976,860    7.34x     1.8  y   0.72x vs PP
+   xzlab v5  +template          976,860    7.34x     2.0  y   0.72x vs PP
+   xzlab v6a +chunk 50k         976,860    7.34x     1.7  y   0.72x vs PP
+   xzlab v2  +fixed             982,400    7.30x     1.9  y   0.71x vs PP
+   xzlab v6b +chunk 10k         997,204    7.19x     1.6  y   0.70x vs PP
+   xzlab v0  baseline           999,372    7.18x     1.7  y   0.70x vs PP
+   xzlab v1  +pool              999,372    7.18x     1.7  y   0.70x vs PP
+wa_ev_population.csv  30,850 rows x 16 cols, 7,401,311 bytes CSV (truncated)
+   POLYPRESS                    257,009   28.80x     2.2  y             
+   xzlab v7a +tune pb0          505,620   14.64x     1.2  y   0.51x vs PP
+   xzlab v7b +tune lc0pb0       505,784   14.63x     1.2  y   0.51x vs PP
+   xzlab v7d +tune lc1pb0       505,820   14.63x     1.2  y   0.51x vs PP
+   xzlab v7c +tune lc4pb0       506,184   14.62x     1.2  y   0.51x vs PP
+   xzlab v3  +planes            508,204   14.56x     1.2  y   0.51x vs PP
+   xzlab v4  +interleave        508,204   14.56x     1.2  y   0.51x vs PP
+   xzlab v5  +template          508,204   14.56x     1.4  y   0.51x vs PP
+   xzlab v6a +chunk 50k         508,204   14.56x     1.2  y   0.51x vs PP
+   xzlab v2  +fixed             523,240   14.15x     1.2  y   0.49x vs PP
+   xzlab v6b +chunk 10k         532,076   13.91x     1.2  y   0.48x vs PP
+   xzlab v0  baseline           533,524   13.87x     1.2  y   0.48x vs PP
+   xzlab v1  +pool              533,524   13.87x     1.2  y   0.48x vs PP
+chicago_permits.csv  8,950 rows x 116 cols, 7,336,505 bytes CSV (truncated)
+   POLYPRESS                    850,207    8.63x     9.0  y             
+   xzlab v7c +tune lc4pb0       993,156    7.39x     1.7  y   0.86x vs PP
+   xzlab v7a +tune pb0          998,756    7.35x     1.7  y   0.85x vs PP
+   xzlab v7b +tune lc0pb0       999,212    7.34x     1.7  y   0.85x vs PP
+   xzlab v3  +planes          1,000,068    7.34x     1.7  y   0.85x vs PP
+   xzlab v6a +chunk 50k       1,000,068    7.34x     1.7  y   0.85x vs PP
+   xzlab v6b +chunk 10k       1,000,068    7.34x     1.7  y   0.85x vs PP
+   xzlab v4  +interleave      1,003,652    7.31x     1.8  y   0.85x vs PP
+   xzlab v7d +tune lc1pb0     1,005,192    7.30x     1.7  y   0.85x vs PP
+   xzlab v2  +fixed           1,007,776    7.28x     1.7  y   0.84x vs PP
+   xzlab v1  +pool            1,008,864    7.27x     1.5  y   0.84x vs PP
+   xzlab v5  +template        1,009,524    7.27x     2.3  y   0.84x vs PP
+   xzlab v0  baseline         1,013,140    7.24x     1.5  y   0.84x vs PP
+=== totals across all files ===
+   POLYPRESS                  2,754,825   1.000x vs PP     32.4s
+   xzlab v7c +tune lc4pb0     3,962,796   0.695x vs PP      8.8s
+   xzlab v7a +tune pb0        3,971,176   0.694x vs PP      8.8s
+   xzlab v3  +planes          3,972,480   0.693x vs PP      8.9s
+   xzlab v4  +interleave      3,973,444   0.693x vs PP      9.1s
+   xzlab v7b +tune lc0pb0     3,973,696   0.693x vs PP      8.7s
+   xzlab v7d +tune lc1pb0     3,974,200   0.693x vs PP      8.7s
+   xzlab v6a +chunk 50k       3,983,800   0.692x vs PP      8.9s
+   xzlab v2  +fixed           4,008,148   0.687x vs PP      9.2s
+   xzlab v5  +template        4,030,368   0.684x vs PP     10.9s
+   xzlab v1  +pool            4,046,304   0.681x vs PP      8.0s
+   xzlab v0  baseline         4,063,780   0.678x vs PP      7.9s
+   xzlab v6b +chunk 10k       4,069,396   0.677x vs PP      8.9s

@@ -1,0 +1,78 @@
+
+cdc_nndss.csv  61,100 rows x 16 cols, 64,227 distinct values
+   csv+xz            184,664    1.000x vs csv+xz    0.199x vs polypress
+   polypress          36,752    5.025x vs csv+xz    1.000x vs polypress
+   num-text           69,316    2.664x vs csv+xz    0.530x vs polypress
+   num-b-col         131,924    1.400x vs csv+xz    0.279x vs polypress
+   num-b-row         158,788    1.163x vs csv+xz    0.231x vs polypress
+   num-b-plane        54,108    3.413x vs csv+xz    0.679x vs polypress
+   num-freq          130,428    1.416x vs csv+xz    0.282x vs polypress
+   num-global        134,920    1.369x vs csv+xz    0.272x vs polypress
+
+
+chicago_permits.csv  8,950 rows x 116 cols, 112,224 distinct values
+   csv+xz            966,720    1.000x vs csv+xz    0.879x vs polypress
+   polypress         850,207    1.137x vs csv+xz    1.000x vs polypress
+   num-text        1,031,244    0.937x vs csv+xz    0.824x vs polypress
+   num-b-col       1,005,656    0.961x vs csv+xz    0.845x vs polypress
+   num-b-row       1,007,432    0.960x vs csv+xz    0.844x vs polypress
+   num-b-plane       994,076    0.972x vs csv+xz    0.855x vs polypress
+   num-freq        1,021,376    0.946x vs csv+xz    0.832x vs polypress
+   num-global      1,009,520    0.958x vs csv+xz    0.842x vs polypress
+
+nyc_311.csv  10,554 rows x 44 cols, 90,633 distinct values
+   csv+xz            537,288    1.000x vs csv+xz    0.777x vs polypress
+   polypress         417,574    1.287x vs csv+xz    1.000x vs polypress
+   num-text          588,448    0.913x vs csv+xz    0.710x vs polypress
+   num-b-col         569,308    0.944x vs csv+xz    0.733x vs polypress
+   num-b-row         571,348    0.940x vs csv+xz    0.731x vs polypress
+   num-b-plane       553,844    0.970x vs csv+xz    0.754x vs polypress
+   num-freq          588,412    0.913x vs csv+xz    0.710x vs polypress
+   num-global        577,756    0.930x vs csv+xz    0.723x vs polypress
+
+wa_ev_population.csv  30,850 rows x 16 cols, 42,596 distinct values
+   csv+xz            450,180    1.000x vs csv+xz    0.571x vs polypress
+   polypress         257,009    1.752x vs csv+xz    1.000x vs polypress
+   num-text          455,580    0.988x vs csv+xz    0.564x vs polypress
+   num-b-col         445,360    1.011x vs csv+xz    0.577x vs polypress
+   num-b-row         433,628    1.038x vs csv+xz    0.593x vs polypress
+   num-b-plane       402,744    1.118x vs csv+xz    0.638x vs polypress
+   num-freq          447,404    1.006x vs csv+xz    0.574x vs polypress
+   num-global        491,536    0.916x vs csv+xz    0.523x vs polypress
+
+seattle_fire911.csv  62,469 rows x 7 cols, 192,595 distinct values
+   csv+xz            777,420    1.000x vs csv+xz    0.635x vs polypress
+   polypress         493,852    1.574x vs csv+xz    1.000x vs polypress
+   num-text          910,448    0.854x vs csv+xz    0.542x vs polypress
+   num-b-col         866,428    0.897x vs csv+xz    0.570x vs polypress
+   num-b-row         947,284    0.821x vs csv+xz    0.521x vs polypress
+   num-b-plane       789,172    0.985x vs csv+xz    0.626x vs polypress
+   num-freq          892,780    0.871x vs csv+xz    0.553x vs polypress
+   num-global        879,768    0.884x vs csv+xz    0.561x vs polypress
+
+chicago_crimes.csv  28,969 rows x 22 cols, 188,409 distinct values
+   csv+xz            905,508    1.000x vs csv+xz    0.772x vs polypress
+   polypress         699,431    1.295x vs csv+xz    1.000x vs polypress
+   num-text          968,244    0.935x vs csv+xz    0.722x vs polypress
+   num-b-col         948,812    0.954x vs csv+xz    0.737x vs polypress
+   num-b-row       1,004,464    0.901x vs csv+xz    0.696x vs polypress
+   num-b-plane       900,912    1.005x vs csv+xz    0.776x vs polypress
+   num-freq          986,792    0.918x vs csv+xz    0.709x vs polypress
+   num-global      1,032,104    0.877x vs csv+xz    0.678x vs polypress
+
+=== totals ===
+   csv+xz          3,637,116    1.000x vs csv+xz    0.747x vs polypress
+   polypress       2,718,073    1.338x vs csv+xz    1.000x vs polypress
+   num-text        3,953,964    0.920x vs csv+xz    0.687x vs polypress
+   num-b-col       3,835,564    0.948x vs csv+xz    0.709x vs polypress
+   num-b-row       3,964,156    0.918x vs csv+xz    0.686x vs polypress
+   num-b-plane     3,640,748    0.999x vs csv+xz    0.747x vs polypress
+   num-freq        3,936,764    0.924x vs csv+xz    0.690x vs polypress
+   num-global      3,990,684    0.911x vs csv+xz    0.681x vs polypress
+
+=== per-file winner among the number-encoded variants ===
+   chicago_permits.csv          num-b-plane   0.855x vs polypress
+   nyc_311.csv                  num-b-plane   0.754x vs polypress
+   wa_ev_population.csv         num-b-plane   0.638x vs polypress
+   seattle_fire911.csv          num-b-plane   0.626x vs polypress
+   chicago_crimes.csv           num-b-plane   0.776x vs polypress

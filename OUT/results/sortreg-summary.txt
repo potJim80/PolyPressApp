@@ -1,0 +1,360 @@
+Probe: number-encode, sort each column ON ITS OWN, regress, keep deviations
+Measured 2026-08-04.  benchmarks/probe_sortreg.py, PROBE_MAX_MB=2, 9 datasets
+from ../IN/corpus/.  Every variant is decoded and compared cell by cell before
+its size is counted; all 10 round-tripped exactly on all 9 tables.
+
+THE PROPOSAL
+  1. number-encode everything, except numbers themselves
+  2. give every cell a row number
+  3. sort every column separately, ascending
+  4. regress each column, store only the deviations
+  5. no xz at the end
+
+Built exactly as stated.  Entropy backend is an LZMA-style adaptive binary
+range coder written into the probe -- no library, so "no xz" is literal.
+
+TOTALS, 9 tables, ~16 MB of CSV                        bytes    vs xz
+  POLYPRESS (reference)                            1,229,347    0.74x
+  xz -9e (reference)                               1,659,288    1.00x
+  ctrl  no-sort RLE       <- best control          2,835,765    1.71x
+  ctrl  no-sort delta                              2,838,037    1.71x
+  ctrl  no-sort                                    2,853,718    1.72x
+  SHARED-perm sort                                 2,881,404    1.74x
+  SORTREG gap RLE         <- best of the proposal  2,893,202    1.74x
+  SORTREG gap delta                                2,914,760    1.76x
+  SORTREG gap-perm                                 3,224,318    1.94x
+  SORTREG gap +xz text                             3,225,492    1.94x
+  SORTREG gap cumfreq                              3,721,023    2.24x
+  SORTREG raw-perm        <- the proposal, literal 4,197,988    2.53x
+
+1. STAGE 3+4 WORK, AND SPECTACULARLY.  Sorting collapses the value stream to
+   nothing, which is exactly what was predicted:
+
+     dataset            residuals unsorted -> sorted (RLE)
+     seattle_fire911        138,742 ->   1,336     -99.0%
+     chicago_permits        102,489 ->   1,786     -98.3%
+     cdc_nndss               80,866 ->     418     -99.5%
+     usgs_quakes            205,916 ->   1,657     -99.2%
+
+   A sorted column is monotone, so a predictor of any kind fits it and the
+   deviations round to nothing.  There is no argument with this part.
+
+2. STAGE 2 EATS THE ENTIRE GAIN.  The row numbers cost more than the
+   deviations save, on every table, without exception:
+
+     dataset            resid saved   perm cost   net
+     seattle_fire911        137,406     143,780   +6,374 worse
+     chicago_permits        100,703     111,455  +10,752 worse
+     usgs_quakes            204,259     218,045  +13,786 worse
+     nyc_311                 71,735      79,130   +7,395 worse
+
+   This is not a tuning problem, it is conservation.  Sorting a column does
+   not destroy information, it MOVES it: (sorted values, permutation) is a
+   bijection with the original column.  Whatever the values stop telling you,
+   the row numbers now have to.  The permutation is 85-95% of the archive in
+   every sorted variant.
+
+   Storing the row numbers as written -- the literal reading -- costs
+   n*log2(n) bits per column and lands at 2.53x xz.  Coding them the best way
+   they can be coded (a stable sort leaves row numbers ascending inside a run,
+   so store gaps) gets to 1.74x.  That gap-coded floor is Sum c_i*log2(n/c_i)
+   bits = exactly the order-0 entropy of the original column.  So the best
+   possible version of this scheme SPENDS ON THE PERMUTATION EXACTLY WHAT
+   PLAIN ORDER-0 CODING SPENDS ON THE WHOLE COLUMN, and the dictionary,
+   regression and deviations are all additive on top.  It cannot come out
+   ahead.  The measurement agrees: best control 1.71x, best proposal 1.74x.
+
+3. IT DOES WIN ON ONE TABLE, AND THE REASON IS INSTRUCTIVE.  cdc_nndss:
+   SORTREG gap RLE 46,457 vs the best no-sort control 56,871 -- 18% better.
+   That table arrives already grouped by state and year, so the runs are
+   contiguous blocks of rows, the permutation gaps are nearly all zero, and
+   the adaptive model eats them.  The sort is winning there by exploiting
+   order the file already had.  POLYPRESS gets that table to 12,081 (3.8x
+   better again) by reordering rows ONCE for the whole table.
+
+4. WHICH IS THE FIX, AND IT IS THE CODEC WE ALREADY HAVE.  The `SHARED-perm`
+   variant changes one thing: one order for the whole table instead of one per
+   column, so the permutation is paid once and divided by m.  Its perm stream
+   drops from 111,455 to 2,882 on chicago_permits (116 columns) and it beats
+   every per-column sorted variant on 6 of 9 tables.  That is row reordering
+   -- idea three in CLAUDE.md -- rediscovered from the other end.  Per-column
+   sorting is the same mechanism with the amortisation removed.
+
+5. "cumfreq" IDS MADE IT WORSE, 2.24x vs 1.94x.  Assigning ids as cumulative
+   counts makes the sorted column almost exactly linear, so the regression fit
+   is near-perfect -- and it loses, because it also makes the id values large
+   and their differences noisy.  Optimising the fit is optimising the stream
+   that was already free.
+
+6. "NO XZ" IS NOT WHAT COSTS, EXCEPT ON TEXT.  The range coder handles the
+   numeric streams fine.  It handles the dictionary alphabet badly, because
+   an order-0 byte model cannot see repetition across strings.  Letting xz
+   have only the alphabet (3 tables, re-measured after fixing a probe bug --
+   the first version compressed the coder's OUTPUT, which measures nothing):
+
+     seattle_fire911  dict 458,729 -> 115,792   total 2.84x -> 1.35x vs xz
+     usgs_quakes      dict 454,399 -> 167,356   total 1.68x -> 1.03x vs xz
+     chicago_permits  dict 422,901 -> 193,632   total 2.17x -> 1.35x vs xz
+
+   So on text-heavy tables most of the deficit is the backend, not the idea.
+   On cdc_nndss, where the alphabet is small, it is all the idea.
+
+VERDICT.  Stages 1, 3 and 4 are sound and stage 4 is dramatic.  Stage 2 is a
+conservation law, not an implementation detail, and it cancels stage 4 by
+construction.  A per-column sort can only pay when the permutation is shared;
+sharing it is the reorder the codec already does.
+
+
+=============================================================================
+ROUND TWO: "what if the row number was stored in the regression as well?"
+Measured 2026-08-04.  PROBE_MAX_MB=1, 4 datasets.  perm="reg" regresses the
+ROW NUMBER on sorted position and keeps its deviations, exactly as the values
+are treated.  perm="best" encodes both gap and reg per column and keeps the
+smaller (invariant 2 -- measured, not reasoned about).
+
+TOTALS, 4 tables                                       bytes    vs xz
+  POLYPRESS (reference)                                258,711    0.63x
+  xz -9e (reference)                                   412,956    1.00x
+  ctrl  no-sort RLE                                    486,239    1.18x
+  SORTREG best-perm       <- gap and reg, per column   486,934    1.18x
+  SORTREG gap RLE         <- round one's best          499,916    1.21x
+  SORTREG reg-perm        <- reg everywhere            759,642    1.84x
+
+AS A REPLACEMENT IT IS MUCH WORSE.  reg-perm loses to gap on 4 of 4, worst
+nyc_baby_names 168,314 vs 51,559 (3.3x).  A stably-sorted permutation is a
+RANDOM WALK around the trend line, not a trend: deviations from the fit grow
+like n/(2*sqrt(c)) for a run of length c, while gaps cost ~n/c.  Regressing
+loses 0.5*log2(c) bits per cell by modelling the mean of a random walk instead
+of its increments.  On a shuffled synthetic column reg-perm (11,241) is worse
+than storing the row numbers RAW (11,194) -- the residuals are as wide as the
+values.
+
+AS AN OPTION IT IS A REAL WIN, AND A BIG ONE ON THE RIGHT COLUMN.
+  cdc_nndss        gap 25,591 -> best 17,983   -29.7%
+  usgs_quakes      gap 340,328 -> best 334,943  -1.6%
+  wa_ev_population no change
+  nyc_baby_names   no change
+
+The columns that choose the regression are exactly the ones THE FILE IS
+ALREADY SORTED BY, where the permutation is affine and two coefficients
+describe it:
+
+  cdc_nndss    sort_order   gap 7,513 -> reg   198     38x   (7,666 distinct)
+  cdc_nndss    label        gap   470 -> reg   198      2.4x
+  usgs_quakes  time         gap 5,424 -> reg   151     36x   (5,530 distinct)
+  usgs_quakes  id           gap 6,446 -> reg 6,343      1.02x
+
+This is the exact complement of gap coding's blind spot.  Gap coding is cheap
+inside a long run and useless when every run has length 1 -- an all-distinct
+column costs a full absolute row number per cell.  But an all-distinct column
+that the file is already sorted by has the IDENTITY permutation, which the
+regression stores in two numbers.  Neither method dominates; the per-column
+measured choice costs ~2 bytes and takes both.
+
+Synthetic confirmation, 4,000 rows, id column + 3-category tag column:
+  permutation shape        raw      gap      reg     best
+  descending (affine)    8,939    5,687    5,272    1,889
+  shuffled (noise)      11,194    7,900   11,241    7,902
+  clustered categories   9,391    1,917    5,272    1,919
+
+CAVEAT.  This rescues the PROBE, not necessarily the codec.  A monotone
+pre-sorted column is already cheap for POLYPRESS -- finite differences down
+the column turn `sort_order` into a run of 1s -- which is why POLYPRESS still
+gets cdc_nndss to 8,305 against best-perm's 17,983.  The finding is that the
+per-column measured choice between two permutation codings is worth 30% WITHIN
+this scheme; it does not close the 2.2x gap to the real codec.
+
+
+=============================================================================
+ROUND THREE: collapse the equal runs, then something clever for the row
+numbers.  Measured 2026-08-04.  benchmarks/probe_permfloor.py is new.
+
+COLLAPSING THE RUNS WAS ALREADY DONE -- it is pred="rle" from round one, and
+it works completely: the value stream is 114-900 bytes on every table tested,
+against ~100,000 unsorted.  There is nothing left in the values.  That is
+exactly why the row numbers are now 85-95% of the archive.
+
+THE ELEGANT COMBINATORIAL ANSWER IS THE WRONG DIRECTION, AND IT IS MEASURABLE
+WITHOUT BUILDING IT.  probe_permfloor computes log2( n! / prod c_v! ) per
+column -- Cover's enumerative code, the exact size of the multiset
+permutation, the thing no scheme reading only the run lengths can beat.  On
+cdc_nndss at 1 MB:
+
+  column        FLOOR     GAP   slack    ORDER-1  vs floor
+  states        5,833     306   0.05x          0     0.00x
+  label         6,437     470   0.07x        103     0.02x
+  sort_order   10,984   7,513   0.68x          0     0.00x
+  geocode       4,966     975   0.20x        717     0.14x
+  TOTAL        40,891  20,128   0.49x      6,818     0.17x
+
+The gap coder is at 0.49x of the "floor" -- it is already TWICE AS GOOD as the
+optimal combinatorial code.  The floor is an order-0 bound: it assumes the
+rows are exchangeable.  Real tables arrive clustered, and gap coding sees the
+clustering.  So enumerative coding, and every scheme that hits that floor
+exactly, would make this WORSE.  ORDER-1 -- n*H(value | value in the previous
+row) -- is 0.17x of the floor, so a context model is where the room is.
+(ORDER-1 charges nothing for the transition table, so it is a ceiling, not an
+achievable number.  Entropy nominates; it does not decide.)
+
+THE STRUCTURE THAT GETS THERE IS A WAVELET TREE, perm="wave".  A binary tree
+over the value alphabet -- the tree that makes the 0/1 codes -- with one
+bitmap per node saying which of the surviving rows go left.  n*log2(k) bits;
+the decoder needs no counts, because the number of 0s it decodes IS the size
+of the left child.  Uncontexted it lands exactly on the enumerative floor.
+Modelled on (depth, last 3 bits) it goes below, because clustered rows make
+long constant stretches in every bitmap.
+
+  synthetic, 4,000 rows        gap      reg     wave     best
+  clustered categories       1,807    5,144    1,054    1,054
+  shuffled                   7,592   10,908    6,597    6,597
+  descending (affine)        5,368    1,561    1,940    1,561
+
+All three are genuinely complementary: gap is cheap inside long runs, reg is
+exact when the file is already sorted by that column, wave sees clustering
+neither can.  perm="best" encodes all three per column and keeps the smallest.
+
+TOTALS, 4 tables                                       bytes    vs xz
+  POLYPRESS (reference)                                258,711    0.63x
+  xz -9e (reference)                                   412,956    1.00x
+  SORTREG best-perm    <- gap + reg + wave, per column 454,286    1.10x
+  SORTREG wavelet      <- wave everywhere              465,771    1.13x
+  ctrl  no-sort RLE                                    486,239    1.18x
+  SORTREG gap RLE      <- round one's best             499,916    1.21x
+
+Per table, the permutation stream only:
+  cdc_nndss        19,762 -> 8,738   -55.8%   (total 25,591 -> 14,583, -43.0%)
+  nyc_baby_names   43,518 -> 35,554  -18.3%
+  wa_ev_population 47,034 -> 38,974  -17.1%
+  usgs_quakes     104,458 -> 85,827  -17.8%
+
+The scheme is now the best non-POLYPRESS variant on 3 of 4 tables and beats
+the no-sort control everywhere -- which round one's version did not.  Wavelet
+is also 3-5x faster to encode than the three-way search, for 2.5% more size.
+
+STILL BEHIND.  POLYPRESS 258,711 vs 454,286: 1.76x.  On cdc_nndss it is 8,305
+vs 14,583.  Three rounds took the scheme from 2.53x xz to 1.10x xz, and it has
+not caught the codec that shares one row order across all columns.
+
+
+=============================================================================
+ROUND FOUR: store the DIFFERENCE in row numbers, and anchor cells.
+Measured 2026-08-04, 3 datasets at 1 MB.
+
+  perm="disp"    d[j] = order[j] - j, delta-coded across the whole column.
+  perm="anchor"  anchor cells every B positions (B measured over 64/1024),
+                 everything else stored as its offset from its anchor.
+
+DISPLACEMENT IS GAP CODING WITHOUT THE RESETS, and that is exactly why it
+helps.  d[j]-d[j-1] == order[j]-order[j-1]-1, which is the gap coder's own
+number; the difference is at a run boundary, where gap restarts and pays a
+full absolute row number while displacement carries on and pays a small signed
+jump.  So it wins precisely where gap is weakest -- an all-distinct column,
+where every run has length 1 and gap pays an absolute number for every cell:
+
+  synthetic, 4,000 rows, perm stream only    gap    wave    disp  anchor
+  all-distinct, sorted                     5,023   2,134   1,212   3,540
+  descending                               5,368   1,940   1,611   7,901
+  clustered categories                     1,807   1,054   1,850   4,490
+  shuffled                                 7,592   6,597   7,950  10,462
+
+  cdc_nndss, perm stream                  19,762  18,727  13,157  65,293
+
+TOTALS, 3 tables                                       bytes    vs xz
+  POLYPRESS (reference)                                213,286    0.62x
+  xz -9e (reference)                                   342,416    1.00x
+  SORTREG best-perm    <- all candidates, per column   379,303    1.11x
+  SORTREG wavelet                                      391,393    1.14x
+  SORTREG displacement                                 410,276    1.20x
+  SORTREG gap RLE                                      417,478    1.22x
+  SORTREG anchor                                       551,983    1.61x
+
+DISPLACEMENT RETIRES THE REGRESSION ON ROW NUMBERS.  With disp in the
+candidate set, perm="reg" is chosen by ZERO columns on all three tables:
+
+  cdc_nndss        gap 4, wave 10, disp 2
+  usgs_quakes      wave 20, disp 2
+  nyc_baby_names   wave 6
+
+Round two's reg-perm won 30% on cdc_nndss by catching columns the file was
+already sorted by.  Displacement catches the same columns, more cheaply and
+with one mechanism instead of two -- an affine permutation has constant d, so
+its deltas are all zero.  reg was right and is now redundant; drop it.  Doing
+so also cuts the per-column search from six trial encodes to three.
+
+ANCHORS AT A STRIDE ARE STRICTLY WORSE, 1.61x vs 1.22x for gap, and never
+chosen by any column.  The reason is the useful part: displacement drifts
+steadily, so d[j] - d[anchor] grows across a block while d[j] - d[j-1] stays
+small.  The best anchor for a cell is the cell immediately before it -- and at
+spacing 1, "offset from the anchor" IS displacement coding.  The intuition was
+right; the optimal spacing is just 1, and artificial anchors at 64 or 1024
+cost 2.5-5x.
+
+NET OVER FOUR ROUNDS, cdc_nndss:  25,591 -> 14,574, and 2.53x xz -> 1.11x xz
+across the corpus.  POLYPRESS is still 213,286 vs 379,303, i.e. 1.78x ahead,
+and still 8,305 vs 14,574 on cdc_nndss.  Every round has narrowed the gap and
+none has closed it; the one row order shared across all columns remains the
+structural advantage.
+
+Reproduce:
+  cd work
+  PROBE_MAX_MB=2 python3 benchmarks/probe_sortreg.py ../IN/corpus/*.csv
+  PROBE_MAX_MB=1 SORTREG_ONLY="gap RLE,best-perm,wavelet,displacement,anchor" \
+      python3 benchmarks/probe_sortreg.py ../IN/corpus/cdc_nndss.csv
+  PROBE_MAX_MB=1 python3 benchmarks/probe_permfloor.py ../IN/corpus/cdc_nndss.csv
+
+
+=============================================================================
+ROUND FIVE: the id assignment was never the one the proposal specified.
+Measured 2026-08-04, 3 datasets at 1 MB.  benchmarks/probe_sortreg.py.
+
+Rounds one to four all ran ids="lex" -- the alphabet numbered alphabetically.
+The proposal as actually stated numbers it by ORDER OF FIRST APPEARANCE: the
+first distinct value seen going down the column gets 0, the next new one 1.
+`ids="first"` was implemented from the start and never benchmarked.
+
+IT IS NOT COSMETIC.  It decides the STRUCTURE of the permutation, which is
+85-95% of the archive.  Sorting a first-appearance id sorts by the order the
+values appear in the file, so a column whose equal values arrive in contiguous
+blocks sorts to the IDENTITY -- which displacement coding stores for nothing.
+Lexicographic ids scramble that same column against file order.
+
+TOTALS, 3 tables                                       bytes    vs xz
+  POLYPRESS (reference)                                213,286    0.62x
+  xz -9e (reference)                                   342,416    1.00x
+  SORTREG best first    <- the proposal as stated      351,595    1.03x
+  SORTREG wave first                                   367,064    1.07x
+  SORTREG best freq                                    375,341    1.10x
+  SORTREG best-perm     <- round four's best (lex)     379,303    1.11x
+  SORTREG disp first                                   381,459    1.11x
+  SORTREG wavelet                                      391,393    1.14x
+  SORTREG displacement                                 410,276    1.20x
+  SORTREG gap first                                    413,060    1.21x
+
+-7.3% over round four, and the scheme reaches PARITY WITH xz -9e (1.03x) for
+the first time, from 2.53x in round one.
+
+THE TRADE IS REAL AND BOTH HALVES SHOW UP.  First-appearance order gives up a
+SORTED alphabet, so adjacent strings no longer share prefixes and the
+dictionary stream costs more.  It buys a much cheaper permutation:
+
+  table              dict lex -> first      perm lex -> first
+  cdc_nndss           4,888 ->  4,913 +0.5%   8,738 ->  8,323  -4.7%
+  usgs_quakes       230,990 -> 239,263 +3.6%  85,248 -> 52,949 -37.9%
+  nyc_baby_names      6,352 ->  7,207 +13.5%  35,554 -> 31,426 -11.6%
+
+The permutation saving is 4-38x the alphabet cost.  usgs_quakes is the case:
+its columns are timestamps and ids that the file is already ordered by, so
+first-appearance ids make the sort nearly the identity.
+
+freq ids (most common value first) land BETWEEN the two, 1.10x -- as expected,
+since they ignore file order like lex does but concentrate the long runs at
+low ids.
+
+CLOSEST THE SCHEME HAS COME.  nyc_baby_names: 40,143 against POLYPRESS 37,854,
+only 6% behind, and 0.54x xz.  Overall gap to POLYPRESS narrows 1.78x -> 1.65x.
+
+WHAT THIS MEANS FOR THE STANDING EXPLANATION.  The permutation is still the
+archive and sharing one row order is still the structural advantage -- but
+part of what rounds one to four measured as "the cost of sorting per column"
+was really the cost of sorting against an order the file did not have.  Some
+of that was self-inflicted, not conservation.

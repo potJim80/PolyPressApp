@@ -1,0 +1,46 @@
+xzlab vs the field -- 21 big tables, 2026-08-04
+20 largest of IN/corpus500 plus the user's NHAMCS Adult data.csv (291 MB,
+209 cols). Every input capped at 16 MB on a row boundary, one subprocess
+per table. Every size round-trip verified.
+
+21 tables, 316 MB of CSV (each capped at a row boundary)
+
+Round-trip: 21/21 exact for every method.
+
+method                     total bytes   ratio   vs PP     secs
+POLYPRESS                   24,687,318  12.80x  1.000x     313s
+brotli -q11                 29,686,333  10.65x  0.832x     289s
+xz -9e                      29,738,288  10.63x  0.830x      83s
+xzlab BEST                  29,967,256  10.55x  0.824x      75s
+xzlab v0  baseline          29,992,048  10.54x  0.823x      67s
+parquet+zstd22              39,983,271   7.91x  0.617x      27s
+
+xzlab BEST beats POLYPRESS on 1 of 21 tables.
+   best  1.023x  data_primary_land_use_tax_lot_output_pluto_64uk-42ks.csv
+   worst 0.655x  data_housing_maintenance_code_violations_wvxf-dwi5.csv
+   median 0.828x
+
+   also beats plain xz on 12 of 21
+
+table                                                       PP     xzlab        xz   parquet
+NHAMCS Adult data.csv                                  245,163   328,352   387,952   396,496
+controllerdata_checkbook_l_a_data_pggv-e4fn.csv        609,766   915,756   813,064 1,136,562
+dallasopendata_police_incidents_qv6i-rri7.csv        1,103,409 1,542,760 1,454,780 2,182,349
+data_311_service_requests_from_2020_to_presen_erm2     762,662 1,114,976   999,052 1,495,598
+data_assessment_parcels_d4mq-wa44.csv                1,330,610 1,364,464 1,627,940 1,798,126
+data_building_permits_c2es-76ed.csv                  1,684,706 2,005,960 1,909,968 2,819,621
+data_building_permits_ydr8-5enu.csv                  1,562,579 1,896,452 1,777,780 2,509,128
+data_dob_job_application_filings_ic3t-wcy2.csv       1,709,959 2,065,896 2,161,044 2,744,988
+data_dob_now_build_approved_permits_rbx6-tga4.csv    1,485,455 2,160,252 1,668,692 2,423,426
+data_dob_now_build_job_application_filings_w9ak-ip   1,436,634 1,915,988 1,850,716 2,276,200
+data_food_inspections_4ijn-s7e5.csv                  1,307,318 1,442,208 1,492,924 2,102,272
+data_housing_maintenance_code_violations_wvxf-dwi5     883,598 1,348,400   993,320 1,684,912
+data_primary_land_use_tax_lot_output_pluto_64uk-42   1,105,327 1,080,200 1,209,184 1,544,348
+data_traffic_crashes_crashes_85ca-t3if.csv           2,673,896 2,781,700 3,032,484 3,078,557
+data_well_permits_2655-qn8j.csv                      1,011,527 1,125,492 1,194,600 1,638,159
+datahub_issued_construction_permits_3syk-w9eu.csv    1,133,823 1,514,408 1,335,216 1,985,688
+datos_secop_i_procesos_de_compra_pública_f789-7hwg   1,051,151 1,236,812 1,368,984 2,055,181
+datos_secop_ii_contratos_electrónicos_jbjy-vk9h.cs   1,237,137 1,407,512 1,546,168 2,264,957
+datos_secop_ii_procesos_de_contratación_p6dx-8zbt.   1,218,322 1,469,172 1,499,088 2,021,861
+datos_secop_integrado_rpmr-utcd.csv                    789,604   825,788   913,160 1,345,021
+health_food_service_establishment_inspections_b_2h     344,672   424,708   502,172   479,821

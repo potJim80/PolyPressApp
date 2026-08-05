@@ -1,0 +1,99 @@
+Row reordering: what a measured sort-key check finds -- 2026-08-04
+
+Sizes are FREE mode (permutation not stored) to isolate the value of the
+ordering from the 3-4% cost of remembering it, measured separately.
+
+CAVEAT on the already-grouped ratio: it is only informative for LOW
+cardinality columns. For a near-unique column breaks ~= n-1 and ideal
+~= n-1, so the ratio is 1.0 automatically and means nothing.
+
+
+NHAMCS Adult data.csv  5,535 rows x 209 cols
+   already-grouped columns (1.0 = as grouped as sorting could make it):
+      AGE_Pre                          card       4  breaks       3  =     1.0x ideal
+      Age                              card       4  breaks       3  =     1.0x ideal
+      Diagnosis                        card   3,336  breaks   5,505  =     1.7x ideal
+      RFV                              card   3,255  breaks   5,504  =     1.7x ideal
+   polypress 245,163   xzlab unsorted 328,352
+   candidates, best first:
+      no sort                                      328,352  1.000x  <-- unsorted
+      by ALZHD (card 2)                            328,612  0.999x
+      by ETOHAB (card 2)                           329,092  0.998x
+      by NOPAY (card 2)                            329,860  0.995x
+      by ASTHMA (card 2)                           331,388  0.991x
+      by ETHIM (card 2)                            332,392  0.988x
+      by SEX (card 2)                              334,504  0.982x
+      by ALL columns                               340,304  0.965x
+   VERDICT: REFUSE (no sort wins)  1.000x, still 1.339x of polypress
+
+data_primary_land_use_tax_lot_output_pluto_64uk-42ks.csv  25,166 rows x 108 cols
+   already-grouped columns (1.0 = as grouped as sorting could make it):
+      address                          card  25,111  breaks  25,155  =     1.0x ideal
+      latitude                         card  24,807  breaks  25,164  =     1.0x ideal
+      longitude                        card  24,495  breaks  25,165  =     1.0x ideal
+      ownername                        card  23,763  breaks  25,023  =     1.1x ideal
+   polypress 1,105,327   xzlab unsorted 1,080,200
+   candidates, best first:
+      by areasource (card 2)                     1,077,816  1.002x
+      no sort                                    1,080,200  1.000x  <-- unsorted
+      by landmark (card 2)                       1,081,028  0.999x
+      by spdist2 (card 2)                        1,081,640  0.999x
+      by easements (card 2)                      1,082,108  0.998x
+      by splitzone (card 2)                      1,087,924  0.993x
+      by irrlotcode (card 2)                     1,107,464  0.975x
+      by ALL columns                             1,161,688  0.930x
+   VERDICT: by areasource (card 2)  1.002x, still 0.975x of polypress
+
+controllerdata_checkbook_l_a_data_pggv-e4fn.csv  22,147 rows x 61 cols
+   already-grouped columns (1.0 = as grouped as sorting could make it):
+      department_name                  card      37  breaks      36  =     1.0x ideal
+      dollar_amount                    card  14,524  breaks  16,521  =     1.1x ideal
+      value_of_spend                   card   9,820  breaks  12,148  =     1.2x ideal
+      detailed_item_description        card  11,803  breaks  17,454  =     1.5x ideal
+   polypress 609,766   xzlab unsorted 915,756
+   candidates, best first:
+      by ALL columns                               691,940  1.323x
+      by procurement_organization (card 2)         876,080  1.045x
+      by supplier_country (card 2)                 876,080  1.045x
+      by site_location (card 2)                    876,080  1.045x
+      by fund_group_name (card 3)                  907,472  1.009x
+      by settlement_judgment (card 2)              914,712  1.001x
+      no sort                                      915,756  1.000x  <-- unsorted
+      by payment_status (card 2)                   916,388  0.999x
+   VERDICT: by ALL columns  1.323x, still 1.135x of polypress
+
+data_housing_maintenance_code_violations_wvxf-dwi5.csv  26,563 rows x 41 cols
+   already-grouped columns (1.0 = as grouped as sorting could make it):
+      novdescription                   card  22,544  breaks  26,040  =     1.2x ideal
+      novid                            card  17,396  breaks  22,646  =     1.3x ideal
+      newcertifybydate                 card      92  breaks     246  =     2.7x ideal
+      newcorrectbydate                 card      92  breaks     246  =     2.7x ideal
+   polypress 883,598   xzlab unsorted 1,348,400
+   candidates, best first:
+      by ALL columns                             1,059,740  1.272x
+      by boroid (card 5)                         1,203,056  1.121x
+      by boro (card 5)                           1,203,980  1.120x
+      by novtype (card 3)                        1,301,312  1.036x
+      by class (card 4)                          1,328,772  1.015x
+      by violationstatus (card 2)                1,331,360  1.013x
+      no sort                                    1,348,400  1.000x  <-- unsorted
+      by rentimpairing (card 2)                  1,355,884  0.994x
+   VERDICT: by ALL columns  1.272x, still 1.199x of polypress
+
+data_dob_now_build_approved_permits_rbx6-tga4.csv  25,459 rows x 46 cols
+   already-grouped columns (1.0 = as grouped as sorting could make it):
+      tracking_number                  card  22,095  breaks  25,457  =     1.2x ideal
+      work_permit                      card  18,307  breaks  25,457  =     1.4x ideal
+      job_filing_number                card  17,744  breaks  25,455  =     1.4x ideal
+      job_description                  card  14,185  breaks  25,446  =     1.8x ideal
+   polypress 1,485,455   xzlab unsorted 2,160,252
+   candidates, best first:
+      by ALL columns                             1,774,380  1.217x
+      by borough (card 10)                       2,023,776  1.067x
+      by permittee_s_license_type (card 9)       2,103,628  1.027x
+      by filing_reason (card 5)                  2,137,448  1.011x
+      by sequence_number (card 15)               2,137,936  1.010x
+      by permit_status (card 2)                  2,139,080  1.010x
+      no sort                                    2,160,252  1.000x  <-- unsorted
+      by apt_condo_no_s (card 3)                 2,160,640  1.000x
+   VERDICT: by ALL columns  1.217x, still 1.195x of polypress
