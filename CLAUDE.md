@@ -47,41 +47,91 @@ at here independently; claim withdrawn — see the prior-art note in README.md.
 
 ## Layout
 
+**Restructured 2026-08-04 into memory / IN / OUT / work. Run every command from
+`work/`.** Data paths in this file and the README therefore read `../IN/…` and
+`../OUT/…`. The full change log — every file edited, every path rewritten, and
+how to undo the whole thing — is in `memory/RESTRUCTURE-2026-08-04.md`. **Read
+that first if a path looks wrong.**
+
+**Corrected 2026-08-04, later the same day.** The restructure left the codec in
+`old/` while a second codec occupied `work/`, and the layout below — which
+describes `work/polypress`, `work/csrc`, `work/tests` — was wrong for a day.
+It was wrong in a way that ran: `benchmarks/measure_one.py` puts `work/` on
+`sys.path` and imports `polypress`, so the whole benchmark pipeline raised
+ModuleNotFoundError while `sweep.py --help` still worked. The forks were
+retired (see below) and the codec moved back to `work/`, so this layout is now
+true. **A path in a doc that no test executes is an unverified claim.**
+
 ```
-polypress/     the codec. fast.py is the whole thing; dtz.py is table I/O;
+memory/        working notes and the restructure log. Not code.
+IN/            all input data, none of it committed (see .gitignore):
+               corpus/ corpus100/ corpus500/ corpus_matrix/ corpus_hostile/
+               and polypress-demo.csv / polypress-demo-hard.csv
+OUT/results/   sweep output. The .jsonl and the summary are committed; the
+               downloaded CSV is not (see .gitignore)
+work/          all code. cd here before running anything:
+  polypress/   the codec. fast.py is the whole thing; dtz.py is table I/O;
                stream.py is the bounded-memory block variant; caccel.py+tcz.c
                is an optional ctypes accelerator (NOT the standalone binary)
-csrc/          the standalone C binary: no Python, no numpy. ppz_encode.c and
+  csrc/        the standalone C binary: no Python, no numpy. ppz_encode.c and
                ppz_decode.c mirror fast.py step for step
-tzip.py        shim -> polypress/cli.py (the `polypress` console script)
-app/           the Mac app. build_app.sh, build_app.sh dmg
-tests/         test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
+  tzip.py      shim -> polypress/cli.py (the `polypress` console script)
+  app/         the Mac app. build_app.sh, build_app.sh dmg
+  tests/       test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
                test_hostile, test_encoding
-benchmarks/    measure_one.py (one table, every competitor) + sweep.py (a
+  benchmarks/  measure_one.py (one table, every competitor) + sweep.py (a
                corpus, one subprocess per table, resumable) + report.py
                (aggregate into the claims). fetch_socrata100.py pulls the
                unbiased 100; fetch_corpus.py + fetch_nhanes.py +
                fetch_matrix.py pull the curated sets; make_hostile.py
-               generates adversarial tables
-results/       sweep output. The .jsonl and the summary are committed; the
-               downloaded CSV is not (see .gitignore)
-attic/         superseded work kept for the record
+               generates adversarial tables. probe_cross_column.py and
+               probe_fallback_gate.py are this codec's own evidence, cited
+               under "where the wins are" and "honest status" -- not forks
+  docs/        the results PDF and the script that builds it
+  pyproject.toml, build/, dist/, *.egg-info -- the build lives beside
+               pyproject.toml, so it regenerates here, not in OUT/
 ```
 
-**Branch `ondemand`** carries `polypress/ondemand.py` — a separate container
-(`PPZO`) giving *column random access*: read one column without decoding the
-table, by walking the parent chain (mean 2.78 hops on a 209-column survey).
-Re-forked from master on 2026-07-28. It consumes `fast.py` through
-`classify` / `pick_parents` / `pack_ints` / `diff_order`, so keep those
-**semantics** stable or it breaks silently — and "silently" is literal. On
-2026-07-29 `classify` gained the lenient numeric path without changing any
-signature, and `ondemand.pack` had nowhere to store the exception cells, so it
-wrote the forward-filled values and dropped the originals: a blank came back
-as `0.09`, a `-0.0` as `0.19`. No error, a table that looks fine and is wrong.
-`pack` now passes `lenient=False` explicitly. **After any change to those four
-functions, merge master into `ondemand` and round-trip it** — no test on
-either branch catches this. It has **no 2D groups and no text
-reorder parents**, and costs ~15% size against the archival codec.
+## Retired forks — 2026-08-04
+
+**There is one codec now.** Everything else was deleted on 2026-08-04 and is
+recoverable from commit `9d11d92`, the commit immediately before the deletion.
+The *measurements* were kept in `OUT/results/` on purpose — invariant 5 — and
+they outlive the code that produced them. Read them before rebuilding any of
+this; each one is a question already answered.
+
+- **`work/stridexz/` + `work/stridexz-c/`** — layout-only codec: no parent
+  search, no planar predictor, no finite differences, on the thesis that
+  *feeding xz better-ordered bytes* is the whole job. **It is not.** 3,962,796
+  bytes against this codec's 2,754,825 (1.44x larger), and behind plain
+  `xz -9e` on 5 of 6 tables. All eight layout ideas together were worth **2.8%**
+  over the column-blocks baseline; nearly the entire effect is the one act of
+  writing columns contiguously. It wins on exactly one shape — densely-coded
+  categorical (`cdc_nndss`, 4.9x better than xz). Record:
+  `OUT/results/xzlab-ideas.txt`, `OUT/results/streams-probe.txt`.
+- **`benchmarks/probe_sortreg.py`** — number-code each column, sort each one
+  *separately* ascending, collapse the equal runs, regress the rest, no xz.
+  Five rounds, **2.53x xz → 1.03x**. It never caught this codec (1.65x behind
+  at the end) for a structural reason worth keeping: sorting does not destroy
+  information, it MOVES it into the permutation, and this codec pays for **one
+  row order shared across all columns** while that one pays per column. Round
+  five is the one to read — the id assignment had never been the one the
+  proposal specified, and first-appearance ids beat lexicographic by 7.3%.
+  Record: `OUT/results/sortreg-summary.txt`.
+- **`benchmarks/probe_image.py`** — table as image. Dead: JPEG 2000 lossless
+  1.47x against the planar predictor's 1.81x on the friendliest table in the
+  corpus. Do not revisit image codecs.
+- **Branch `ondemand`** — a separate container (`PPZO`) giving *column random
+  access*: read one column without decoding the table, by walking the parent
+  chain (mean 2.78 hops on a 209-column survey). Deleted as a branch, preserved
+  as tag **`retired/ondemand`**. It cost ~15% size against the archival codec
+  and had no 2D groups and no text reorder parents. **If it is ever revived,
+  the trap that bit it is the one to re-read:** it consumed `fast.py` through
+  `classify` / `pick_parents` / `pack_ints` / `diff_order`, and when `classify`
+  gained the lenient numeric path without a signature change, `ondemand.pack`
+  had nowhere to put the exception cells and silently wrote forward-filled
+  values instead of the originals — a blank came back as `0.09`. No error, a
+  table that looks fine and is wrong.
 
 ## Running things
 
@@ -91,8 +141,10 @@ python3 tests/test_dtz.py       # 1.5s
 python3 tests/test_stream.py    # 2.0s
 python3 tests/test_cbin.py      # C must match Python byte for byte
 python3 tests/test_fuzz.py      # random adversarial tables, both languages
-python3 tests/test_hostile.py   # corrupt stream/ondemand archives, run in a
-                                # memory-capped subprocess (invariant 3)
+python3 tests/test_hostile.py   # corrupt stream archives, run in a
+                                # memory-capped subprocess (invariant 3). Its
+                                # ondemand half self-skips now that the branch
+                                # is gone -- that is by design, not a gap
 python3 tests/test_lying_header.py  # headers that are well-formed and LIE.
                                 # Mutation fuzzing cannot build these, which is
                                 # why three unchecked indices and a segfault
@@ -101,7 +153,7 @@ python3 tests/test_encoding.py  # BOMs, UTF-16, latin-1: read or refuse
 python3 tests/test_input_guard.py   # the C binary must refuse what it cannot
                                 # parse. It used to read a .parquet as text,
                                 # verify it, and restore garbage
-python3 tests/test_cbin_corpus.py corpus100/*.csv   # invariant 1 on real
+python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv   # invariant 1 on real
                                 # data, not constructed cases. Slow; needs the
                                 # corpus downloaded. Run before releasing
 python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
@@ -116,15 +168,15 @@ timeout** — that has hung twice in this repo for reasons unrelated to the
 tests. Run them directly.
 
 ```bash
-python3 benchmarks/fetch_matrix.py corpus/   # yield curve + 2 sensor grids
+python3 benchmarks/fetch_matrix.py ../IN/corpus/   # yield curve + 2 sensor grids
 ```
 
 Benchmarks, three steps:
 
 ```bash
-python3 benchmarks/fetch_socrata100.py corpus100/ --count 100   # ~1.0 GB
-python3 benchmarks/sweep.py corpus100/*.csv --out results/socrata100.jsonl
-python3 benchmarks/report.py results/socrata100.jsonl --title "Socrata 100"
+python3 benchmarks/fetch_socrata100.py ../IN/corpus100/ --count 100   # ~1.0 GB
+python3 benchmarks/sweep.py ../IN/corpus100/*.csv --out ../OUT/results/socrata100.jsonl
+python3 benchmarks/report.py ../OUT/results/socrata100.jsonl --title "Socrata 100"
 ```
 
 `sweep.py` runs **one subprocess per dataset**, so peak RSS is the largest
@@ -134,10 +186,11 @@ already in the output** — a multi-hour sweep has to be safe to interrupt.
 the identical file) and `--rss-abort` stops the run if a worker's *measured*
 peak crosses the ceiling. Predict to schedule, measure to believe.
 
-`benchmarks/bench.py` was retired to `attic/` — `measure_one.py` is a strict
-superset (adds lz4, ORC, Feather, the like-for-like re-finish, and peak RSS).
-Two scripts measuring the same thing differently is how the repo ends up
-contradicting its own evidence.
+`benchmarks/bench.py` was retired — `measure_one.py` is a strict superset
+(adds lz4, ORC, Feather, the like-for-like re-finish, and peak RSS). Two
+scripts measuring the same thing differently is how the repo ends up
+contradicting its own evidence. `attic/` held it and is gone as of
+2026-08-04; recover from `9d11d92` if a number in it is ever questioned.
 
 **Peak memory, measured 2026-07-29 and the earlier rule corrected.** The old
 estimate `(input MB x 8.5 x 2) + 700` **under-predicts by about 18%**: it put

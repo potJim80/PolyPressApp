@@ -1,6 +1,9 @@
 """Generate the Polypress results PDF **from the sweep output**, not from memory.
 
-    python3 docs/report.py docs/Polypress-Results.pdf results/socrata500.jsonl
+    python3 docs/report.py docs/Polypress-Results.pdf ../OUT/results/socrata500.jsonl
+
+Run from work/. Sweep output moved to OUT/results/ on 2026-08-04 --
+see memory/RESTRUCTURE-2026-08-04.md.
 
 Why it reads the data
 ---------------------

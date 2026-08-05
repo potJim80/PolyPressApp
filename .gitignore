@@ -4,34 +4,37 @@ __pycache__/
 *.o
 .DS_Store
 
-build/
-dist/
+# Build artifacts. These regenerate next to pyproject.toml, which lives in
+# work/ since the 2026-08-04 restructure, so that is where they appear.
+work/build/
+work/dist/
 *.egg-info/
-csrc/polypress
-csrc/*.o
+work/csrc/polypress
+work/csrc/*.o
+work/.tmp/
 
 *.dtz
 *.tcz
 
-# Downloaded benchmark data. Roughly 1.4 GB across the corpora, all of it
-# re-fetchable: benchmarks/fetch_socrata100.py, fetch_corpus.py, fetch_matrix.py
-# and make_hostile.py rebuild every one of these from public sources. What is
-# committed instead is the *manifest* -- benchmarks/socrata100-manifest.json --
-# which pins exactly which datasets were used and why each rejection was
-# rejected. The data is reproducible; the selection is the thing that has to be
-# on the record.
-corpus/
-corpus100/
-corpus500/
-corpus_matrix/
-corpus_hostile/
+# Downloaded benchmark data, now under IN/. Roughly 5.4 GB across the corpora,
+# all of it re-fetchable: work/benchmarks/fetch_socrata100.py, fetch_corpus.py,
+# fetch_matrix.py and make_hostile.py rebuild every one of these from public
+# sources. What is committed instead is the *manifest* --
+# work/benchmarks/socrata100-manifest.json -- which pins exactly which datasets
+# were used and why each rejection was rejected. The data is reproducible; the
+# selection is the thing that has to be on the record.
+IN/corpus/
+IN/corpus100/
+IN/corpus500/
+IN/corpus_matrix/
+IN/corpus_hostile/
 
-# Sweep working files. The JSONL, the summary and the CSV under results/ are
-# committed on purpose -- they are the evidence -- but the truncated copies and
-# the progress logs are not.
-results/truncated/
-results/*.log
-benchmarks/*-fetch.log
-benchmarks/*-gen.log
-benchmarks/cross-column.log
-benchmarks/overnight.log
+# Sweep working files, now under OUT/. The JSONL, the summary and the CSV under
+# OUT/results/ are committed on purpose -- they are the evidence -- but the
+# truncated copies and the progress logs are not.
+OUT/results/truncated/
+OUT/results/*.log
+work/benchmarks/*-fetch.log
+work/benchmarks/*-gen.log
+work/benchmarks/cross-column.log
+work/benchmarks/overnight.log

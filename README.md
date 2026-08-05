@@ -2,6 +2,12 @@
 
 A lossless compressor for data tables.
 
+> **Repository layout changed on 2026-08-04.** The code now lives in `work/`,
+> the corpora in `IN/`, and sweep output in `OUT/results/`. **Every command in
+> this README is run from `work/`** — `cd work` first. That is why data paths
+> below read `../IN/…` and `../OUT/…`. Full detail, including every file edited
+> and how to undo it, is in [`memory/RESTRUCTURE-2026-08-04.md`](memory/RESTRUCTURE-2026-08-04.md).
+
 ## The headline: 500 datasets nobody chose
 
 The obvious objection to any compression result is **"you picked the files"**,
@@ -22,7 +28,8 @@ measured against **17 competing codecs** (plus two re-finishes of our own
 output, which are not competitors):
 
 ```bash
-python3 benchmarks/fetch_socrata100.py corpus500/ --count 500 --scan-limit 3000
+cd work
+python3 benchmarks/fetch_socrata100.py ../IN/corpus500/ --count 500 --scan-limit 3000
 ./benchmarks/run_sweep_500.sh
 ```
 
@@ -143,10 +150,10 @@ truncated file. The adversarial row is meant to be the bad one:
 those tables are random text, UUIDs and base64 by construction, and a tie there
 is the correct outcome.
 
-Full records: `results/socrata100-summary.txt`, `results/curated13-summary.txt`,
-`results/matrix-summary.txt`, `results/hostile-summary.txt`,
-`results/all-summary.txt`, and every individual measurement in
-`results/all-results.csv`.
+Full records: `../OUT/results/socrata100-summary.txt`, `../OUT/results/curated13-summary.txt`,
+`../OUT/results/matrix-summary.txt`, `../OUT/results/hostile-summary.txt`,
+`../OUT/results/all-summary.txt`, and every individual measurement in
+`../OUT/results/all-results.csv`.
 
 ---
 
@@ -261,9 +268,9 @@ portals — chosen across *shapes* rather than subjects, since shape is what
 decides whether this codec wins. 353 MB, no credentials, one command:
 
 ```bash
-python3 benchmarks/fetch_corpus.py corpus/
-python3 benchmarks/sweep.py corpus/*.csv --out results/curated13.jsonl
-python3 benchmarks/report.py results/curated13.jsonl
+python3 benchmarks/fetch_corpus.py ../IN/corpus/
+python3 benchmarks/sweep.py ../IN/corpus/*.csv --out ../OUT/results/curated13.jsonl
+python3 benchmarks/report.py ../OUT/results/curated13.jsonl
 ```
 
 | dataset | rows x cols | vs best other | best other |
@@ -288,7 +295,7 @@ python3 benchmarks/report.py results/curated13.jsonl
 truncated file, so the comparison on each row is exact.
 
 **13 of 13, median 1.35x, worst 1.12x, best 2.26x.**
-Regenerated 2026-07-30 from `results/curated13.jsonl` by the command in this
+Regenerated 2026-07-30 from `../OUT/results/curated13.jsonl` by the command in this
 section, never edited by hand — an earlier version of this table was patched
 per-dataset after a codec change and drifted from the results file on five of
 the thirteen rows.
@@ -337,9 +344,9 @@ touched. `benchmarks/fetch_matrix.py` fixes that — three matrix-shaped tables,
 no credentials, one command:
 
 ```bash
-python3 benchmarks/fetch_matrix.py corpus/
-python3 benchmarks/measure_one.py corpus/treasury_yields.csv \
-    corpus/weather_hourly.csv corpus/weather_wide.csv
+python3 benchmarks/fetch_matrix.py ../IN/corpus/
+python3 benchmarks/measure_one.py ../IN/corpus/treasury_yields.csv \
+    ../IN/corpus/weather_hourly.csv ../IN/corpus/weather_wide.csv
 ```
 
 | dataset | shape | ours | best other | win |
@@ -404,16 +411,26 @@ for numeric tables:
 
 ## Layout
 
+Since 2026-08-04 the repository follows a four-folder convention:
+`memory/` (context and notes), `IN/` (inputs), `OUT/` (outputs), `work/` (code).
+
 ```
-polypress/      the codec: fast (single-shot), stream (bounded memory),
+memory/         restructure log and working notes for future sessions
+IN/             benchmark corpora -- all re-fetchable, none committed
+                corpus/ corpus100/ corpus500/ corpus_matrix/ corpus_hostile/
+                plus polypress-demo.csv and polypress-demo-hard.csv
+OUT/results/    sweep output: the JSONL, summaries and CSVs that are the evidence
+work/           everything below is inside work/ -- run commands from there
+  polypress/    the codec: fast (single-shot), stream (bounded memory),
                 dtz (table I/O), codec, caccel + tcz.c (C accelerator)
-csrc/           the standalone C binary -- reads archives with nothing installed
-tzip.py         command line entry point
-app/            the Mac app: gui.py, build_app.sh, make_icon.py
-tests/          fidelity suites
-benchmarks/     size and speed against real binaries
-docs/           the results PDF and the script that generates it
-attic/          superseded work, kept for the record
+  csrc/         the standalone C binary -- reads archives with nothing installed
+  tzip.py       command line entry point
+  app/          the Mac app: gui.py, build_app.sh, make_icon.py
+  tests/        fidelity suites
+  benchmarks/   size and speed against real binaries
+  docs/         the results PDF and the script that generates it
+  attic/        superseded work, kept for the record
+  pyproject.toml
 ```
 
 ## The standalone binary
@@ -777,7 +794,7 @@ a sweep on its memory ceiling. ORC buffers roughly half a megabyte per column.
 `measure_one.py` therefore skips ORC above 1,000 columns and records that it
 did.
 
-Full numbers, every contender, in `results/hostile-summary.txt`.
+Full numbers, every contender, in `../OUT/results/hostile-summary.txt`.
 
 ## Honest limitations
 
@@ -945,7 +962,7 @@ being true.
 Regenerate it whenever the codec or the corpus changes:
 
 ```bash
-python3 docs/report.py docs/Polypress-Results.pdf results/socrata500.jsonl
+python3 docs/report.py docs/Polypress-Results.pdf ../OUT/results/socrata500.jsonl
 ```
 
 ## Tests and benchmarks
@@ -968,8 +985,8 @@ And before releasing anything, the two slow ones that need the corpus
 downloaded:
 
 ```bash
-python3 benchmarks/sweep.py corpus100/*.csv --out results/socrata100.jsonl
-python3 tests/test_cbin_corpus.py corpus100/*.csv   # invariant 1 on real data
+python3 benchmarks/sweep.py ../IN/corpus100/*.csv --out ../OUT/results/socrata100.jsonl
+python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv   # invariant 1 on real data
 ```
 
 `measure_one.py` runs 20 competitors in three families — general purpose

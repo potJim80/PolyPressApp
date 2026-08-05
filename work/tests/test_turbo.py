@@ -111,8 +111,10 @@ def main() -> int:
                                    [[v, str(i)] for i, v in enumerate(vals)]))
 
     print("\nadversarial corpus")
-    hostile = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "corpus_hostile")
+    # __file__ is <repo>/work/tests/test_turbo.py, so three dirnames reach the
+    # repo root; the corpora moved to IN/ in the 2026-08-04 restructure.
+    hostile = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "IN", "corpus_hostile")
     if os.path.isdir(hostile):
         for f in sorted(os.listdir(hostile)):
             if not f.endswith(".csv"):

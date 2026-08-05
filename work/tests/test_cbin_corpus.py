@@ -1,7 +1,10 @@
 """Invariant 1, checked against real data instead of constructed cases.
 
-    python3 tests/test_cbin_corpus.py corpus100/*.csv
-    python3 tests/test_cbin_corpus.py corpus100/*.csv --max-mb 20
+    python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv
+    python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv --max-mb 20
+
+(Run from work/. Corpora moved to IN/ on 2026-08-04 --
+see memory/RESTRUCTURE-2026-08-04.md.)
 
 `tests/test_cbin.py` proves the C encoder is byte-identical to the Python one
 on a set of tables written to provoke it. That is the right way to find

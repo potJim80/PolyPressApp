@@ -157,7 +157,9 @@ def truncate_rows(body: bytes, max_bytes: int) -> bytes:
 
 def main(argv) -> int:
     ap = argparse.ArgumentParser(prog="fetch_socrata100")
-    ap.add_argument("outdir", nargs="?", default="corpus100")
+    # Corpora live in <repo>/IN/ since the 2026-08-04 restructure. Relative to
+    # work/, which is where these scripts are run from.
+    ap.add_argument("outdir", nargs="?", default="../IN/corpus100")
     ap.add_argument("--count", type=int, default=100,
                     help="how many usable datasets to collect (default 100)")
     ap.add_argument("--rows", type=int, default=50000,

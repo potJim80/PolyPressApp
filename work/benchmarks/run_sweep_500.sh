@@ -1,7 +1,11 @@
 #!/bin/bash
 # Overnight sweep of the 500-dataset unselected corpus, then the report.
 #
-#     ./benchmarks/run_sweep_500.sh
+#     ./work/benchmarks/run_sweep_500.sh
+#
+# Paths below are relative to work/, which line 33 cd's into. The corpora live
+# in ../IN/ and sweep output goes to ../OUT/results/ since the 2026-08-04
+# restructure -- see memory/RESTRUCTURE-2026-08-04.md.
 #
 # Safe to interrupt and rerun: sweep.py skips any dataset already in the JSONL.
 #
@@ -35,7 +39,7 @@ cd "$(dirname "$0")/.." || exit 1
 export OMP_NUM_THREADS=1 ARROW_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 
-OUT=results/socrata500.jsonl
+OUT=../OUT/results/socrata500.jsonl
 
 # Two passes. The first can start while the fetcher is still downloading; the
 # second picks up everything that landed in the meantime. sweep.py skips any
@@ -45,10 +49,12 @@ rc=0
 for pass_no in 1 2 3 4 5 6; do
     before=$(wc -l < "$OUT" 2>/dev/null || echo 0)
     fetching=0
-    pgrep -f "fetch_socrata100.py corpus500" >/dev/null && fetching=1
+    # Loose pattern so it matches the fetcher whether it was invoked with the
+    # old bare "corpus500" or the post-restructure "../IN/corpus500".
+    pgrep -f "fetch_socrata100.py.*corpus500" >/dev/null && fetching=1
 
     echo "=== sweep pass $pass_no started $(date), fetcher running=$fetching ==="
-    nice -n 19 python3 benchmarks/sweep.py corpus500/*.csv \
+    nice -n 19 python3 benchmarks/sweep.py ../IN/corpus500/*.csv \
         --out "$OUT" --max-mb 16 --rss-abort 1400 --timeout 3600
     rc=$?
     after=$(wc -l < "$OUT" 2>/dev/null || echo 0)
@@ -68,8 +74,8 @@ done
 # would be the same mistake as making the fetch non-resumable.
 nice -n 19 python3 benchmarks/report.py "$OUT" \
     --title "Socrata 500 (unselected)" \
-    --csv results/socrata500-results.csv \
-    > results/socrata500-summary.txt 2>&1
+    --csv ../OUT/results/socrata500-results.csv \
+    > ../OUT/results/socrata500-summary.txt 2>&1
 echo "=== report written $(date) ==="
-tail -40 results/socrata500-summary.txt
+tail -40 ../OUT/results/socrata500-summary.txt
 exit $rc
