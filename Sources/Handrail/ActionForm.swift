@@ -490,8 +490,8 @@ struct FlowChips: View {
 
                 // Chosen first, always visible, so a filter can never hide what
                 // you have already picked.
-                if !chosen.isEmpty { grid(chosen, on: true) }
-                if !visible.isEmpty { grid(visible, on: false) }
+                if !chosen.isEmpty { flow(chosen, on: true) }
+                if !visible.isEmpty { flow(visible, on: false) }
 
                 if hidden > 0 {
                     Text("\(hidden) more — type to narrow the list.")
@@ -504,9 +504,8 @@ struct FlowChips: View {
         }
     }
 
-    private func grid(_ names: [String], on: Bool) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 6)],
-                  alignment: .leading, spacing: 6) {
+    private func flow(_ names: [String], on: Bool) -> some View {
+        Flow(spacing: 6, lineSpacing: 6) {
             ForEach(names, id: \.self) { name in
                 Button {
                     if chosen.contains(name) { chosen.removeAll { $0 == name } }
@@ -519,7 +518,6 @@ struct FlowChips: View {
                     }
                     .font(.callout)
                     .padding(.vertical, 5).padding(.horizontal, 9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(on ? Color.accentColor.opacity(0.12)
                                    : Color(nsColor: .controlBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 7))
@@ -527,7 +525,102 @@ struct FlowChips: View {
                         .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .help(name)
             }
+        }
+    }
+}
+
+/// Rows of chips, each one as wide as its own text.
+///
+/// This was a `LazyVGrid`, which gives every cell the same width and clips
+/// whatever overflows: `the spread (standard deviation)` reached the screen as
+/// `the spread…`, losing the words that say which statistic it is, and long
+/// column names lost their ends. A grid is the wrong shape for labels that
+/// differ in length. Widening the cells only moves the cliff.
+///
+/// `Layout` needs macOS 13; this package targets 14.
+struct Flow: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 6
+
+    private struct Item { let index: Int; let size: CGSize }
+
+    /// Breaks the chips into rows that fit `width`. Called by both
+    /// `sizeThatFits` and `placeSubviews` so the two can never disagree.
+    private func rows(_ subviews: Subviews, width: CGFloat) -> [[Item]] {
+        var out: [[Item]] = []
+        var row: [Item] = []
+        var x: CGFloat = 0
+
+        for (i, view) in subviews.enumerated() {
+            var size = view.sizeThatFits(.unspecified)
+            // A chip wider than the whole row is capped rather than allowed to
+            // push the layout past its container; `lineLimit(1)` then truncates
+            // it. Real column names never reach this.
+            size.width = min(size.width, width)
+
+            if !row.isEmpty && x + spacing + size.width > width {
+                out.append(row)
+                row = []
+                x = 0
+            }
+            if !row.isEmpty { x += spacing }
+            row.append(Item(index: i, size: size))
+            x += size.width
+        }
+        if !row.isEmpty { out.append(row) }
+        return out
+    }
+
+    private func rowHeight(_ row: [Item]) -> CGFloat {
+        var h: CGFloat = 0
+        for item in row { h = max(h, item.size.height) }
+        return h
+    }
+
+    private func rowWidth(_ row: [Item]) -> CGFloat {
+        var w: CGFloat = 0
+        for (i, item) in row.enumerated() {
+            if i > 0 { w += spacing }
+            w += item.size.width
+        }
+        return w
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews,
+                      cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let rows = rows(subviews, width: width)
+        guard !rows.isEmpty else { return .zero }
+
+        // Written as plain loops: the chained map/reduce version type-checked
+        // so slowly the compiler gave up on it.
+        var height: CGFloat = 0
+        var widest: CGFloat = 0
+
+        for (i, row) in rows.enumerated() {
+            if i > 0 { height += lineSpacing }
+            height += rowHeight(row)
+            widest = max(widest, rowWidth(row))
+        }
+
+        return CGSize(width: min(widest, width), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(subviews, width: bounds.width) {
+            let height = rowHeight(row)
+            var x = bounds.minX
+            for item in row {
+                subviews[item.index].place(
+                    at: CGPoint(x: x, y: y + (height - item.size.height) / 2),
+                    proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
+            }
+            y += height + lineSpacing
         }
     }
 }
