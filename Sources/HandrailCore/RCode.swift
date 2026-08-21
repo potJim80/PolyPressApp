@@ -112,6 +112,35 @@ public enum RCode {
         "sample", "summary", "format", "date", "class", "levels", "factor", "t", "c"
     ]
 
+    /// A name for a result, so a later step can save it or chart it.
+    ///
+    /// Same reasoning as `frameName`, one level down. Handrail appends to one
+    /// script over days: quietly reassigning `age_summary` from step 3 at step
+    /// 11 would leave both steps looking right and one of them lying.
+    public static func resultName(_ raw: String, fallback: String,
+                                  taken: [String] = []) -> String {
+        var base = safeNewName(raw, fallback: fallback)
+        if base.count > 28 { base = String(base.prefix(28)) }
+        if shadowsBaseR.contains(base) { base += "_result" }
+        guard taken.contains(base) else { return base }
+        var n = 2
+        while taken.contains("\(base)_\(n)") { n += 1 }
+        return "\(base)_\(n)"
+    }
+
+    /// What a result is called when nothing has been typed. Named after the
+    /// column it describes, because that is what makes a script readable three
+    /// weeks later.
+    public static func defaultResultName(for a: Action) -> String {
+        switch a.kind {
+        case .countValues:     return safeNewName("\(a.column)_counts", fallback: "value_counts")
+        case .describeNumber:  return safeNewName("\(a.column)_summary", fallback: "summary_table")
+        case .missingReport:   return "missing_report"
+        case .duplicateReport: return "repeated_rows"
+        default:               return "result"
+        }
+    }
+
     // MARK: - the generator
 
     /// The dplyr call for one action, without the pipe in front of it.
@@ -346,6 +375,66 @@ public enum RCode {
             case .day:       return "mutate(\(new) = as.integer(format(\(col), \"%d\")))"
             case .weekday:   return "mutate(\(new) = weekdays(\(col)))"
             }
+
+        case .countValues:
+            guard has(a.column) else { return nil }
+            let col = name(a.column)
+            // sum(n) is every row, missing included. Left visible in the code
+            // rather than stated only in the caution.
+            let order = a.descending ? "arrange(desc(n))" : "arrange(\(col))"
+            return "count(\(col), name = \"n\") |>\n"
+                 + "  mutate(percent = round(100 * n / sum(n), \(a.digits))) |>\n"
+                 + "  \(order)"
+
+        case .describeNumber:
+            guard has(a.column) else { return nil }
+            let col = name(a.column)
+            if a.spread == .deciles {
+                // reframe, not summarise: since dplyr 1.1 a summarise() that
+                // returns more than one row is an error, not a warning.
+                return "reframe(decile = seq(0, 100, 10),\n"
+                     + "          value  = quantile(\(col), seq(0, 1, 0.1), na.rm = TRUE))"
+            }
+            var parts = ["n       = sum(!is.na(\(col)))",
+                         "missing = sum(is.na(\(col)))"]
+            if a.spread == .meanSD || a.spread == .both {
+                parts.append("mean    = mean(\(col), na.rm = TRUE)")
+                parts.append("sd      = sd(\(col), na.rm = TRUE)")
+            }
+            if a.spread == .medianIQR || a.spread == .both {
+                parts.append("median  = median(\(col), na.rm = TRUE)")
+                parts.append("q1      = quantile(\(col), 0.25, na.rm = TRUE)")
+                parts.append("q3      = quantile(\(col), 0.75, na.rm = TRUE)")
+            }
+            if a.spread == .both {
+                parts.append("min     = min(\(col), na.rm = TRUE)")
+                parts.append("max     = max(\(col), na.rm = TRUE)")
+            }
+            return "summarise(\n    " + parts.joined(separator: ",\n    ") + "\n  )"
+
+        case .missingReport:
+            let named = !a.columns.isEmpty
+            let quoted = a.columns.map(quote).joined(separator: ", ")
+            let listed = named ? "c(\(quoted))" : "names(\(frame))"
+            // drop = FALSE is not decoration: one column would collapse to a
+            // vector and colSums() would stop with an error.
+            let subset = named ? "\(frame)[, c(\(quoted)), drop = FALSE]" : frame
+            return "data.frame(\n"
+                 + "    column    = \(listed),\n"
+                 + "    missing   = colSums(is.na(\(subset))),\n"
+                 + "    rows      = nrow(\(frame)),\n"
+                 + "    row.names = NULL\n"
+                 + "  ) |>\n"
+                 + "  mutate(percent_missing = round(100 * missing / rows, \(a.digits))) |>\n"
+                 + "  arrange(desc(missing))"
+
+        case .duplicateReport:
+            let cols = a.columns.isEmpty
+                ? "across(everything())"
+                : a.columns.map(name).joined(separator: ", ")
+            return "count(\(cols), name = \"times\") |>\n"
+                 + "  filter(times > 1) |>\n"
+                 + "  arrange(desc(times))"
         }
     }
 
@@ -356,10 +445,24 @@ public enum RCode {
     public static func block(for a: Action, types: [String: ColumnType],
                              frame: String = "data") -> String? {
         guard let call = call(for: a, types: types, frame: frame) else { return nil }
-        // A finishing step stands on its own. Piping it would assign the return
-        // value of write.csv — which is NULL — over the data.
-        if a.kind.isFinishing { return "# \(sentence(for: a))\n\(call)\n" }
-        return "# \(sentence(for: a))\n\(frame) <- \(frame) |>\n  \(call)\n"
+        switch a.kind.emits {
+        case .statement:
+            // A finishing step stands on its own. Piping it would assign the
+            // return value of write.csv — which is NULL — over the data.
+            return "# \(sentence(for: a))\n\(call)\n"
+        case .transform:
+            return "# \(sentence(for: a))\n\(frame) <- \(frame) |>\n  \(call)\n"
+        case .result:
+            // Assign, then echo. Two statements, one idea: make it, and look at
+            // it. A bare pipeline prints but nothing can ever refer to it; an
+            // assignment alone runs and shows nothing, which reads as broken.
+            let out = resultName(has(a.resultName) ? a.resultName
+                                                   : defaultResultName(for: a),
+                                 fallback: defaultResultName(for: a))
+            let from = has(a.source) ? a.source : frame
+            let lead = a.kind.pipesFromFrame ? "\(out) <- \(from) |>\n  " : "\(out) <- "
+            return "# \(sentence(for: a))\n\(lead)\(call)\n\n\(out)\n"
+        }
     }
 
     /// Which packages the generated line needs. Kept honest rather than

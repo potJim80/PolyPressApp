@@ -238,6 +238,13 @@ private struct ColumnActions: View {
         // First, because until it is done every comparison on this column is a
         // string comparison and quietly wrong.
         if column.sentinel != nil { kinds.append(.markMissing) }
+        // "What is in this column" is the first question anyone has, so the
+        // step that answers it comes before the ones that change the data.
+        switch column.type {
+        case .number:         kinds.append(.describeNumber)
+        case .text, .logical: kinds.append(.countValues)
+        case .date:           break
+        }
         kinds += [.filter, .sort, .summarise, .rename, .select]
         switch column.type {
         case .number:  kinds += [.band, .round, .fillNA, .toText]

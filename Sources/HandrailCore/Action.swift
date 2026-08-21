@@ -12,6 +12,7 @@ public enum ActionKind: String, CaseIterable, Codable, Sendable {
     case toNumber, toDate, toText, datePart, markMissing
     case saveCSV, saveRDS, saveExcel, saveDelimited, saveForStats, saveSummary
     case peek, viewIt, countRows, glimpse, summaryOf, crossTab
+    case countValues, describeNumber, missingReport, duplicateReport
 
     /// What it is called on screen. Verb first, so the list reads as things to
     /// do rather than as a glossary.
@@ -46,6 +47,10 @@ public enum ActionKind: String, CaseIterable, Codable, Sendable {
         case .glimpse:   return "List every column and what is in it"
         case .summaryOf: return "Show the range and average of each column"
         case .crossTab:  return "Cross one column against another"
+        case .countValues:     return "Count how many of each"
+        case .describeNumber:  return "Describe a number"
+        case .missingReport:   return "See how much is missing"
+        case .duplicateReport: return "Find rows that repeat"
         }
     }
 
@@ -82,6 +87,10 @@ public enum ActionKind: String, CaseIterable, Codable, Sendable {
         case .glimpse:   return "the fast way to see what you are working with"
         case .summaryOf: return "min, max, average and how many are missing, per column"
         case .crossTab:  return "counts for every combination — the two-way table"
+        case .countValues:     return "one row per value, with percentages"
+        case .describeNumber:  return "the average, the spread, the middle and the quartiles"
+        case .missingReport:   return "how many gaps each column has, worst first"
+        case .duplicateReport: return "which values appear on more than one row"
         }
     }
 
@@ -119,16 +128,39 @@ public enum ActionKind: String, CaseIterable, Codable, Sendable {
         case .glimpse:   return "glimpse str structure columns types look see what is in"
         case .summaryOf: return "summary describe stats range min max quartiles overview"
         case .crossTab:  return "table crosstab cross tabulation two way counts by"
+        case .countValues:     return "frequency table counts tally percent proportion distribution how many each value n breakdown"
+        case .describeNumber:  return "mean average median sd standard deviation iqr quartile range spread describe summary statistics typical"
+        case .missingReport:   return "missing na empty blank gaps how many complete completeness report audit quality"
+        case .duplicateReport: return "duplicate duplicates repeated same twice unique identify check find"
         }
     }
 
-    /// Whether the step changes the data or does something with it.
+    /// What shape the block takes in the script. Three, not two.
     ///
-    /// A transform is `frame <- frame |> verb(...)`. A finishing step is a
-    /// statement on its own — writing a file, printing, opening a viewer — and
-    /// must never reassign the frame, or "save a copy" would quietly replace
-    /// your data with the return value of write.csv, which is NULL.
-    public var isFinishing: Bool { group == .save || group == .look }
+    /// A `.transform` is `frame <- frame |> verb(...)`. A `.statement` stands on
+    /// its own — writing a file, printing, opening a viewer — and must never
+    /// reassign the frame, or "save a copy" would quietly replace your data with
+    /// the return value of write.csv, which is NULL.
+    ///
+    /// A `.result` is the third: it makes a new thing and leaves the data alone.
+    /// It needs its own name so a later step can save it, and it needs to print,
+    /// because a beginner who runs a line and sees nothing happen concludes the
+    /// app is broken.
+    public var emits: Emission {
+        switch group {
+        case .save, .look: return .statement
+        case .answer:      return .result
+        default:           return .transform
+        }
+    }
+
+    /// Kept so every existing caller and test reads the same as before.
+    public var isFinishing: Bool { emits != .transform }
+
+    /// Whether the result is built by piping the data into it. False for the
+    /// ones that assemble something new — `missingReport` builds a data.frame
+    /// out of `colSums`, and has no frame to pipe from.
+    public var pipesFromFrame: Bool { self != .missingReport }
 
     /// Which drawer it sits in. Grouping by intent is what makes a list of
     /// sixteen readable; grouping by dplyr verb is what makes it a glossary.
@@ -142,8 +174,15 @@ public enum ActionKind: String, CaseIterable, Codable, Sendable {
              .saveSummary:                            return .save
         case .peek, .viewIt, .countRows, .glimpse, .summaryOf, .crossTab:
                                                       return .look
+        case .countValues, .describeNumber, .missingReport, .duplicateReport:
+                                                      return .answer
         }
     }
+}
+
+/// The three shapes a generated block can take. See `ActionKind.emits`.
+public enum Emission: Sendable {
+    case transform, statement, result
 }
 
 public enum ActionGroup: String, CaseIterable, Sendable {
@@ -151,6 +190,7 @@ public enum ActionGroup: String, CaseIterable, Sendable {
     case boilDown  = "Boil it down"
     case shape     = "Order and columns"
     case fix       = "Fix a column that came in wrong"
+    case answer    = "Get an answer"
     case save      = "Save it to a file"
     case look      = "Look at it"
 }
@@ -213,6 +253,31 @@ public enum Statistic: String, CaseIterable, Codable, Sendable {
     }
 
     public var rFunction: String { self == .count ? "n" : rawValue }
+}
+
+/// Which numbers describe a column. Offered rather than chosen, because which
+/// pair you report is a decision a reader has to be told about: mean and SD
+/// assume a roughly symmetric spread, median and quartiles do not.
+public enum NumberSummary: String, CaseIterable, Codable, Sendable {
+    case meanSD, medianIQR, both, deciles
+
+    public var label: String {
+        switch self {
+        case .meanSD:    return "the average and the spread"
+        case .medianIQR: return "the middle value and the quartiles"
+        case .both:      return "both, and the smallest and largest"
+        case .deciles:   return "every tenth, from smallest to largest"
+        }
+    }
+
+    public var note: String {
+        switch self {
+        case .meanSD:    return "The usual pair, and the right one when the values are roughly symmetric."
+        case .medianIQR: return "The honest pair when the column is skewed or has a few extreme values."
+        case .both:      return "Report both and let the reader judge."
+        case .deciles:   return "The whole shape, as ten numbers."
+        }
+    }
 }
 
 public enum FillMethod: String, CaseIterable, Codable, Sendable {
@@ -340,6 +405,12 @@ public struct Action: Codable, Identifiable, Sendable, Equatable {
     /// Writes a byte-order mark so Excel on Windows opens accented characters
     /// correctly. Off by default because it confuses some other readers.
     public var forExcel: Bool = false
+    /// What a `.result` step calls the thing it makes, so a later step can refer
+    /// to it. Empty means "work one out from the columns".
+    public var resultName: String = ""
+    /// Which earlier result this step reads. Empty means the data frame itself.
+    public var source: String = ""
+    public var spread: NumberSummary = .both
 
     public init(kind: ActionKind) { self.kind = kind }
 }

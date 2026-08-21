@@ -99,6 +99,11 @@ struct ActionForm: View {
         case .viewIt, .countRows, .glimpse: EmptyView()
         case .toDate:    dateFields
         case .datePart:  datePartFields
+        case .countValues:     countValuesFields
+        case .describeNumber:  describeNumberFields
+        case .missingReport:   missingReportFields
+        case .duplicateReport: multiColumn("Judged by (none = the whole row)",
+                                           binding: $state.action.columns)
         }
     }
 
@@ -383,6 +388,58 @@ struct ActionForm: View {
             summariseFields
             Divider()
             outputFields(ext: "csv")
+        }
+    }
+
+    // MARK: - getting an answer out
+
+    /// What every answer step shares: the name the result gets, so a later step
+    /// can save it or chart it. Shown rather than generated silently, because
+    /// this name is what the user will type in the console themselves.
+    private var resultNameField: some View {
+        LabeledContent("Call the answer") {
+            TextField(RCode.defaultResultName(for: state.action),
+                      text: $state.action.resultName)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .frame(maxWidth: 240)
+        }
+    }
+
+    private var countValuesFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            columnMenu("Count the values in", selection: $state.action.column)
+            Picker("", selection: $state.action.descending) {
+                Text("commonest first").tag(true)
+                Text("in order of the value").tag(false)
+            }.labelsHidden().pickerStyle(.radioGroup)
+            Stepper("Percentages to \(state.action.digits) decimal place\(state.action.digits == 1 ? "" : "s")",
+                    value: $state.action.digits, in: 0...4).frame(maxWidth: 300)
+            resultNameField
+        }
+    }
+
+    private var describeNumberFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            columnMenu("Describe", selection: $state.action.column, limitedTo: [.number])
+            SectionLabel("Which numbers")
+            Picker("", selection: $state.action.spread) {
+                ForEach(NumberSummary.allCases, id: \.self) { Text($0.label).tag($0) }
+            }.labelsHidden().pickerStyle(.radioGroup)
+            Text(state.action.spread.note)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            resultNameField
+        }
+    }
+
+    private var missingReportFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            multiColumn("Which columns (none = all of them)",
+                        binding: $state.action.columns)
+            Stepper("Percentages to \(state.action.digits) decimal place\(state.action.digits == 1 ? "" : "s")",
+                    value: $state.action.digits, in: 0...4).frame(maxWidth: 300)
+            resultNameField
         }
     }
 

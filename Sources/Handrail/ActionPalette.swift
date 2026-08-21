@@ -3,7 +3,7 @@ import HandrailCore
 
 /// The list of things you can do, when what you want is not about one column.
 ///
-/// Twenty-nine entries, grouped by what you are trying to do rather than by which
+/// Thirty-three entries, grouped by what you are trying to do rather than by which
 /// dplyr verb they are, searchable, and each one saying in a line what it does.
 /// The search matches words nobody put on screen — typing "missing" finds "Drop
 /// rows with gaps in them", because that is R's word for it and his book's.

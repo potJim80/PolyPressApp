@@ -291,6 +291,26 @@ final class AppState {
             a.count = 10
         case .viewIt, .countRows, .glimpse:
             break
+        case .countValues:
+            a.column = column ?? columnNames([.text, .logical]).first ?? col
+            a.digits = 1
+            a.descending = true
+        case .describeNumber:
+            a.column = column ?? columnNames([.number]).first ?? col
+        case .missingReport:
+            a.columns = column.map { [$0] } ?? []
+            a.digits = 1
+        case .duplicateReport:
+            a.columns = column.map { [$0] } ?? []
+        }
+        if a.kind.emits == .result {
+            // Read the names the script already uses, so step 11 cannot quietly
+            // reassign what step 3 made. Reading a file is fine here — begin()
+            // runs on a click, never in a view body.
+            let taken = (try? writer?.assignedNames()) ?? []
+            a.resultName = RCode.resultName(RCode.defaultResultName(for: a),
+                                            fallback: "result",
+                                            taken: taken)
         }
         if a.kind == .filter, let t = types[a.column] {
             // "contains" on a number is never what anyone means.

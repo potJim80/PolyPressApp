@@ -102,6 +102,26 @@ extension RCode {
         case .datePart:
             let new = safeNewName(a.newName, fallback: a.datePiece.rawValue)
             return "Pull \(a.datePiece.label) out of \(col), into a column called \(new)"
+
+        case .countValues:
+            return a.descending
+                ? "Count how many rows have each value of \(col), commonest first, with percentages"
+                : "Count how many rows have each value of \(col), in order, with percentages"
+        case .describeNumber:
+            switch a.spread {
+            case .meanSD:    return "Describe \(col): how many, how many missing, the average and the spread"
+            case .medianIQR: return "Describe \(col): how many, how many missing, the middle value and the quartiles"
+            case .both:      return "Describe \(col): how many, how many missing, the average, spread, middle and range"
+            case .deciles:   return "Describe \(col) as ten steps from the smallest value to the largest"
+            }
+        case .missingReport:
+            return a.columns.isEmpty
+                ? "Count how many values are missing in each column, worst first"
+                : "Count how many values are missing in \(list(a.columns)), worst first"
+        case .duplicateReport:
+            return a.columns.isEmpty
+                ? "Find rows that are identical to another row, and how often each repeats"
+                : "Find the combinations of \(list(a.columns)) that appear on more than one row"
         }
     }
 
@@ -171,6 +191,38 @@ extension RCode {
         case .head:
             return "This keeps whatever is at the top right now. Sort first, or the "
                  + "\"top\" is just the file's order."
+
+        case .countValues:
+            return "Missing values get a row of their own, and they count towards the "
+                 + "percentages — sum(n) is every row in the data. If you want percentages "
+                 + "of the rows that have a value, drop the missing ones first."
+        case .describeNumber:
+            switch a.spread {
+            case .meanSD:
+                return "The average and the spread describe a column whose values sit "
+                     + "roughly evenly either side of the middle. If \(a.column.isEmpty ? "it" : a.column) "
+                     + "is lopsided or has a few extreme values, the middle value and the "
+                     + "quartiles are the honest pair. Draw a histogram before you choose."
+            case .medianIQR:
+                return "The middle value and the quartiles survive extreme values, which is "
+                     + "why they are the safe choice — but most papers report the average, so "
+                     + "say which one you used."
+            case .both:
+                return "Reporting both lets a reader judge. If the average and the middle "
+                     + "value are far apart, the column is lopsided and the average is the "
+                     + "one that misleads."
+            case .deciles:
+                return "Ten numbers describing the shape. Rows with no value are left out, "
+                     + "so this describes the values you have, not the rows you have."
+            }
+        case .missingReport:
+            return "Missing means what read.csv calls missing — an empty cell, or NA. A "
+                 + "column that writes \"Unknown\" or \"Blank\" instead is not counted here. "
+                 + "Use \"Treat a value as missing\" on it first."
+        case .duplicateReport:
+            return "This shows you what repeats. It does not remove anything — \"Drop "
+                 + "repeated rows\" is the step that does."
+
         default:
             return nil
         }

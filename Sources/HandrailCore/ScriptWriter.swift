@@ -94,6 +94,27 @@ public struct ScriptWriter: Sendable {
         try containsLine("^\\s*library\\(\(pkg)\\)")
     }
 
+    /// Every name the script assigns to, in the order they first appear.
+    ///
+    /// Read off disk rather than remembered by the app. That survives a
+    /// relaunch, survives the user renaming something by hand, and — the point
+    /// — includes tables they wrote themselves, which an in-app list never
+    /// would. Handrail keeps no analysis; the script is the record.
+    public func assignedNames() throws -> [String] {
+        let text = try read()
+        guard let re = try? NSRegularExpression(
+            pattern: "^[ \\t]*([A-Za-z.][A-Za-z0-9._]*)[ \\t]*<-",
+            options: [.anchorsMatchLines]) else { return [] }
+        var seen: Set<String> = []
+        var out: [String] = []
+        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let r = Range(m.range(at: 1), in: text) else { continue }
+            let found = String(text[r])
+            if seen.insert(found).inserted { out.append(found) }
+        }
+        return out
+    }
+
     /// Adds one action to the end of the script. Returns exactly the text that
     /// was appended, so it can be taken back off again if it was a mistake.
     @discardableResult

@@ -166,13 +166,13 @@ func runR(_ script: String) -> (ok: Bool, output: String) {
     defer { try? FileManager.default.removeItem(at: dir) }
 
     let csv = """
-    region,age,income,joined
-    North,34,42000,2024-01-05
-    North,71,18000,2024-02-11
-    South,52,38500,2024-03-02
-    South,66,29000,2024-04-19
-    East,23,NA,2024-05-30
-    East,80,51000,2024-06-14
+    region,sex,age,income,joined
+    North,m,34,42000,2024-01-05
+    North,f,71,18000,2024-02-11
+    South,m,52,38500,2024-03-02
+    South,f,66,29000,2024-04-19
+    East,m,23,NA,2024-05-30
+    East,f,80,51000,2024-06-14
     """
     let dataURL = dir.appendingPathComponent("people.csv")
     let scriptURL = dir.appendingPathComponent("run.R")
@@ -224,7 +224,7 @@ func scriptFor(_ actions: [Action], types: [String: ColumnType], tail: String) -
 }
 
 let realTypes: [String: ColumnType] = [
-    "region": .text, "age": .number, "income": .number, "joined": .text
+    "region": .text, "sex": .text, "age": .number, "income": .number, "joined": .text
 ]
 
 // Rscript has to be on the PATH for any of this to mean anything.
@@ -311,6 +311,10 @@ if probe.ok {
             // View() opens a window; there is nothing for it to do under
             // Rscript, and it is checked for generating valid R, not for running.
             break
+        case .countValues:     a.column = "region"; a.digits = 1; a.descending = true
+        case .describeNumber:  a.column = "age"; a.spread = .both
+        case .missingReport:   a.columns = ["age", "income"]; a.digits = 1
+        case .duplicateReport: a.columns = ["region"]
         }
         var chain = [a]
         if kind == .datePart {
@@ -1030,6 +1034,119 @@ if let names = try? FileManager.default.contentsOfDirectory(atPath: appDir.path)
             offenders.joined(separator: ", "), "")
 } else {
     T.ok("the app sources are where the test expects them", false)
+}
+
+// ===========================================================================
+T.section("getting an answer out of the data")
+
+let answerTypes: [String: ColumnType] = [
+    "region": .text, "sex": .text, "age": .number, "income": .number, "joined": .text
+]
+
+do {
+    var counts = Action(kind: .countValues)
+    counts.column = "region"; counts.digits = 1; counts.descending = true
+    T.equal("counting values gives one row per value, with percentages",
+            RCode.call(for: counts, types: answerTypes, frame: "people"),
+            "count(region, name = \"n\") |>\n"
+          + "  mutate(percent = round(100 * n / sum(n), 1)) |>\n"
+          + "  arrange(desc(n))")
+
+    counts.descending = false
+    T.equal("and can be ordered by the value instead of by the count",
+            RCode.call(for: counts, types: answerTypes, frame: "people"),
+            "count(region, name = \"n\") |>\n"
+          + "  mutate(percent = round(100 * n / sum(n), 1)) |>\n"
+          + "  arrange(region)")
+
+    // The shape of a result block: make it, then look at it.
+    counts.descending = true
+    counts.resultName = "region_counts"
+    let block = RCode.block(for: counts, types: answerTypes, frame: "people") ?? ""
+    T.ok("a result is assigned a name, so a later step can use it",
+         block.contains("region_counts <- people |>"))
+    T.ok("and then echoed, so running the line shows you something",
+         block.hasSuffix("\n\nregion_counts\n"))
+    T.ok("and never reassigns the data",
+         !block.contains("people <- people"))
+
+    var describe = Action(kind: .describeNumber)
+    describe.column = "age"; describe.spread = .meanSD
+    T.equal("describing a number counts the missing ones out loud",
+            RCode.call(for: describe, types: answerTypes, frame: "people"),
+            "summarise(\n"
+          + "    n       = sum(!is.na(age)),\n"
+          + "    missing = sum(is.na(age)),\n"
+          + "    mean    = mean(age, na.rm = TRUE),\n"
+          + "    sd      = sd(age, na.rm = TRUE)\n"
+          + "  )")
+
+    describe.spread = .deciles
+    T.ok("deciles use reframe, because a multi-row summarise is an error in dplyr 1.1+",
+         (RCode.call(for: describe, types: answerTypes, frame: "people") ?? "")
+             .hasPrefix("reframe(decile = seq(0, 100, 10)"))
+
+    var missing = Action(kind: .missingReport)
+    missing.columns = ["age", "income"]; missing.digits = 1
+    let missingCode = RCode.call(for: missing, types: answerTypes, frame: "people") ?? ""
+    T.ok("a missing report writes drop = FALSE, without which colSums stops",
+         missingCode.contains("people[, c(\"age\", \"income\"), drop = FALSE]"))
+    let missingBlock = RCode.block(for: missing, types: answerTypes, frame: "people") ?? ""
+    T.ok("and is assigned directly, having no frame to pipe from",
+         missingBlock.contains("missing_report <- data.frame("))
+
+    missing.columns = []
+    T.ok("with no columns named it reports on all of them",
+         (RCode.call(for: missing, types: answerTypes, frame: "people") ?? "")
+             .contains("column    = names(people)"))
+
+    var repeats = Action(kind: .duplicateReport)
+    repeats.columns = []
+    T.ok("finding repeats with no columns named judges the whole row",
+         (RCode.call(for: repeats, types: answerTypes, frame: "people") ?? "")
+             .contains("count(across(everything()), name = \"times\")"))
+
+    // Half an action still never reaches the script.
+    T.equal("an answer with no column chosen produces nothing",
+            RCode.call(for: Action(kind: .countValues), types: answerTypes, frame: "people"),
+            nil)
+
+    // Result names.
+    T.equal("a result is named after the column it describes",
+            RCode.defaultResultName(for: counts), "region_counts")
+    T.equal("a name already in the script is not quietly reused",
+            RCode.resultName("age_summary", fallback: "result", taken: ["age_summary"]),
+            "age_summary_2")
+    T.equal("and it steps past every name that is taken",
+            RCode.resultName("age_summary", fallback: "result",
+                             taken: ["age_summary", "age_summary_2"]),
+            "age_summary_3")
+    T.equal("a result that would shadow base R is renamed",
+            RCode.resultName("summary", fallback: "result"), "summary_result")
+
+    // Every answer action must warn about something: these are the actions
+    // whose wrong answers look right.
+    var silent: [String] = []
+    for kind in ActionKind.allCases where kind.group == .answer {
+        var a = Action(kind: kind)
+        a.column = "age"; a.columns = ["age"]
+        if RCode.caution(for: a, types: answerTypes) == nil { silent.append("\(kind)") }
+    }
+    T.equal("every answer action says what could be misread about it",
+            silent.joined(separator: ", "), "")
+
+    if probe.ok {
+        // The invariant that matters: an answer leaves the data alone.
+        var chain = Action(kind: .countValues)
+        chain.column = "region"; chain.digits = 1; chain.descending = true
+        let ran = runR(scriptFor([chain], types: answerTypes,
+                                 tail: "cat(nrow(data), \"|\", sum(region_counts$n), \"|\","
+                                     + " round(sum(region_counts$percent)), \"\\n\")"))
+        T.ok("an answer runs against real data", ran.ok)
+        T.equal("the data is untouched, the counts add to the row count, "
+              + "and the percentages add to 100",
+                lastLine(ran.output), "6 | 6 | 100")
+    }
 }
 
 T.finish()
