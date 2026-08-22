@@ -77,7 +77,7 @@ there, because R will not.
 
 ## Actions
 
-Twenty-nine, grouped by what you are trying to do and searchable by the word you
+Thirty-three, grouped by what you are trying to do and searchable by the word you
 would actually type — "missing" finds "Drop rows with gaps in them", "xlsx" and
 "spreadsheet" both find the Excel one.
 
@@ -93,9 +93,30 @@ of a date.
 accented characters), an Excel `.xlsx`, tab- semicolon- or pipe-separated, an
 `.rds`, a `.dta`/`.sav`/`.xpt` for Stata, SPSS or SAS, or a summary table written
 to its own file while your data carries on untouched.
+**Get an answer** — count how many rows have each value of a column, with
+percentages; describe a number (how many, how many missing, the average and
+spread, the middle and the quartiles, or every tenth); see how much is missing in
+each column, worst first; find the rows that repeat.
 **Look at it** — print the first few rows, list every column with `glimpse()`,
 show ranges and averages with `summary()`, cross one column against another, open
 RStudio's viewer, or print how many rows are left.
+
+An answer is written as two lines — the table is given a name, and then the name
+sits on its own so running it shows you something:
+
+```r
+# Count how many rows have each value of region, commonest first, with percentages
+region_counts <- people |>
+  count(region, name = "n") |>
+  mutate(percent = round(100 * n / sum(n), 1)) |>
+  arrange(desc(n))
+
+region_counts
+```
+
+The name is so a later step can use that table. Handrail reads the names out of
+your script rather than remembering them, so a table you wrote yourself counts
+too — and a name already in use never gets quietly reassigned.
 
 The Excel and Stata/SPSS/SAS steps generate `writexl::` and `haven::` calls
 rather than attaching the packages, so the line says where the function came
