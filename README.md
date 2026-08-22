@@ -147,6 +147,6 @@ prints what a file costs: size, seconds, bytes actually read, peak memory.
 swift run handrail-test
 ```
 
-206 assertions. The important ones write a real CSV and a real script, run it
+225 assertions. The important ones write a real CSV and a real script, run it
 with `Rscript`, and check the answer — every action the app offers is verified
 to produce R that actually runs.

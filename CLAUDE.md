@@ -43,9 +43,15 @@ and `remove()` will only take back the last addition if the file still ends with
 exactly that text. An app that reformats someone's file is one they stop
 trusting, and this one is trusted with the only copy.
 
-**2. One action, one dplyr verb.** Never two stitched together, never a helper
-only this app knows. The line that lands has to be one he could have written and
-can look up.
+**2. One action, one idea — and every function on the line is one you can look
+up.** Never a helper only this app knows. The mechanical test: no generated line
+may call a function that is not documented in R or in a named package.
+
+This was written as "one action, one dplyr verb" and that was never true —
+`RCode.summariseChain` has always emitted `group_by |> summarise |> arrange`, and
+`.band` emits a `mutate` wrapping `cut(quantile(...))`. The wording above is what
+was actually being enforced. It matters because `ggplot() + geom_bar() + labs()`
+has to pass and a `handrail_describe()` helper has to fail.
 
 **3. Nothing is hidden.** `na.rm = TRUE` is written out rather than relied on,
 because the next thing he reads about `mean()` will say the default is FALSE.
@@ -82,7 +88,7 @@ without a UI.
 ```sh
 ./build.sh              # build, replace /Applications/Handrail.app, open it
 ./build.sh debug        # same, faster to compile
-swift run handrail-test # 206 assertions
+swift run handrail-test # 225 assertions
 swift run -c release handrail-bench <file.csv>   # size, seconds, bytes read, peak MB
 ```
 
@@ -214,10 +220,66 @@ the finished script through `Rscript` with two data files in it.
 
 ## State and what is next
 
-Working: project/script/data selection, **twenty-nine actions**, the column menu,
+Working: project/script/data selection, **thirty-three actions**, the column menu,
 the searchable palette, the code preview, the cautions, appending, taking the
 last one back, opening the script in RStudio, the menu-bar panel, and the data
 viewer window.
+
+**The roadmap lives at `~/.claude/plans/mutable-imagining-bumblebee.md`** and was
+approved on 2026-08-21. Read it before planning anything: it carries the user
+segmentation, the phase order, the weighted-p-value decision, and the full
+nineteen-action design for "getting an answer out". This file records what is
+*built*; that file records what is *next*.
+
+**Under git since 2026-08-21.** The first commit captures the app exactly as it
+stood before any of this. An app trusted with the only copy of someone's script
+had no floor under its own `ScriptWriter` for two days; it does now.
+
+**Getting an answer out (2026-08-22) — Phase A1 of the plan.** Every one of the
+first twenty-nine actions *prepared* data. None produced a result. The evidence
+that this was the gap: across 81 real R scripts in `~/Desktop/Research`, every
+project ends in a Table 1 with p-values, a `gt`/`flextable` table and a figure.
+
+Three things landed, and the first is the one to understand:
+
+- **A third block shape.** `ActionKind.emits` returns `.transform` (`frame <-
+  frame |> verb()`), `.statement` (bare, for the save/look steps that must never
+  reassign the frame) or `.result`. `isFinishing` is kept as a shim so nothing
+  else changed. A `.result` is **assign, then echo** — the name on its own line
+  after the assignment. A bare pipeline prints but nothing can ever refer to it,
+  which kills `ggsave` and Word output before they are written; an assignment
+  with no echo runs and shows nothing, which reads as the app being broken. Two
+  statements is the smallest form that does both.
+- **`ScriptWriter.assignedNames()`** — every name the script assigns to, read off
+  disk with one regex. This is how a later step will find an earlier result.
+  Deliberately *not* an in-app registry: reading the file survives a relaunch,
+  survives the user renaming something by hand, and picks up tables they wrote
+  themselves. `RCode.resultName(_:fallback:taken:)` then steps past what is taken,
+  so step 11 cannot quietly reassign what step 3 made.
+- **Four actions** in a new `"Get an answer"` group: `countValues` (one row per
+  value, with percentages), `describeNumber`, `missingReport`, `duplicateReport`.
+  Clicking a column offers the right one first, because "what is in this column"
+  is the first question anyone has.
+
+Two R facts worth keeping, both measured rather than remembered:
+
+- **`reframe()`, not `summarise()`, for deciles.** Since dplyr 1.1 a `summarise()`
+  returning more than one row is a hard *error* — `` `decile` must be size 1, not
+  11 `` — where it used to be a warning. Checked against dplyr 1.2.1 here.
+- **`drop = FALSE` in `missingReport` is load-bearing.** `people[, c("age")]`
+  collapses to a vector and `colSums()` then stops. It is written out both because
+  it has to be and because it is the kind of trap worth seeing on the page.
+
+Two tests exist specifically to stop this class of action going wrong: every
+`.result` action must leave `nrow(data)` unchanged, and **every action in the
+`.answer` group must return a non-nil caution** — `Sentence.caution` ends in
+`default: return nil`, so without that test a new answer action ships silent, and
+these are exactly the ones whose wrong answers look right.
+
+**Next: Phase A2** — `compareNumber`, `compareCategories` (the percentaged
+cross-tab; the existing `crossTab` gives raw counts only and is not a data frame),
+and `overTime`. Still no p-values: those are A4, and the weighted-data refusal
+guard goes in before the first one.
 
 **Ways out (2026-08-21).** CSV, RDS, Excel (`writexl::write_xlsx`), tab /
 semicolon / pipe (`write.table` with `sep` named and quoting left **on** —
