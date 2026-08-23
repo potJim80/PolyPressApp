@@ -19,6 +19,27 @@ open build/Handrail.app
 
 Needs macOS 14 or newer. Nothing else — no R packages, no installer, no account.
 
+## Where the code lives
+
+This folder is the place to work, and it has no git remote of its own. Handrail
+lives on GitHub inside
+[potJim80/PolyPressApp](https://github.com/potJim80/PolyPressApp/tree/turbo/handrail),
+under `handrail/`, merged in with its history rather than copied there.
+
+That merge is a separate step, so committing here puts nothing on GitHub.
+One command does the lot:
+
+```sh
+./push-to-github.sh "what you changed"
+```
+
+It commits, runs the tests, merges into a PolyPressApp checkout and pushes.
+If the tests fail nothing is published; `--skip-tests` overrides that.
+
+**It does not touch the website.** Nothing on polypressapp.com reads this
+source — a published number changes when `content/handrail.json` in the website
+repository changes. `HANDOFF.md` §4 has the procedure.
+
 ## Try it
 
 There is an example project in `example/`. Open `example/analysis.R` in RStudio,
