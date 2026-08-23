@@ -159,6 +159,41 @@ def notify(text: str) -> None:
         pass
 
 
+def facts(pairs) -> list:
+    """Label/value lines for a dialog.
+
+    Deliberately not columns. `display dialog` renders in the system's
+    proportional font, so padding a label out to a fixed width with spaces
+    lines nothing up -- each number lands wherever that label's glyphs happen
+    to end, and the wider the label the further left its value sits. A colon
+    puts the value in a predictable place and reads the same in any font."""
+    return ["{}: {}".format(k, v) for k, v in pairs]
+
+
+def rough_duration(nbytes: int) -> str:
+    """What the wait is about to be, said before it starts.
+
+    Encoding runs at roughly 2 MB/s -- the never-worse guarantee encodes every
+    table twice, so this is the slow tier and stays there. A progress bar is
+    not available from `display dialog`, so the honest substitute is telling
+    someone the size of the wait before they commit to it.
+
+    2 MB/s is the *median* across 100 unselected datasets, so half of all
+    tables run slower than this predicts -- and the worst measured case, a
+    60 KB table with 106 columns, runs at a quarter of it. That is why the
+    answer is a coarse bucket and not a number of seconds: the buckets are
+    wide enough to absorb the error, and a precise wrong estimate would be
+    worse than a vague right one."""
+    secs = nbytes / (2.0 * 1024 * 1024)
+    if secs < 20:
+        return "a few seconds"
+    if secs < 90:
+        return "under a minute"
+    if secs < 3600:
+        return "about {:.0f} minutes".format(max(secs / 60.0, 2))
+    return "over an hour"
+
+
 def human(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if abs(n) < 1024 or unit == "GB":
@@ -248,8 +283,11 @@ def do_compress() -> str:
     raw = os.path.getsize(src)
     big = raw > BIG_FILE_MB * 1024 * 1024
     default_mode = MODE_STREAM if big else MODE_NORMAL
-    prompt = "{}  ({})\n\nHow should it be compressed?".format(
-        os.path.basename(src), human(raw))
+    # Said before the wait, not during it. There is no progress bar to be had
+    # from `display dialog`, and an app that sits silent for four minutes reads
+    # as one that has hung.
+    prompt = "{}  ({})\n\nThis should take {}.\n\nHow should it be compressed?".format(
+        os.path.basename(src), human(raw), rough_duration(raw))
     if big:
         prompt += "\n\nThis file is large, so low-memory mode is suggested."
     mode = choose_from_list([MODE_NORMAL, MODE_STREAM], prompt, default_mode,
@@ -291,14 +329,20 @@ def _compress_normal(src: str, dst: str, raw: int) -> str:
     with open(dst, "wb") as fh:
         fh.write(blob)
 
+    # The ratio leads. It is the one number the person came for, and burying
+    # it fourth in a list of five made them read the whole block to find it.
     lines = [
-        "Compressed {:,} rows x {} columns.".format(rows, cols),
+        "{:.2f}x smaller -- {} down to {}.".format(
+            raw / max(len(blob), 1), human(raw), human(len(blob))),
         "",
-        "Original      {:>12}".format(human(raw)),
-        "Compressed    {:>12}".format(human(len(blob))),
-        "Ratio         {:>11.2f}x".format(raw / max(len(blob), 1)),
-        "Saved         {:>12}".format(human(raw - len(blob))),
-        "Speed         {:>9.1f} MB/s".format(raw / 1e6 / max(secs, 1e-9)),
+        "Compressed {:,} rows x {} columns in {:.1f} s.".format(rows, cols, secs),
+        "",
+    ] + facts([
+        ("Original", human(raw)),
+        ("Compressed", human(len(blob))),
+        ("Saved", human(raw - len(blob))),
+        ("Speed", "{:.1f} MB/s".format(raw / 1e6 / max(secs, 1e-9))),
+    ]) + [
         "",
         "Plan: " + ", ".join("{} {}".format(v, k)
                              for k, v in sorted(kinds.items())),
@@ -331,13 +375,18 @@ def _compress_streaming(src: str, dst: str, raw: int) -> str:
     st = stream.compress(src, dst, progress=None)
     secs = time.time() - t0
     return "\n".join([
-        "Compressed {:,} rows in {} blocks.".format(st["rows"], st["blocks"]),
+        "{:.2f}x smaller -- {} down to {}.".format(
+            raw / max(st["bytes"], 1), human(raw), human(st["bytes"])),
         "",
-        "Original      {:>12}".format(human(raw)),
-        "Compressed    {:>12}".format(human(st["bytes"])),
-        "Ratio         {:>11.2f}x".format(raw / max(st["bytes"], 1)),
-        "Saved         {:>12}".format(human(raw - st["bytes"])),
-        "Speed         {:>9.1f} MB/s".format(raw / 1e6 / max(secs, 1e-9)),
+        "Compressed {:,} rows in {} blocks, in {:.1f} s.".format(
+            st["rows"], st["blocks"], secs),
+        "",
+    ] + facts([
+        ("Original", human(raw)),
+        ("Compressed", human(st["bytes"])),
+        ("Saved", human(raw - st["bytes"])),
+        ("Speed", "{:.1f} MB/s".format(raw / 1e6 / max(secs, 1e-9))),
+    ]) + [
         "",
         "Low-memory mode: the table was never held in memory all at",
         "once. It was compressed {:,} rows at a time, and each block".format(
@@ -393,13 +442,14 @@ def do_restore() -> str:
     out = os.path.getsize(dst)
 
     lines = [
-        "Restored {:,} rows x {} columns.".format(rows, cols),
+        "Restored {:,} rows x {} columns as {}.".format(rows, cols, label),
         "",
-        "Archive       {:>12}".format(human(os.path.getsize(src))),
-        "Restored      {:>12}".format(human(out)),
-        "Format        {:>12}".format(label),
-        "Speed         {:>9.1f} MB/s".format(out / 1e6 / max(secs, 1e-9)),
-    ]
+    ] + facts([
+        ("Archive", human(os.path.getsize(src))),
+        ("Restored", human(out)),
+        ("Format", label),
+        ("Speed", "{:.1f} MB/s".format(out / 1e6 / max(secs, 1e-9))),
+    ])
     if ext in (".csv", ".tsv"):
         lines += [
             "",
@@ -445,11 +495,13 @@ def do_convert() -> str:
         return ("This table cannot be written as {}.\n\n{}".format(label, exc))
     out = os.path.getsize(dst)
     return "\n".join([
-        "Converted {:,} rows x {} columns.".format(rows, cols),
+        "Converted {:,} rows x {} columns to {}.".format(rows, cols, label),
         "",
-        "Original      {:>12}".format(human(os.path.getsize(src))),
-        "Converted     {:>12}".format(human(out)),
-        "Format        {:>12}".format(label),
+    ] + facts([
+        ("Original", human(os.path.getsize(src))),
+        ("Converted", human(out)),
+        ("Format", label),
+    ]) + [
         "",
         "This is a plain format change, not compression. To make it",
         "smaller, use \"Compress a table\" from the menu.",
@@ -472,22 +524,22 @@ def do_inspect() -> str:
                 "in .ppz.")
 
     size = os.path.getsize(src)
-    lines = ["{}".format(os.path.basename(src)),
-             "",
-             "Size          {:>12}".format(human(size)),
-             "Stored as     {}".format(CONTAINERS[magic])]
+    lines = ["{}".format(os.path.basename(src)), ""] + facts([
+        ("Size", human(size)),
+        ("Stored as", CONTAINERS[magic]),
+    ])
 
     if magic == stream.MAGIC:
         # header["blocks"] is a list of block *byte sizes*, not block records;
         # the row count lives in "nrows". Summing it as if it held dicts is
         # the first thing the functional test caught.
         h = stream.info(src)
-        lines += [
-            "Rows          {:>12,}".format(h["nrows"]),
-            "Columns       {:>12}".format(len(h["columns"])),
-            "Blocks        {:>12}".format(len(h["blocks"])),
-            "Rows/block    {:>12,}".format(h["rows_per_block"]),
-        ]
+        lines += facts([
+            ("Rows", "{:,}".format(h["nrows"])),
+            ("Columns", len(h["columns"])),
+            ("Blocks", len(h["blocks"])),
+            ("Rows per block", "{:,}".format(h["rows_per_block"])),
+        ])
     elif magic in (fast.MAGIC, fast.MAGIC_V0):
         import json
         import lzma
@@ -499,9 +551,10 @@ def do_inspect() -> str:
             kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
         parented = sum(1 for c in meta["cols"]
                        if c["kind"] == "dict" and c.get("parent") is not None)
-        lines += [
-            "Rows          {:>12,}".format(meta["nrows"]),
-            "Columns       {:>12}".format(len(meta["cols"])),
+        lines += facts([
+            ("Rows", "{:,}".format(meta["nrows"])),
+            ("Columns", len(meta["cols"])),
+        ]) + [
             "",
             "Plan: " + ", ".join("{} {}".format(v, k)
                                  for k, v in sorted(kinds.items())),
@@ -742,8 +795,11 @@ def functest() -> int:
 def _compress_dropped(src: str) -> str:
     raw = os.path.getsize(src)
     big = raw > BIG_FILE_MB * 1024 * 1024
-    prompt = "{}  ({})\n\nHow should it be compressed?".format(
-        os.path.basename(src), human(raw))
+    # Said before the wait, not during it. There is no progress bar to be had
+    # from `display dialog`, and an app that sits silent for four minutes reads
+    # as one that has hung.
+    prompt = "{}  ({})\n\nThis should take {}.\n\nHow should it be compressed?".format(
+        os.path.basename(src), human(raw), rough_duration(raw))
     if big:
         prompt += "\n\nThis file is large, so low-memory mode is suggested."
     mode = choose_from_list([MODE_NORMAL, MODE_STREAM], prompt,
@@ -781,11 +837,13 @@ def _restore_dropped(src: str) -> str:
     secs = time.time() - t0
     out = os.path.getsize(dst)
     return "\n".join([
-        "Restored {:,} rows x {} columns.".format(rows, cols),
+        "Restored {:,} rows x {} columns as {}.".format(rows, cols, label),
         "",
-        "Restored      {:>12}".format(human(out)),
-        "Format        {:>12}".format(label),
-        "Speed         {:>9.1f} MB/s".format(out / 1e6 / max(secs, 1e-9)),
+    ] + facts([
+        ("Restored", human(out)),
+        ("Format", label),
+        ("Speed", "{:.1f} MB/s".format(out / 1e6 / max(secs, 1e-9))),
+    ]) + [
         "",
         "Saved to " + dst,
     ])
