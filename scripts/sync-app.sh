@@ -49,7 +49,14 @@ else
   git merge -s ours --no-commit --allow-unrelated-histories "$ref" >/dev/null
 fi
 
-git rm -r --quiet --cached --ignore-unmatch "$prefix" >/dev/null
+# Clear the prefix out of the index AND the working tree before reading the
+# new tree in. Not --cached: dropping them from the index alone leaves them
+# on disk as untracked files, and `read-tree -u` then refuses to overwrite
+# its own output -- which is fine on the first sync, when the directory does
+# not exist yet, and fails on every one after it. Anything untracked inside
+# the prefix (a .build, say) is left where it is; it cannot collide, because
+# it is not in the tree being read.
+git rm -r --quiet --ignore-unmatch "$prefix" >/dev/null
 git read-tree --prefix="$prefix/" -u "$ref"
 git commit --quiet -m "Sync $prefix from $ref"
 
