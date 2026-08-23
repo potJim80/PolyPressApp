@@ -1,0 +1,42 @@
+
+# TEST-21b  austin_incidents: 19 columns, 40,000 rows
+column                       unsorted  best single   best pair  pair/single
+---------------------------------------------------------------------------
+crime_type                     31,427        2,372       2,221        0.936
+ucr_code                       29,003          627         625        0.997
+family_violence                 2,704          771         758        0.983
+location_type                  16,636       14,083      13,731        0.975
+council_district               16,887          998         887        0.889
+sector                         16,915        1,019         603        0.592
+district                       15,897        2,209       1,844        0.835
+clearance_status                7,590        3,866       3,167        0.819
+ucr_category                   12,344          223         208        0.933
+---------------------------------------------------------------------------
+TOTAL over all columns                     291,485     289,361       0.9927
+
+# TEST-21b  wa_ev_population: 16 columns, 40,000 rows
+column                       unsorted  best single   best pair  pair/single
+---------------------------------------------------------------------------
+vin_1_10                       65,842       45,368      37,817        0.834
+city                           27,612        2,271       1,157        0.509
+model_year                     17,612        5,584       4,800        0.860
+model                          27,321          755         746        0.988
+ev_type                         4,522          210         140        0.667
+electric_range                 15,924        2,038       1,104        0.542
+legislative_district           23,710        1,732       1,548        0.894
+electric_utility               12,692          640         605        0.945
+_2020_census_tract             51,146       20,566      18,087        0.879
+---------------------------------------------------------------------------
+TOTAL over all columns                     156,219     143,059       0.9158
+
+# TEST-21b  chicago_crimes: 22 columns, 40,000 rows
+column                       unsorted  best single   best pair  pair/single
+---------------------------------------------------------------------------
+iucr                           31,002        2,299         875        0.381
+fbi_code                       18,054          258         254        0.984
+x_coordinate                   75,109       37,050      37,048        1.000
+updated_on                      5,336        5,308       5,269        0.993
+---------------------------------------------------------------------------
+TOTAL over all columns                     365,548     364,079       0.9960
+
+ALL TABLES  best-single 813,252  with-pairs 796,499  ratio 0.9794

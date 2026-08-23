@@ -1,0 +1,44 @@
+
+# TEST-21  austin_incidents: 19 columns, 40,000 rows
+# identity order: 508,490 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by occ_date_time                          457,328        0.899
+  sort by rep_date_time                          469,805        0.924
+  sort by ucr_code                               477,099        0.938
+  sort by ucr_category                           481,199        0.946
+  sort by crime_type                             481,969        0.948
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort ucr_category + occ_date_time           444,470        0.874           0.972
+  lexsort ucr_category + rep_date_time           452,916        0.891           0.990
+  lexsort ucr_code + occ_date_time               461,712        0.908           1.010
+  lexsort ucr_code + rep_date_time               465,011        0.914           1.017
+  lexsort crime_type + occ_date_time             466,457        0.917           1.020
+  lexsort crime_type + rep_date_time             471,019        0.926           1.030
+
+best single 457,328  best pair 444,470  pair/single 0.9719  -> PAIRS WIN
+
+# TEST-21  cdc_nndss: 16 columns, 40,000 rows
+# identity order: 51,517 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by week                                    51,517        1.000
+  sort by m1_flag                                 75,556        1.467
+  sort by m3_flag                                 75,556        1.467
+  sort by m4_flag                                 75,556        1.467
+  sort by m2_flag                                 76,920        1.493
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort week + label                            51,517        1.000           1.000
+  lexsort m2_flag + label                         86,493        1.679           1.679
+  lexsort m1_flag + label                         86,495        1.679           1.679
+  lexsort m3_flag + label                         86,495        1.679           1.679
+  lexsort m4_flag + label                         86,495        1.679           1.679
+  lexsort location2 + label                       89,234        1.732           1.732
+
+best single 51,517  best pair 51,517  pair/single 1.0000  -> no gain from pairs

@@ -1,0 +1,225 @@
+TEST-20 -- specialised numeric model families, measured on our own data
+Run 2026-08-06. 40,000-row canonical CSV, the same one TEST-11/14/18 use.
+"CM" = kanzi -t None -e TPAQX (pure context mixer, no transform).
+Sizes in bytes. pp = fast.encode on a one-column table unless stated.
+
+================================================================ A. kanzi's
+A. IS KANZI'S ADVANTAGE THE TEXT TRANSFORM OR THE CONTEXT MIXER?  (cmsplit.py)
+
+                        xz -9e    kanzi -l9   -t None -e TPAQX   -t None -e CM
+usgs_quakes whole      643,133      438,692            440,971       1,394,631
+austin_incid. whole    726,865      457,416            457,183       3,143,804
+usgs place              69,733       48,799             47,454         223,719
+austin crime_type       55,217       34,183             33,190         354,511
+austin census_block     68,328       46,483             46,426         123,023
+usgs latitude           51,505       40,251             40,234          56,382
+usgs time               64,947       52,479             52,478         151,467
+
+The whole EXE+RLT+TEXT+UTF+DNA stack is worth +0.05% on austin and -0.5% on
+usgs. The advantage is TPAQX and nothing else. kanzi's own lighter CM (no
+mixture, no match model) is 2.2-4.3x WORSE than xz.
+
+================================================================ B. entropy
+B. WHAT IS THE MIXER DOING? ORDER-0 VALUE ENTROPY FLOORS       (entropy.py)
+
+column                     k       H0       xz       pp       CM  CM/H0  pp/H0
+usgs magType              11    1,382    2,360    2,129    1,502   1.09   1.54
+usgs dmin              6,853   25,101   34,505   29,708   27,110   1.08   1.18
+usgs depthError        6,285   23,329   33,103   27,820   25,438   1.09   1.19
+usgs magError            304   15,503   21,080   16,988   16,129   1.04   1.10
+austin ucr_code          256   27,350   38,505   33,790   28,142   1.03   1.24
+austin census_block      684   43,610   68,328   53,006   46,426   1.06   1.22
+austin occ_time        1,440   46,604   58,871   52,680   46,466   1.00   1.13
+austin district           16   15,032   18,683   16,092   15,217   1.01   1.07
+austin crime_type        286   28,304   55,217   34,113   33,190   1.17   1.21
+
+TPAQX lands at 1.00-1.09x the order-0 VALUE entropy on every medium-cardinality
+column. We land at 1.07-1.54x. The gap is an entropy-coding gap on the id
+stream, not a modelling gap.
+
+Confirmed on the id stream directly (pack_ints + xz -9e vs H0 of the ids):
+  magType 1.40  crime_type 1.23  ucr_code 1.22  census_block 1.19
+  horizontalError 1.18  magError 1.16  occ_time 1.15  location_type 1.15
+  depthError 1.11  rms 1.10  dmin 1.09  district 1.06  rep_time 1.01
+
+TABLE-LEVEL SLACK, all dict columns aggregated -- NOT universal:
+  table               archive    ids H0   pack+xz     slack   % archive
+  nyc_collisions      674,333   340,757   376,463   +35,706      +5.3%
+  usgs_quakes_deep    466,369    88,849   102,948   +14,099      +3.0%
+  chicago_permits   3,462,565 1,175,400 1,258,595   +83,195      +2.4%
+  usgs_quakes         472,280   129,005   132,522    +3,517      +0.7%
+  austin_incidents    572,320   199,140   154,772   -44,368      -7.8%
+austin is NEGATIVE: its occ_date/rep_date id streams are run-structured and xz
+eats the runs far below H0 (LAW 2b's "columns already grouped by value").
+
+================================================================ C. classify
+C. THE PLAN ON usgs_quakes -- the planar predictor cannot fire   (ragged.py)
+
+  time text | latitude text | longitude text | depth text | mag dict(84)
+  magType dict(11) | nst NUM | gap NUM | dmin dict(6853) | rms dict(142)
+  net dict(10) | id text | updated dict(3190) | place text | type dict(4)
+  horizontalError dict(1607) | depthError dict(6285) | magError dict(304)
+  magNst NUM | status dict(1) | locationSource dict(11) | magSource dict(12)
+
+NOT ONE float column reaches the numeric path. Only the 3 integer columns do,
+and they are not adjacent, so find_2d_groups returns nothing.
+Cause: EX_MAX_FRACTION = 0.05 against these exception rates --
+  latitude 10.4% | magError 11.0% | depthError 11.8% | rms 9.9%
+  horizontalError 10.5% | dmin 11.0%
+Not four bad cells. A fat tail, refused by the same all-or-nothing shape
+CLAUDE.md already warns about.
+
+================================================================ D. floats
+D. FLOAT CODEC FAMILIES                              (ragged.py, alp_exact.py)
+
+Gorilla XOR-with-previous, bit-exact, over the IEEE-754 doubles:
+  column          raw 8B   gorilla   text+xz
+  latitude       129,520   133,564    51,505
+  longitude      129,520   133,571    53,801
+  dmin           129,520   131,475    34,505
+  depthError     129,520   131,450    33,103
+  magError       129,520   128,584    21,080
+  depth          129,520   105,689    32,355
+WORSE THAN NOT COMPRESSING on 6 of 8 columns. Chimp/Chimp128/Elf/Patas are
+refinements of the same residual and inherit this. Dead.
+
+ALP exponent scope is the whole trick:
+  column        text+xz   column-wide e   per-1024-vector e
+  latitude       51,505          70,815              43,785
+  longitude      53,801          72,982              44,729
+  dmin           34,505          48,369              27,766
+  depthError     33,103          46,389              26,446
+  rms            17,599          16,766              13,318
+Column-wide = 37% WORSE than text+xz. Per-vector = 8-24% BETTER.
+This is the mechanism behind the reverted ragged-decimal result.
+
+THE DECIMAL COUNT IS FREE. On this corpus the printed cell IS the shortest
+round-trip decimal of its double (Python repr, same class as Ryu):
+  latitude 16,190/16,190 | longitude 16,190/16,190 | depth 16,190/16,190
+  mag 16,190/16,190 | rms 16,190/16,190 | depthError 16,190/16,190
+  dmin 16,121/16,190 (rest blank) | magError 15,982/16,190 (rest blank)
+ZERO cells need trailing zeros. So exact-double IMPLIES exact-text and the
+format-descriptor stream that sank the earlier attempt need not exist.
+(The explicit (significand, dec-count) split was measured anyway: at most
++5.5%, negative on 6 of 11 columns, -32% on time, -130% on updated.)
+
+ALP MADE TEXT-EXACT (per-vector e, shortest-repr verified, real exceptions):
+  column           text/xz       pp       CM   ALPexact   vs pp
+  latitude          51,505   45,686   40,234     42,947   0.940
+  longitude         53,801   48,037   42,410     44,987   0.937
+  dmin              34,505   29,708   27,110     28,771   0.968
+  rms               17,599   13,526   13,333     13,612   1.006
+  depth             32,355   27,913   25,138     29,760   1.066
+  horizontalError   27,943   22,715   21,422     23,642   1.041
+  gap               19,688   16,346   15,426     17,555   1.074
+  depthError        33,103   27,820   25,438     29,930   1.076
+  nst               17,523   15,315   14,062     16,976   1.108
+  magError          21,080   16,988   16,129     19,071   1.123
+  magNst            16,288   14,848   13,426     16,954   1.142
+  mag               10,449    8,509    7,838      9,874   1.160
+  TOTAL            335,839  287,411  261,966    294,079   1.023
+  nyc_collisions   262,958  244,104  216,724    302,327   1.239
+Wins 2 of 12. Loses to the bare context mixer on all 12. Not worth building.
+
+PCODEC (pip install pcodec 1.0.3, macosx_11_0_arm64 wheel, run here), made
+text-exact by the same shortest-repr rule:
+  depth 0.907 | longitude 0.929 | latitude 0.944 | gap 0.946 | depthError
+  0.946 | dmin 0.970 | nst 0.980 | horizontalError 0.996 | magNst 1.006 |
+  magError 1.034 | rms 1.067 | mag 1.184        vs pp, wins 8 of 12
+  usgs_quakes 12-col TOTAL   pp 287,411   pcodec 278,348   = 0.968
+  nyc_collisions latitude    pp  93,106   pcodec 215,784   = 2.32
+  nyc_collisions longitude   pp  85,292   pcodec 211,291   = 2.48
+nyc_collisions coords are 5/6/7 ragged decimals; the ragged scale defeats
+FloatMult detection, leaving ~52 near-random mantissa bits -> 5.3 B/value.
+The TEXT is 9-10 chars with a redundant "40.7" prefix -> xz gets 2.5 B/value.
+
+  >>> For high-precision ragged decimals the PRINTED TEXT is a strictly
+  >>> better representation than the double. Any scheme that parses to
+  >>> double first has already discarded what was paying. <<<
+
+================================================================ E. time
+E. TIMESTAMP AND INTEGER REPRESENTATIONS                        (tstamp.py)
+
+column              text+xz  text+CM  int64FOR  deltaFOR  deltaVI  delta2  transp
+usgs time            64,947   52,478    53,761    48,764   50,978  49,873  54,995
+usgs updated         15,965   10,817    15,532    17,315   15,826  22,428  22,308
+austin rep_date_time 63,294   47,754    54,079    52,399   47,413  57,863  56,823
+austin occ_date_time 83,635   59,514    73,890    78,776   72,873  87,730  79,861
+austin occ_date      23,329   14,961    26,283    28,780   29,108  35,204  24,909
+
+What polypress gets on these today, in isolation:
+  time 64,955 | occ_date_time 83,543 | rep_date_time 63,389
+i.e. they are `text` and the codec is doing NOTHING with them.
+
+  usgs time          -24.9%  (64,955 -> 48,764)   = 3.4% of that archive
+  austin rep_date_t  -25.1%  (63,294 -> 47,413)
+  austin occ_date_t  -11.7%
+  usgs updated       every integer form LOSES (non-monotone)
+  austin occ_date    every integer form LOSES by 12-58% (652 distinct, runny)
+
+DELTA-OF-DELTA (Gorilla's timestamp scheme) is WORSE than plain delta on all
+four columns that parse. Its buckets were fitted to Facebook's production
+sample and do not transfer.
+
+BYTE-TRANSPOSE of fixed-width text -- no parsing, no exceptions, a permutation:
+  usgs time         64,947 -> 54,995   -15.3%
+  austin rep_date_t 63,294 -> 56,823   -10.2%
+  usgs updated      15,965 -> 22,308   +39.7%   (loses)
+  austin occ_date   23,329 -> 24,909    +6.8%   (loses)
+
+================================================================ F. spatial
+F. SPATIAL ROW ORDER, usgs_quakes 16,190 rows                 (roworder.py)
+Permutation charged in full (bit-packed then xz) -- LAW 1's accounting.
+
+  row order              xz      perm       pp   pp+perm   vs orig
+  original          643,133         0  472,280   472,280     1.000
+  morton(lat,lon)   639,274    29,231  451,145   480,376     1.017
+  hilbert(lat,lon)  638,748    29,193  451,784   480,977     1.018
+  sort lat          647,556    29,223  458,496   487,719     1.033
+  sort time         643,253    20,568  471,368   491,936     1.042
+  sort place        657,183    27,673  472,761   500,434     1.060
+
+Hilbert costs 1.8%. And on the PAIR ITSELF:
+  row order          lat xz   lon xz      sum   interleaved
+  original           51,505   53,801  105,306       106,451
+  sort lat           22,916   47,782   70,698        79,327
+  hilbert            37,262   37,307   74,569        75,543
+  morton             38,295   37,254   75,549        76,687
+PLAIN SORT-BY-LATITUDE BEATS HILBERT on the pair (70,698 vs 74,569). Making
+ONE column nearly-sorted beats balancing 2D locality -- LAW 1's reason: the
+permutation is paid once whatever the key, so you want the key that collapses
+the most bytes, not the best locality.
+INTERLEAVING lat,lon on one line is worse than two columns in ALL four orders.
+
+================================================================ G. lit
+G. LITERATURE, the part that is a controlled measurement
+
+Petri & Moffat, SPE 48(4) 2018 -- holds data and general compressor fixed,
+varies only the pre-transform. Bits/posting, Gov2 URL docid gaps:
+                 raw u32   VByte   Simple-16
+  none             32.00    8.79        4.68
+  xz -6             3.22    2.98        3.36
+Simple-16 is the best standalone code and the WORST input to xz -- worse than
+feeding xz raw uint32. Mechanism: variable-width packing shifts identical
+source values to arbitrary bit phases and a byte-oriented matcher stops
+matching them.  doi 10.1002/spe.2556
+
+DuckDB #18984: Parquet V2 DELTA_BINARY_PACKED + zstd is 2.86x LARGER than
+PLAIN + zstd on 5.46 M rows. Open, no fix.
+
+Bitshuffle (Masui 2015): bit-PLANE TRANSPOSITION + LZ4 = 27.9% vs byte-shuffle
++ LZ4 47.3%. The distinction that survives is alignment-PRESERVING (transpose,
+BYTE_STREAM_SPLIT) vs alignment-DESTROYING (variable-width packing).
+
+Simple8b / PFOR / NewPFD / OptPFD / FastPFOR / SIMD-BP128 / StreamVByte /
+DELTA_BINARY_PACKED: all speed codecs, all benchmarked against varint, Snappy,
+zstd-default or uncompressed tuples. SIMD-BP128 is 40% worse than Simple-8b
+purely from vectorising. TurboPFor is GPL-2.0; FastPFor's README states its
+decoder does not validate input (invariant 3 violation in the act of adopting).
+
+FCBench (VLDB 2024) benchmarks 13 FP codecs and its own scope note EXCLUDES
+xz/LZMA, bzip2, brotli as baselines. Essentially nobody in the time-series
+compression literature benchmarks against xz. That absence is the finding.
+
+liblzma pb defaults to 2 (4-byte alignment). For byte-aligned numeric streams
+pb=0 is a filter-dict change with no format implications. Untested.

@@ -1,0 +1,291 @@
+# TEST-2b  200 real single columns, ../IN/corpus500/*.csv, capped at 150,000 B each
+# A = xz -9e on the column text. B1..B8 = the ANS family.
+# Every coder decoded and compared before its size was counted.
+#
+# label         ANS variant alphabet   model               
+# B1 rANS-o0    rANS        byte       order-0 static      
+# B2 rANS-o1    rANS        byte       order-1 static      
+# B3 tANS-o0    tANS        byte       order-0 static      
+# B4 tANS-o1    tANS        byte       order-1 static      
+# B5 rANSx4-o0  rANS x4     byte       order-0 static      
+# B6 rABS-o0    rABS        bit tree   order-0 adaptive    
+# B7 rABS-o1    rABS        bit tree   order-1 adaptive    
+# B8 uABS-o0    uABS        bit tree   order-0 adaptive    
+
+column                                  kind              n      k        xz   rANS-o0   rANS-o1   tANS-o0   tANS-o1 rANSx4-o0   rABS-o0   rABS-o1   uABS-o0  bestB/xz
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+clatsop_operating_budget_x:fiscal_year  int-only      11400      6       429     18824      4296     18827      4299     18834     17664      2448     17667     5.706
+clatsop_revenue_budget_rgg:fiscal_year  int-only       5721      6       115      9865      2189      9867      2191      9876      8606       755      8609     6.565
+controllercity_employee_pa:pay_year     int-only      30000      8       353     35812     19243     35813     19247     35822     34100     13871     34104    39.295
+controllercity_revenue_hfu:fiscal_year  int-only      30000     13       150     48799     22718     48805     22723     48810     39528      7905     39532    52.700
+controllercity_revenue_hfu:department   int-only      39647     62      1512     45850     33218     45852     33220     45860     31508     15593     31511    10.313
+controllercity_revenue_hfu:revenue_clas int-only      37500     68     22843     58594     34414     58591     34416     58605     59192     33871     59195     1.483
+cthru_commonwealth_of_mass:year         int-only      30000     14     18295     49870     20170     49876     20171     49880     51833     21651     51836     1.102
+dallasopenpolice_incidents:watch        int-only      28785      4      6818     12951      5774     12951      5776     12963     13662      6456     13665     0.847
+2008_general_absentee_elec:cong         int-only      50000      4       355     22381      9901     22380      9903     22392     14193      1633     14196     4.600
+2008_general_absentee_elec:cc           int-only      50000      9       497     30881     18415     30879     18416     30892     14529      2098     14533     4.221
+2008_general_absentee_elec:leg          int-only      50000     15       630     49101     28078     49104     28077     49111     31036      4012     31039     6.368
+2008_general_election_resu:cong         int-only      50000      4       448     21019      8540     21015      8540     21029     14316      1756     14319     3.920
+2008_general_election_resu:cc           int-only      50000      7       259     20528      8059     20522      8062     20539     14039      1556     14042     6.008
+2008_general_election_resu:leg          int-only      50000     11       334     46759     17227     46761     17233     46770     30773      2681     30776     8.027
+2008_primary_election_resu:cc           int-only      50000      9       748     31887     19420     31885     19425     31898     17101      4670     17105     6.243
+2008_primary_election_resu:leg          int-only      50000     16       830     48681     29868     48681     29872     48692     31617      6950     31620     8.373
+2009_general_election_resu:cg           int-only      50000      5       938     24098     11621     24096     11626     24108     16148      3602     16152     3.840
+2009_general_election_resu:cc           int-only      50000      9      1323     31606     19139     31609     19145     31617     17428      4997     17431     3.777
+2009_general_election_resu:leg          int-only      50000     17      1445     49714     28888     49717     28891     49724     32341      7784     32344     5.387
+2009_general_election_resu:count        int-only      50000    788     48495     57581     51067     57583     51069     57591     59400     52540     59403     1.053
+2009_primary_election_resu:congressiona int-only      50000      4       781     24629     12149     24624     12152     24640     15474      2914     15477     3.731
+2009_primary_election_resu:county_counc int-only      50000      8       974     29081     16610     29076     16615     29093     15970      3513     15973     3.607
+2009_primary_election_resu:legislative_ int-only      50000      8       129     41711     22631     41715     22634     41720     25143      5208     25146    40.372
+2010_general_election_resu:congressiona int-only      50000      5       563     24217     11739     24213     11741     24227     17230      4689     17233     8.329
+2010_general_election_resu:county_counc int-only      50000     10       820     32294     19871     32288     19874     32304     19500      7097     19503     8.655
+2010_general_election_resu:legislative_ int-only      50000     18       841     49495     30158     49498     30159     49506     33882     10012     33885    11.905
+2010_primary_election_resu:congressiona int-only      50000      6       914     24337     12242     24338     12244     24348     16936      4590     16939     5.022
+2010_primary_election_resu:county_counc int-only      50000     10      1229     31918     19835     31920     19835     31928     19067      6830     19071     5.557
+2010_primary_election_resu:legislative_ int-only      50000     18      1376     49026     29985     49025     29983     49037     33613      9832     33616     7.145
+cos-city_of_seattle_wage_2:hourly_rate  num-mixed     14714   2117     25887     38290     34213     38292     34215     38301     39503     35361     39506     1.322
+cos-road_weather_informati:roadsurfacet num-mixed      2904    413      1927      7480      5247      7482      5249      7491      7420      4970      7423     2.579
+2010_general_election_resu:sumofcount   num-mixed     23738    797     27560     54017     37629     54020     37632     54028     56162     39285     56165     1.365
+2011_general_election_resu:sumofcount   num-mixed     24545    510     20747     52349     36796     52352     36798     52360     53886     36993     53889     1.774
+2011_primary_election_resu:sumofcount   num-mixed     25428    696     24370     51366     35272     51369     35274     51377     53257     36581     53260     1.447
+2018_yellow_taxi_trip_t29m:mta_tax      num-mixed     37550      3       587     37623       309     37619       310     37634     39770      1999     39773     0.526
+2018_yellow_taxi_trip_t29m:improvement_ num-mixed     37489      3       351     37624       169     37619       170     37634     39768      1871     39771     0.481
+2018_yellow_taxi_trip_t29m:extra        num-mixed     38007      7      1584     37730      1098     37717      1099     37742     39798      2700     39801     0.693
+2018_yellow_taxi_trip_t29m:tolls_amount num-mixed     50000     41      2626     18619      2003     18615      2003     18630     19701      3157     19704     0.763
+311_service_requests_v6vf-:y_coordinate num-mixed      8087   3551     32415     65741     55105     65741     55107     65752     67742     56095     67745     1.700
+311_service_requests_vacan:longitude    num-mixed      7963   6197     45794     68187     53074     68191     53076     68197     70383     54905     70386     1.159
+311_service_requests_vacan:latitude     num-mixed      8243   6381     48965     66231     56328     66232     56330     66242     68393     58120     68397     1.150
+311_service_requests_vacan:x_coordinate num-mixed      8898   6826     48384     65528     61186     65530     61188     65538     67648     63035     67651     1.265
+500_cities_local_for_bette:low_confiden num-mixed     33344    902     48409     61570     50771     61573     50773     61580     63614     52576     63617     1.049
+500_cities_local_for_bette:data_value   num-mixed     33084    911     48622     61714     51142     61717     51145     61725     63766     52945     63769     1.052
+addresses_in_the_city_of_l:lat          num-mixed      8521   1777     15968     57427     28522     57429     28524     57437     57669     27292     57673     1.709
+addresses_in_the_city_of_l:lon          num-mixed     11059   7343     23857     65472     35463     65474     35466     65483     65743     32638     65746     1.368
+addresses_in_the_city_of_l:x_coord_nbr  num-mixed      8182   8143     41636     64119     51707     64121     51708     64129     65361     51413     65364     1.235
+addresses_in_the_city_of_l:y_coord_nbr  num-mixed      9171   9132     38688     64360     51291     64360     51293     64371     65372     50229     65375     1.298
+adjudicated_property_a4h4-:sum_fair_m   num-mixed     31497    869     30190     51746     34867     51749     34871     51757     50877     33178     50880     1.099
+adjudicated_property_a4h4-:sum_tol_as   num-mixed     36035   1005     27473     50037     35613     50041     35617     50047     47970     30175     47973     1.098
+affordable_housing_product:longitude_in num-mixed      9250   6105     18973     36303     22957     36305     22959     36314     37024     23073     37027     1.210
+air_quality_and_health_imp:data_value   num-mixed     19827   8375     47514     61178     57173     61181     57175     61189     61649     54811     61652     1.154
+alzheimer_s_disease_and_he:low_confiden num-mixed     42184    967     49242     59969     51626     59972     51628     59980     61927     53422     61930     1.048
+alzheimer_s_disease_and_he:high_confide num-mixed     41433    979     49704     60467     53097     60470     53099     60477     62430     54887     62433     1.068
+alzheimer_s_disease_and_he:data_value   num-mixed     41746    982     49632     60239     52445     60241     52446     60250     62198     54225     62201     1.057
+alzheimer_s_disease_and_he:data_value_a num-mixed     41746    982     49632     60239     52445     60241     52446     60250     62198     54225     62201     1.057
+archive_covid_19_vaccinati:series_compl num-mixed      5331    858      1939     10798      7544     10800      7547     10808     10943      7133     10946     3.679
+archive_covid_19_vaccinati:administered num-mixed      5331    861      2115     10971      7461     10973      7463     10982     11184      7088     11187     3.351
+cos-road_weather_informati:datetime     date-time      2904    389      1104     27579     15331     27582     15333     27589     28537     15169     28540    13.740
+cos-seattle_real_time_fire:datetime     date-time      6250   5608      4748     61472     38831     61476     38834     61483     63086     35107     63089     7.394
+2015_street_tree_census_tr:created_at   date-time      6250    100      5529     51907     29652     51910     29654     51917     54651     31768     54654     5.363
+2020_general_election_mail:ballotreturn date-time      7561     28      6289     47144     30509     47143     30513     47154     49684     32740     49687     4.851
+2020_general_election_mail:ballotsentda date-time      6270     60      6386     46891     32128     46895     32131     46903     49544     34419     49547     5.031
+2020_primary_election_mail:ballotreturn date-time      7514     37      6527     47376     31948     47380     31950     47386     50053     34273     50056     4.895
+2020_primary_election_mail:ballotsentda date-time      6258     71      6737     47301     32345     47308     32348     47312     50021     34665     50024     4.801
+2020_primary_election_mail:appissuedate date-time      6250    101      6603     47852     32970     47855     32972     47863     50547     35281     50550     4.993
+311_service_requests_v6vf-:last_modifie date-time      6250   3038      9237     65185     36253     65186     36255     65195     67333     34092     67336     3.691
+311_service_requests_vacan:date_service date-time      6250    597       966     52659     33273     52663     33277     52669     53454     29436     53457    30.472
+active_appearance_enhancem:license_cur_ date-time      6250   1390     11874     52082     35072     52085     35075     52092     54725     37436     54728     2.954
+active_appearance_enhancem:license_expi date-time      6250   1390     11819     52050     35407     52053     35409     52060     54683     37763     54686     2.996
+active_code_official_certi:issued_on    date-time      6258    591      5869     52404     36751     52406     36755     52414     53233     33638     53236     5.731
+active_corporations_beginn:initial_dos_ date-time      6250   3927     15178     52432     36989     52435     36991     52443     54939     39036     54942     2.437
+active_nonprofit_corporati:registry_dat date-time      7500   1398      2186     58069     37739     58070     37742     58079     58189     31502     58192    14.411
+active_notaries_j2pk-zk6z:effective_dat date-time      6250    167      5328     50110     34298     50112     34301     50120     51735     33087     51738     6.210
+active_notaries_j2pk-zk6z:expiration_da date-time      6250    167      5324     51811     33308     51815     33312     51821     53542     31726     53545     5.959
+active_real_estate_salespe:license_expi date-time      7687    787     11436     52486     34616     52487     34619     52496     54378     36395     54382     3.027
+active_sales_tax_permit_ho:outlet_first date-time      6250   2311     13131     50716     35332     50717     35335     50727     53307     37650     53310     2.691
+active_sales_tax_permit_ho:outlet_permi date-time      6265   2881     15735     52598     36503     52602     36506     52608     55180     38816     55183     2.320
+active_trademark_registrat:registration date-time      3537   1832      3261     29754     21061     29756     21063     29764     30293     20072     30296     6.155
+adult_jail_booking_jul_1_2:booking_date date-time      6250   2532      6649     64642     44007     64645     44010     64652     65796     39475     65799     5.937
+adult_jail_booking_jul_1_2:release_date date-time      6623   2619     12606     64782     46188     64784     46191     64792     66468     45555     66471     3.614
+affordable_housing_product:project_star date-time      6250   1573      1807     52147     36061     52149     36063     52158     52645     32237     52648    17.840
+affordable_housing_product:project_comp date-time      7940   1650     10088     52740     36484     52743     36488     52751     54066     35934     54069     3.562
+affordable_housing_product:building_com date-time      7799   1778     11089     52605     36531     52607     36533     52615     54123     36417     54126     3.284
+agriculture_and_timber_exe:permit_expir date-time      6250     62       573     51802     22776     51803     22780     51813     54657     24941     54660    39.749
+agriculture_and_timber_exe:permit_issue date-time      6250    520      8300     52345     32530     52350     32533     52355     54984     34817     54987     3.919
+air_quality_and_health_imp:start_date   date-time      6250      6       138     45926     27669     45912     27673     45937     47504     27546     47507   199.609
+clatsop_operating_budget_x:category     text-only      7613      8      3054     74342     20798     74357     20800     74351     76749     23269     76752     6.810
+clatsop_operating_budget_x:functional_a text-only      6614     11      4797     87681     35404     87685     35405     87692     89458     37446     89461     7.380
+clatsop_operating_budget_x:fund         text-only     10720     40      8431     84378     41000     84380     41003     84388     85542     42398     85545     4.863
+clatsop_revenue_budget_rgg:functional_a text-only      5721     10      3448     74594     30969     74590     30971     74604     74143     30296     74146     8.787
+clatsop_revenue_budget_rgg:category     text-only      5721     24      4308     47145     22428     47153     22431     47156     47193     21119     47196     4.902
+clatsop_revenue_budget_rgg:fund         text-only      5721     47      5196     51054     27407     51056     27409     51064     50480     27695     50483     5.275
+controllercheckbook_l_a_pg:fund_group_n text-only     11567      2       143     64567      6263     64566      6264     64577     66344      8017     66347    43.797
+controllercheckbook_l_a_pg:payment_stat text-only     29966      2       161     43895       217     43900       218     43905     45981      1952     45984     1.348
+controllercheckbook_l_a_pg:procurement_ text-only     37694      2      2759     43363      3924     43374      3926     43374     44313      3601     44316     1.305
+controllercity_employee_pa:job_status   text-only     19053      2      3025     58458      3863     58460      3865     58469     60838      5695     60841     1.277
+controllercity_employee_pa:employment_t text-only     15000      3       500     59089      4174     59091      4175     59100     61512      6056     61515     8.348
+controllercity_employee_pa:gender       text-only     27573      3      4062     46370      5592     46373      5594     46380     48563      7358     48566     1.377
+controllercity_revenue_hfu:department_n text-only      6235     58      1225     80660     56182     80664     56188     80669     74201     37277     74204    30.430
+cos-city_of_seattle_wage_2:department   text-only      5768     41      6710     82404     43220     82420     43223     82415     84636     45971     84639     6.441
+cos-city_of_seattle_wage_2:job_title    text-only      5459    852     16572     91699     59774     91714     59778     91710     93477     63079     93480     3.607
+cos-city_of_seattle_wage_2:first_name   text-only     14714   4818     36780     58735     43970     58738     43973     58745     60002     45624     60005     1.195
+cos-road_weather_informati:stationname  text-only      2904      6       602     33020     11433     33029     11435     33030     32176     11943     32179    18.992
+cos-seattle_real_time_fire:type         text-only      9647    101      8953     82873     35966     82882     35970     82884     84681     38795     84684     4.017
+cthru_commonwealth_of_mass:position_typ text-only      7705      5      2638     76047     17160     76056     17162     76059     78461     19484     78465     6.505
+cthru_commonwealth_of_mass:department_d text-only      4157    147      9211     86015     57125     86014     57129     86026     85953     60115     85956     6.202
+dallasopenpolice_arrests_s:arcurrloc    text-only     50000      3      8772     39398      6456     39397      6458     39408     41249      8075     41253     0.736
+dallasopenpolice_arrests_s:sex          text-only     27656      3      4025     48860      5511     48864      5513     48871     51160      7302     51163     1.369
+dallasopenpolice_incidents:family       text-only     27849      2      2948     48471      1939     48469      1940     48481     50839      3619     50842     0.658
+dallasopenpolice_incidents:compethnicit text-only     11750      4      3992     70128     16795     70129     16796     70138     72651     18931     72654     4.207
+dallasopenpolice_unknown_s:ethnic       text-only     17644      4      6560     71144     21361     71150     21363     71155     73484     23593     73487     3.256
+dallasopenpolice_unknown_s:sex          text-only     25522      5      8487     61412     13046     61412     13048     61422     63535     15040     63538     1.537
+2008_general_absentee_elec:party        text-only     47763     17      1696     45338      7739     45340      7743     45349     45525      9459     45528     4.563
+2008_general_election_resu:countergroup text-only     19807      3      1319     68330     16607     68333     16608     68341     71078     18756     71081    12.591
+2008_primary_election_resu:countergroup text-only     19354      3      2059     67617     15789     67621     15791     67629     70336     17947     70339     7.668
+cos-road_weather_informati:stationlocat text-mixed     2904      6       652     45637     16094     45637     16096     45648     46564     16474     46567    24.684
+cos-seattle_real_time_fire:report_locat text-mixed     5061   3137     23635     80195     36646     80198     36648     80206     82615     38655     82618     1.550
+cos-seattle_real_time_fire:address      text-mixed     8088   4974     34139     91850     55888     91854     55893     91861     93479     58882     93482     1.637
+cthru_commonwealth_of_mass:bargaining_g text-mixed     7407    150     10760     94912     50902     94922     50906     94923     96578     54380     96581     4.731
+2008_primary_election_resu:precinct     text-mixed    13382    558      1689     86345     50025     86348     50024     86355     68642     24201     68645    14.329
+2009_primary_election_resu:race         text-mixed     2644      9       350     84358     37386     84368     37386     84368     81492     28781     81495    82.231
+2010_primary_election_resu:precinct     text-mixed    13124   1633      4064     86222     54656     86230     54659     86234     71644     31269     71647     7.694
+2010_special_february_elec:race         text-mixed     3114      5       204     78949     32408     78940     32410     78959     78841     29474     78845   144.480
+2010_special_february_elec:precinct     text-mixed    13542   1057      3369     88662     55014     88669     55019     88672     74753     37970     74756    11.270
+2011_general_election_resu:race         text-mixed     2050     84      1586     85067     50135     85087     50137     85077     84751     49097     84754    30.956
+2011_general_election_resu:precinct     text-mixed    13180    129      1097     79975     37440     79984     37442     79985     64939     13386     64942    12.202
+2011_primary_election_resu:race         text-mixed     2479     15       841     85138     40782     85132     40784     85149     86319     41788     86322    48.492
+2011_primary_election_resu:precinct     text-mixed    13023    706      2723     84575     47733     84584     47735     84586     68793     23455     68796     8.614
+2012_general_election_resu:precinct     text-mixed    13007   1859      3596     85881     54183     85889     54187     85892     71513     29343     71516     8.160
+2012_primary_election_resu:precinct     text-mixed    13107   1639      3407     86672     55635     86682     55639     86684     71352     29967     71356     8.796
+2015_primary_election_nigh:race         text-mixed     3727     13       670     78681     35280     78678     35284     78691     79755     35989     79758    52.657
+2015_primary_election_nigh:precinct     text-mixed    12775    296      1123     79128     36717     79139     36719     79139     67887     15873     67890    14.134
+2015_street_tree_census_tr:steward      text-mixed    31109      5      7702     55239      9719     55242      9720     55249     57165     11433     57168     1.262
+2015_street_tree_census_tr:nta          text-mixed    30000    185     34592     73612     35665     73614     35667     73622     75396     36853     75399     1.031
+2015_street_tree_census_tr:address      text-mixed     8087   6405     34211     86431     55473     86446     55476     86440     88127     57726     88130     1.621
+2016_general_election_nigh:precinct     text-mixed    13248     54       466     78974     29725     78989     29728     78984     63964     10564     63967    22.670
+2016_general_election_nigh:race         text-mixed     5315     54       937     86571     46864     86575     46868     86582     84651     46305     84654    49.418
+2016_general_election_resu:precinct     text-mixed    13248     54       512     78974     29725     78989     29728     78984     63996     10584     63999    20.672
+2016_general_election_resu:race         text-mixed     5316     54       993     86564     46861     86568     46864     86575     84667     46325     84671    46.652
+2018_central_park_squirrel:combination_ text-mixed     3023     22      2210     17343      3574     17345      3576     17353     17954      4467     17957     1.617
+2018_central_park_squirrel:above_ground text-mixed     3023     42      1480      5655      1050      5657      1051      5666      5889      1437      5892     0.709
+2020_general_election_mail:congressiona text-mixed     5469     19      5283     75205     19711     75212     19713     75216     77765     22081     77768     3.731
+2020_general_election_mail:senate       text-mixed     6055     51      7377     74330     20418     74331     20420     74341     76839     22748     76842     2.768
+2020_primary_election_mail:congressiona text-mixed     5427     18      4545     75354     18658     75366     18661     75365     77912     21032     77915     4.105
+active_code_official_certi:training_id  id-highcard    6446   6435     14142     29102     17803     29105     17805     29113     28970     17340     28973     1.226
+active_code_official_certi:certificatio id-highcard    6446   6446     10526     28353     24069     28356     24072     28365     27781     20187     27784     1.918
+active_notaries_j2pk-zk6z:commsn_nbr    id-highcard   18666  18656      9570     62219     47437     62224     47440     62229     58604     34318     58607     3.586
+active_real_estate_salespe:license_numb id-highcard   12629  12629     37769     65104     55564     65109     55569     65115     65241     52900     65244     1.401
+active_sales_tax_permit_ho:taxpayer_nam id-highcard    6719   6125     54300     83906     69950     83904     69956     83916     85681     71990     85684     1.288
+active_sales_tax_permit_ho:outlet_name  id-highcard    6869   6777     57079     85835     72257     85835     72264     85846     87504     74468     87507     1.266
+active_trademark_registrat:registration id-highcard    3537   3537      2627      8929      8210      8931      8212      8939      8365      6511      8368     2.478
+adjudicated_property_a4h4-:geolocation  id-highcard    5657   5623     38734     74857     45129     74860     45132     74868     76988     46766     76992     1.165
+agriculture_and_timber_exe:taxpayer_nam id-highcard    6552   6551     52564     84194     68760     84202     68767     84204     85855     70498     85858     1.308
+agriculture_and_timber_exe:exemption_nu id-highcard   12500  12500     35730     63999     57856     64001     57858     64010     64082     53503     64085     1.497
+air_quality_and_health_imp:unique_id    id-highcard   19827  19827     10718     59320     56672     59322     56674     59330     53481     37626     53485     3.511
+american_rescue_plan_arp_r:provider_nam id-highcard    5025   4992     41194     81832     68141     81843     68146     81843     82603     66858     82606     1.623
+arrest_from_2010_to_2019_y:rpt_id       id-highcard   16057  16057     32646     61625     58113     61627     58115     61635     60148     50543     60151     1.548
+arrests_dpt3-jri9:cb_no                 id-highcard   16666  16666     10355     61808     46410     61809     46412     61818     58990     34441     58993     3.326
+assessment_parcels_d4mq-wa:full_address id-highcard    8255   7820     14726     88220     59834     88227     59837     88230     84010     47651     84013     3.236
+assessment_parcels_d4mq-wa:roll_number  id-highcard   12500  12500      6985     49751     44411     49754     44413     49762     48314     37223     48317     5.329
+assessment_parcels_d4mq-wa:gisid        id-highcard   22586  21012     26403     63363     58468     63366     58470     63375     59152     45287     59155     1.715
+baton_rouge_police_crime_i:charge_id    id-highcard   18750  18192     38346     63872     58632     63873     58634     63883     63868     54519     63871     1.422
+building_permits_c2es-76ed:locationaddr id-highcard    2381   2363     24997     87010     59511     87020     59514     87022     84534     55099     84537     2.204
+building_permits_c2es-76ed:point        id-highcard    3256   3150     45432     78186     49621     78196     49624     78196     80391     51684     80395     1.092
+building_permits_c2es-76ed:originaladdr id-highcard    7936   7735     41158     86855     61301     86863     61305     86865     88560     63743     88563     1.489
+building_permits_c2es-76ed:permitnum    id-highcard   11538  11538     32486     66809     39569     66810     39571     66819     69191     41345     69194     1.218
+building_permits_ydr8-5enu:permit_      id-highcard   14244  14244     35092     62989     50523     62991     50525     62998     63130     47951     63133     1.366
+building_permits_ydr8-5enu:id           id-highcard   17870  17870     46890     66065     56674     66067     56677     66076     65808     54075     65811     1.153
+building_violations_22u3-x:id           id-highcard   18750  18750     29708     62495     51225     62493     51227     62505     61461     43762     61464     1.473
+business_entities_in_color:entityname   id-highcard    3059   3054     33571    100240     57888    100254     57893    100250     98456     58189     98459     1.724
+controllercheckbook_l_a_pg:settlement_j blank-heavy   38734      2       283      2972       536      2973       537      2983      2063      1176      2066     1.894
+dallasopenpolice_arrests_s:transport3   blank-heavy   50000      3       101        62        93        63        92        73       593       594       595     0.614
+dallasopenpolice_arrests_s:drug         blank-heavy   50000      3       581       920       365       919       366       930      1388       960      1390     0.628
+dallasopenpolice_incidents:hate         blank-heavy   28785      3       151       118       101       120       102       128       423       424       425     0.669
+dallasopenpolice_unknown_s:glasses      blank-heavy   50000      3      1578      2175       998      2178       998      2185      2709      1674      2712     0.632
+dallasopenpolice_unknown_s:peculiaritie blank-heavy   50000      3       149       175       235       174       235       184       648       645       650     1.168
+dallasopenrestaurant_and_f:violation24_ blank-heavy   11225      2       101       124       204       124       204       135       204       203       206     1.228
+dallasopenrestaurant_and_f:violation24_ blank-heavy   11225      2        59        32        45        32        45        44       157       159       159     0.542
+dallasopenrestaurant_and_f:violation24_ blank-heavy   11225      2       260       479       608       480       609       490       372       423       374     1.431
+dallasopenrestaurant_and_f:violation24_ blank-heavy   11225      2        88        95       160        95       160       104       190       189       192     1.080
+2018_central_park_squirrel:color_notes  blank-heavy    3023    136      1762      5740      4011      5742      4013      5751      5679      4225      5682     2.276
+2018_central_park_squirrel:other_intera blank-heavy    3023    198      2652      4376      3822      4378      3824      4386      4343      3796      4345     1.431
+311_service_requests_from_:facility_typ blank-heavy   34056      3      2064      4782      1511      4782      1511      4793      5057      2158      5060     0.732
+311_service_requests_from_:taxi_company blank-heavy   34056      5       213       447       239       448       240       458       704       664       706     1.122
+311_service_requests_from_:vehicle_type blank-heavy   34056      7      2656      6039      2096      6042      2097      6050      6339      2862      6342     0.789
+311_service_requests_from_:road_ramp    blank-heavy   34056     20       577      1310      1016      1306      1017      1321      1332      1134      1334     1.761
+311_service_requests_v6vf-:created_depa blank-heavy   18023     12      5956     79324     22155     79320     22159     79334     79376     22910     79379     3.720
+311_service_requests_v6vf-:parent_sr_nu blank-heavy   50000   1873      9391     23854     10098     23857     10100     23865     23700     10790     23703     1.075
+500_cities_local_for_bette:data_value_f blank-heavy   50000      4      2432      1887      1889      1887      1891      1898      2374      2404      2377     0.776
+500_cities_local_for_bette:data_value_f blank-heavy   47008      4      3078     71679     24611     71664     24613     71689     69929     26458     69932     7.996
+active_appearance_enhancem:business_add blank-heavy   32145   1502     14221     27963     16264     27966     16267     27973     28325     17186     28328     1.144
+active_appearance_enhancem:related_busi blank-heavy   32145   1886     15666     38791     23704     38794     23706     38802     34658     23942     34661     1.513
+active_businesses_all_tckn:suffix       blank-heavy   50000      8       745       847       518       848       519       858      1306      1108      1308     0.695
+active_businesses_all_tckn:not_of_recor blank-heavy   50000     23       510       869       884       867       885       880      1096      1053      1098     1.700
+active_businesses_all_tckn:entity_of_re blank-heavy   50000    301      6319     15992     10640     15995     10642     16003     16260     11505     16263     1.684
+active_businesses_all_tckn:entity_of_re blank-heavy   50000    309      8587     51591     27366     51596     27371     51601     51413     29279     51416     3.187
+active_corporations_beginn:registered_a blank-heavy   50000      2      4480     29221      3295     29224      3297     29232     30068      4478     30071     0.735
+active_corporations_beginn:location_sta blank-heavy   50000     16      2577      3449      1858      3452      1860      3459      3942      2430      3945     0.721
+active_corporations_beginn:chairman_sta blank-heavy   50000     23      3249      4570      2462      4573      2465      4581      5075      3052      5078     0.758
+
+200 columns, all round-trip verified, 647s
+
+BY KIND
+  group          cols   rawKB         xz    rANS-o0    rANS-o1    tANS-o0    tANS-o1  rANSx4-o0    rABS-o0    rABS-o1    uABS-o0  bestB/xz
+  ----------------------------------------------------------------------------------------------------------------------------------------
+  date-time        29    4105    206,517  1,486,867    972,562  1,486,929    972,646  1,487,168  1,541,357    970,993  1,541,445      4.55
+  text-only        29    3964    162,433  1,847,087    632,112  1,847,217    632,179  1,847,392  1,884,560    659,912  1,884,649      3.76
+  text-mixed       29    3941    194,213  2,196,499  1,064,367  2,196,675  1,064,440  2,196,806  2,064,242    850,539  2,064,332      4.26
+  num-mixed        29    3701    824,791  1,437,394  1,022,553  1,437,426  1,022,611  1,437,705  1,473,356  1,034,382  1,473,445      1.22
+  id-highcard      26    3505    783,748  1,726,938  1,344,028  1,727,042  1,344,112  1,727,212  1,711,168  1,238,477  1,711,249      1.56
+  int-only         29    3251    114,444  1,021,509    567,465  1,021,511    567,539  1,021,816    745,829    251,514    745,922      2.17
+  blank-heavy      29    1537     90,486    379,883    161,784    379,899    161,825    380,190    379,723    177,881    379,797      1.78
+
+ALL
+  group          cols   rawKB         xz    rANS-o0    rANS-o1    tANS-o0    tANS-o1  rANSx4-o0    rABS-o0    rABS-o1    uABS-o0  bestB/xz
+  ----------------------------------------------------------------------------------------------------------------------------------------
+  all             200   24006  2,376,632 10,096,177  5,764,871 10,096,699  5,765,352 10,098,289  9,800,235  5,183,698  9,800,839      2.11
+
+EACH ANS TYPE AGAINST xz -- whole corpus
+  coder         variant   model                       total   vs xz     wins  med/floor
+  -----------------------------------------------------------------------------------
+  B7 rABS-o1    rABS      order-1 adaptive        5,183,698    2.18     7/200       0.57
+  B2 rANS-o1    rANS      order-1 static          5,764,871    2.43    20/200       0.61
+  B4 tANS-o1    tANS      order-1 static          5,765,352    2.43    20/200       0.61
+  B6 rABS-o0    rABS      order-0 adaptive        9,800,235    4.12     1/200       1.02
+  B8 uABS-o0    uABS      order-0 adaptive        9,800,839    4.12     1/200       1.02
+  B1 rANS-o0    rANS      order-0 static         10,096,177    4.25     4/200       1.00
+  B3 tANS-o0    tANS      order-0 static         10,096,699    4.25     4/200       1.00
+  B5 rANSx4-o0  rANS x4   order-0 static         10,098,289    4.25     4/200       1.00
+  A xz -9e      --        LZ77 + range coder      2,376,632    1.00        --       0.14
+
+WHAT EACH AXIS IS WORTH (aggregate bytes, same 200 columns)
+  B3 tANS-o0     vs B1 rANS-o0      1.000   tANS-o0 wins  34/200   table vs range, same model
+  B4 tANS-o1     vs B2 rANS-o1      1.000   tANS-o1 wins   4/200   table vs range, same model
+  B5 rANSx4-o0   vs B1 rANS-o0      1.000   rANSx4-o0 wins   0/200   interleaving: speed, not size
+  B8 uABS-o0     vs B6 rABS-o0      1.000   uABS-o0 wins   0/200   uniform vs range, binary
+  B6 rABS-o0     vs B1 rANS-o0      0.971   rABS-o0 wins  71/200   bit tree adaptive vs byte static
+  B7 rABS-o1     vs B2 rANS-o1      0.899   rABS-o1 wins  91/200   bit tree adaptive vs byte static, order 1
+  B2 rANS-o1     vs B1 rANS-o0      0.571   rANS-o1 wins 192/200   order 1 vs order 0, static
+  B7 rABS-o1     vs B6 rABS-o0      0.529   rABS-o1 wins 195/200   order 1 vs order 0, adaptive
+
+SMALL COLUMNS ONLY (raw < 20 KB) -- where the static table hurts
+  B1 rANS-o0        23,981  vs xz   2.88  wins 1/8
+  B2 rANS-o1        15,147  vs xz   1.82  wins 2/8
+  B3 tANS-o0        23,990  vs xz   2.88  wins 1/8
+  B4 tANS-o1        15,155  vs xz   1.82  wins 2/8
+  B5 rANSx4-o0      24,067  vs xz   2.89  wins 1/8
+  B6 rABS-o0        24,254  vs xz   2.91  wins 0/8
+  B7 rABS-o1        15,402  vs xz   1.85  wins 1/8
+  B8 uABS-o0        24,273  vs xz   2.91  wins 0/8
+  A xz -9e           8,329   (8 columns)
+
+BEST ANS OF ANY TYPE BEATS xz ON
+  2018_yellow_taxi_trip_t29m:improvement_ num-mixed    0.481  by B2 rANS-o1
+  2018_yellow_taxi_trip_t29m:mta_tax      num-mixed    0.526  by B2 rANS-o1
+  dallasopenrestaurant_and_f:violation24_ blank-heavy  0.542  by B1 rANS-o0
+  dallasopenpolice_arrests_s:transport3   blank-heavy  0.614  by B1 rANS-o0
+  dallasopenpolice_arrests_s:drug         blank-heavy  0.628  by B2 rANS-o1
+  dallasopenpolice_unknown_s:glasses      blank-heavy  0.632  by B2 rANS-o1
+  dallasopenpolice_incidents:family       text-only    0.658  by B2 rANS-o1
+  dallasopenpolice_incidents:hate         blank-heavy  0.669  by B2 rANS-o1
+  2018_yellow_taxi_trip_t29m:extra        num-mixed    0.693  by B2 rANS-o1
+  active_businesses_all_tckn:suffix       blank-heavy  0.695  by B2 rANS-o1
+  2018_central_park_squirrel:above_ground text-mixed   0.709  by B2 rANS-o1
+  active_corporations_beginn:location_sta blank-heavy  0.721  by B2 rANS-o1
+  311_service_requests_from_:facility_typ blank-heavy  0.732  by B2 rANS-o1
+  active_corporations_beginn:registered_a blank-heavy  0.735  by B2 rANS-o1
+  dallasopenpolice_arrests_s:arcurrloc    text-only    0.736  by B2 rANS-o1
+  active_corporations_beginn:chairman_sta blank-heavy  0.758  by B2 rANS-o1
+  2018_yellow_taxi_trip_t29m:tolls_amount num-mixed    0.763  by B2 rANS-o1
+  500_cities_local_for_bette:data_value_f blank-heavy  0.776  by B1 rANS-o0
+  311_service_requests_from_:vehicle_type blank-heavy  0.789  by B2 rANS-o1
+  dallasopenpolice_incidents:watch        int-only     0.847  by B2 rANS-o1
+  (20 of 200)

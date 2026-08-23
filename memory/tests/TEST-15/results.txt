@@ -1,0 +1,14 @@
+selftest OK -- WKT detected, exceptions exact, 30 random tables rebuilt exactly
+
+# TEST-15  cross-column redundancy, 40,000 rows max
+# every stripped table rebuilt and compared before any size counts
+
+table                    cols found     xz full    xz strip    recipe  xz gain     pp full    pp strip  pp gain
+---------------------------------------------------------------------------------------------------------------
+chicago_crimes             22     1   1,220,318   1,107,319       278    9.3%     940,201     738,281   21.5%   [21]
+nyc_collisions             29     1     909,115     809,209     3,978   11.0%     674,333     560,808   16.8%   [6]
+seattle_fire911             7     1     525,052     474,162       221    9.7%     350,554     286,848   18.2%   [5]
+---------------------------------------------------------------------------------------------------------------
+TOTAL (tables with a hit)          3   2,654,485   2,390,690              9.9%   1,965,088   1,585,937   19.3%
+
+3 of 13 tables carry a derivable column

@@ -1,0 +1,19 @@
+selftest OK -- 2 FDs found, 1 dropped, rebuild exact
+
+# TEST-17  functional dependencies, 40,000 rows max
+# does dropping a determined column beat what reordering already does?
+
+table                    cols  FDs drop     pp full    pp strip      maps  pp gain
+----------------------------------------------------------------------------------
+austin_incidents           19    4    2     572,320     522,486     4,070    8.7%
+cdc_nndss                  16   11    4      24,575      25,745     1,487   -4.8%
+chicago_crimes             22    4    4     940,201     936,409     5,781    0.4%
+chicago_permits           116  177    9   3,462,565   3,469,838     4,299   -0.2%
+noaa_gsoy_ord             102  180    8       6,545       6,717       231   -2.6%
+noaa_gsoy_sea             106  198   11       6,521       6,740       268   -3.4%
+nyc_311                    44    4    2   1,356,445   1,358,528       384   -0.2%
+usgs_quakes                22    1    1     472,280     471,909        73    0.1%
+usgs_quakes_deep           22    4    2     466,369     465,603       131    0.2%
+wa_ev_population           16    9    5     327,609     335,541    10,938   -2.4%
+----------------------------------------------------------------------------------
+TOTAL                                     7,635,430   7,599,516              0.5%

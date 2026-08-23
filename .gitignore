@@ -38,3 +38,17 @@ work/benchmarks/*-fetch.log
 work/benchmarks/*-gen.log
 work/benchmarks/cross-column.log
 work/benchmarks/overnight.log
+
+# The demo tables shipped with the app docs -- re-fetchable, and IN/ is data,
+# which does not go in git. Named explicitly because they do not live under one
+# of the corpus directories above.
+IN/polypress-demo.csv
+IN/polypress-demo-hard.csv
+
+# Written by the website session and kept in sync from the private website repo
+# (github.com/potJim80/PolyPressWebsite). It names the host and its IP, and this
+# repo is public, so the copy here stays local.
+HANDOFF.md
+
+# The Handrail brief -- a different project's document, dropped here by hand.
+PROJECT-BRIEF.md

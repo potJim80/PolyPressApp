@@ -1,0 +1,154 @@
+
+# TEST-21  austin_incidents: 19 columns, 40,000 rows
+# identity order: 508,490 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by occ_date_time                          457,328        0.899
+  sort by rep_date_time                          469,805        0.924
+  sort by ucr_code                               477,099        0.938
+  sort by crime_type                             481,969        0.948
+  sort by occ_date                               486,266        0.956
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort rep_date + occ_date_time               451,441        0.888           0.987
+  lexsort ucr_code + occ_date_time               461,712        0.908           1.010
+  lexsort ucr_code + rep_date_time               465,011        0.914           1.017
+  lexsort crime_type + occ_date_time             466,457        0.917           1.020
+  lexsort rep_date + rep_date_time               469,249        0.923           1.026
+  lexsort crime_type + rep_date_time             471,019        0.926           1.030
+
+best single 457,328  best pair 451,441  pair/single 0.9871  -> PAIRS WIN
+
+# TEST-21  chicago_crimes: 22 columns, 40,000 rows
+# identity order: 772,612 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by block                                  637,224        0.825
+  sort by latitude                               637,766        0.825
+  sort by location                               637,766        0.825
+  sort by y_coordinate                           644,547        0.834
+  sort by beat                                   662,452        0.857
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort beat + longitude                       581,801        0.753           0.913
+  lexsort beat + x_coordinate                    582,260        0.754           0.914
+  lexsort beat + latitude                        582,559        0.754           0.914
+  lexsort beat + location                        582,559        0.754           0.914
+  lexsort beat + y_coordinate                    583,652        0.755           0.916
+  lexsort beat + block                           598,021        0.774           0.938
+
+best single 637,224  best pair 581,801  pair/single 0.9130  -> PAIRS WIN
+
+# TEST-21  nyc_collisions: 29 columns, 40,000 rows
+# identity order: 599,236 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by location                               455,969        0.761
+  sort by latitude                               460,346        0.768
+  sort by longitude                              499,775        0.834
+  sort by on_street_name                         525,964        0.878
+  sort by zip_code                               534,814        0.892
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort zip_code + location                    445,436        0.743           0.977
+  lexsort zip_code + latitude                    445,725        0.744           0.978
+  lexsort on_street_name + latitude              461,559        0.770           1.012
+  lexsort on_street_name + location              461,778        0.771           1.013
+  lexsort zip_code + longitude                   470,162        0.785           1.031
+  lexsort off_street_name + latitude             471,245        0.786           1.034
+
+best single 455,969  best pair 445,436  pair/single 0.9769  -> PAIRS WIN
+
+# TEST-21  seattle_fire911: 7 columns, 40,000 rows
+# identity order: 331,853 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by report_location                        253,605        0.764
+  sort by longitude                              258,208        0.778
+  sort by latitude                               274,689        0.828
+  sort by address                                279,067        0.841
+  sort by datetime                               334,982        1.009
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort report_location + address              251,544        0.758           0.992
+  lexsort longitude + address                    252,431        0.761           0.995
+  lexsort report_location + datetime             253,546        0.764           1.000
+  lexsort longitude + datetime                   258,276        0.778           1.018
+  lexsort latitude + address                     270,102        0.814           1.065
+  lexsort latitude + datetime                    275,912        0.831           1.088
+
+best single 253,605  best pair 251,544  pair/single 0.9919  -> PAIRS WIN
+
+# TEST-21  usgs_quakes: 22 columns, 16,190 rows
+# identity order: 319,982 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by updated                                315,024        0.985
+  sort by longitude                              320,453        1.001
+  sort by magError                               321,445        1.005
+  sort by depth                                  325,407        1.017
+  sort by magNst                                 325,857        1.018
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort magError + depthError                  317,483        0.992           1.008
+  lexsort magNst + gap                           321,275        1.004           1.020
+  lexsort magNst + depthError                    321,777        1.006           1.021
+  lexsort magError + latitude                    322,620        1.008           1.024
+  lexsort magNst + horizontalError               322,769        1.009           1.025
+  lexsort magNst + longitude                     322,842        1.009           1.025
+
+best single 315,024  best pair 317,483  pair/single 1.0078  -> no gain from pairs
+
+# TEST-21  wa_ev_population: 16 columns, 40,000 rows
+# identity order: 437,542 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by _2020_census_tract                     249,488        0.570
+  sort by geocoded_column                        266,535        0.609
+  sort by zip_code                               266,606        0.609
+  sort by vin_1_10                               296,443        0.678
+  sort by city                                   299,739        0.685
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort zip_code + vin_1_10                    201,073        0.460           0.806
+  lexsort geocoded_column + vin_1_10             201,934        0.462           0.809
+  lexsort city + vin_1_10                        212,650        0.486           0.852
+  lexsort _2020_census_tra + vin_1_10            218,111        0.498           0.874
+  lexsort zip_code + model                       220,121        0.503           0.882
+  lexsort geocoded_column + model                220,926        0.505           0.886
+
+best single 249,488  best pair 201,073  pair/single 0.8059  -> PAIRS WIN
+
+# TEST-21  nyc_311: 44 columns, 40,000 rows
+# identity order: 1,242,253 bytes
+
+best single keys                                   bytes  vs identity
+---------------------------------------------------------------------
+  sort by bbl                                    836,962        0.674
+  sort by latitude                               917,213        0.738
+  sort by y_coordinate_state_plane               920,699        0.741
+  sort by cross_street_1                         933,988        0.752
+  sort by longitude                              934,913        0.753
+
+best composite keys                                bytes  vs identity  vs best single
+-------------------------------------------------------------------------------------
+  lexsort cross_street_1 + bbl                   815,771        0.657           0.975
+  lexsort cross_street_1 + latitude              821,382        0.661           0.981
+  lexsort cross_street_1 + y_coordinate_sta      821,603        0.661           0.982
+  lexsort cross_street_1 + x_coordinate_sta      825,313        0.664           0.986
+  lexsort cross_street_1 + longitude             826,002        0.665           0.987
+  lexsort cross_street_1 + location              826,002        0.665           0.987
+
+best single 836,962  best pair 815,771  pair/single 0.9747  -> PAIRS WIN

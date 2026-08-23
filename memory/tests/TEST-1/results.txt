@@ -1,0 +1,154 @@
+dataset / column                                   n      k      xz A     B raw     B gap     B min    B best    B/A        nH
+------------------------------------------------------------------------------------------------------------------------------
+syn: constant (k=1)                           100000      1       169    26,543       123        25        25   0.15         0
+syn: 2 values, random                         100000      2    14,437    44,812    29,201    12,527    12,527   0.87    12,500
+syn: 10 codes, uniform                        100000     10    47,294    79,456    60,354    42,728    42,728   0.90    41,524
+syn: 10 codes, zipf-ish                       100000     10    31,670    62,859    43,737    27,680    27,680   0.87    26,398
+syn: 1000 codes, uniform                      100000   1000   139,289   204,837   146,635   125,489   125,489   0.90   124,484
+syn: distinct 9-digit ids, shuffled           100000 100000   430,319   429,914   434,058   412,278   412,278   0.96   207,621
+syn: distinct 9-digit ids, SORTED             100000 100000   233,682   226,446   241,279   241,187   226,446   0.97   207,621
+syn: random walk, 2dp                         100000  13106   115,192   174,628   161,582   111,354   111,354   0.97   165,426
+syn: 200 codes, already grouped               100000    200       518    26,734       805       518       518   1.00    95,549
+syn: 7 codes, perfectly cyclic                100000      7       162    67,875       180       145       145   0.90    35,092
+
+# real columns from 12 files
+dataset / column                                   n      k      xz A     B raw     B gap     B min    B best    B/A        nH
+------------------------------------------------------------------------------------------------------------------------------
+controllerdata_city_empl:job_status            50000      2     7,334    21,264    11,125     5,250     5,250   0.72     4,830
+controllerdata_city_empl:pay_year              50000      9       409    14,361       460       296       296   0.72    12,644
+controllerdata_city_empl:fms_department_t      50000     19       648    14,469       605       484       484   0.75       119
+controllerdata_city_empl:job_title             50000    398    53,308    78,021    57,128    33,003    33,003   0.62    42,684
+controllerdata_city_empl:benefit_pay           50000   4596    68,101    74,143    62,399    60,418    60,418   0.89    45,781
+controllerdata_city_empl:regular_pay           50000  37306   169,475   189,709   193,293   184,624   184,624   1.09    89,532
+dallasopendata_police_in:reviewbadgenum        28785      1        72     8,872        99        20        20   0.28         0
+dallasopendata_police_in:gang                  28785      6     3,498    12,558     5,420     3,289     3,289   0.94     2,710
+dallasopendata_police_in:nibrs_type            28785     15    12,132    18,926    12,747     8,632     8,632   0.71     7,968
+dallasopendata_police_in:nibrs_code            28785     47    18,327    25,763    18,716    13,819    13,819   0.75    13,266
+dallasopendata_police_in:offensecode           28785    605    43,043    43,861    32,929    30,346    30,346   0.71    24,060
+dallasopendata_police_in:date1                 28785   3374    52,310    56,993    45,442    38,687    38,687   0.74    37,129
+data_2020_general_electi:mailapplicationt      50000     17    15,633    28,226    18,869    12,084    12,084   0.77     9,995
+data_2020_general_electi:congressional         50000     19    40,093    46,343    35,212    26,564    26,564   0.66    25,433
+data_2020_general_electi:ballotreturnedda      50000     32    35,919    43,814    32,567    24,125    24,125   0.67    23,017
+data_2020_general_electi:party                 50000     39    12,603    27,749    17,840    11,540    11,540   0.92     9,317
+data_2020_general_electi:senate                50000     51    53,309    61,335    44,794    35,666    35,666   0.67    34,560
+data_2020_general_electi:countyname            50000     67    49,739    53,906    39,875    30,573    30,573   0.61    29,088
+data_311_service_request:park_facility_na      34056      2       302    10,294       294       149       149   0.49        58
+data_311_service_request:park_borough          34056      6    14,097    21,372    14,984    10,534    10,534   0.75     9,113
+data_311_service_request:city                  34056     50    24,663    30,103    21,505    15,722    15,722   0.64    14,901
+data_311_service_request:complaint_type        34056    148    39,994    39,212    29,414    23,343    23,343   0.58    22,033
+data_311_service_request:intersection_str      34056   3529    65,809    67,462    59,035    53,920    53,920   0.82    36,837
+data_311_service_request:resolution_actio      34056  17124    74,272    69,133    66,548    59,871    59,871   0.81    46,484
+data_active_businesses_a:associated_name_      50000      4    14,186    27,960    16,105     9,012     9,012   0.64    10,872
+data_active_businesses_a:not_of_record_en      50000     23       510    14,581       649       562       562   1.10        47
+data_active_businesses_a:entity_of_record      50000    301     6,319    21,441     8,012     6,406     6,406   1.01     3,712
+data_active_businesses_a:city                  50000   1108    46,919    58,871    41,305    38,470    38,470   0.82    41,921
+data_active_businesses_a:first_name            50000   2343    33,737    51,890    38,396    33,979    33,979   1.01    22,373
+data_active_businesses_a:business_name         50000  17248   180,879   199,095   187,719   175,673   175,673   0.97    87,906
+data_active_trademark_re:state                  3537     39       969     2,469     1,189       851       851   0.88       569
+data_active_trademark_re:city                   3537    348     5,331     6,182     5,055     4,895     4,895   0.92     2,344
+data_active_trademark_re:address2               3537    532     5,187     7,341     6,038     5,754     5,754   1.11     1,534
+data_active_trademark_re:zip                    3537    566     5,093     6,270     5,159     4,758     4,758   0.93     3,265
+data_active_trademark_re:registration_dat       3537   1832     3,260     5,530     6,010     4,263     4,263   1.31     4,606
+data_active_trademark_re:address1               3537   2116    19,156    22,430    21,603    21,038    21,038   1.10     4,632
+data_adult_jail_booking_:current_facility      40631      4     5,265    16,849     6,386     3,856     3,856   0.73     5,599
+data_adult_jail_booking_:release_reason        40631     18    15,197    23,921    14,124     9,808     9,808   0.65    12,717
+data_adult_jail_booking_:rcw_ordinance_nu      40631    407    53,360    58,080    43,084    38,008    38,008   0.71    34,101
+data_adult_jail_booking_:middle_name           40631   4095    46,535    62,593    49,495    44,317    44,317   0.95    45,103
+data_adult_jail_booking_:last_name             40631   9102    73,537    93,124    81,971    72,907    72,907   0.99    60,739
+data_adult_jail_booking_:court_case_cause      40631  17674    81,413    82,286    80,153    76,649    76,649   0.94    56,798
+data_building_permits_c2:permittypemapped      42028      2     1,504    13,533     1,747       968       968   0.64     1,224
+data_building_permits_c2:workclass             42028      8    10,496    21,539    12,310     7,875     7,875   0.75     7,925
+data_building_permits_c2:permitclass           42028    239    38,779    39,161    28,504    22,076    22,076   0.57    22,249
+data_building_permits_c2:contractorname        42028   3947    74,166    79,860    70,097    65,907    65,907   0.89    34,043
+data_building_permits_c2:issueddate            42028   7177    94,394    84,438    78,768    66,006    66,006   0.70    63,679
+data_building_permits_c2:originaladdress       42028  39455   186,673   251,143   257,680   248,883   248,883   1.33    79,968
+data_building_permits_yd:contact_15_type       30334      1        73     9,259       100        20        20   0.27         0
+data_building_permits_yd:contact_11_type       30334      6       271     9,460       385       263       263   0.97        68
+data_building_permits_yd:contact_6_type        30334     26    10,585    17,756    10,555     7,546     7,546   0.71     6,618
+data_building_permits_yd:contact_10_city       30334    110     1,598    11,016     2,115     1,612     1,612   1.01       642
+data_building_permits_yd:contact_4_city        30334    564    23,817    30,148    22,241    19,295    19,295   0.81    14,222
+data_building_permits_yd:application_star      30334   4985    45,722    53,433    47,302    38,560    38,560   0.84    41,596
+data_citywide_payroll_da:payroll_number        50000      1       102    14,147       109        22        22   0.22         0
+data_citywide_payroll_da:pay_basis             50000      3     1,300    15,210     1,367       788       788   0.61       579
+data_citywide_payroll_da:work_location_bo      50000      5    18,712    29,601    20,578    14,135    14,135   0.76    11,870
+data_citywide_payroll_da:mid_init              50000     27    28,135    45,232    32,985    24,336    24,336   0.86    23,401
+data_citywide_payroll_da:agency_start_dat      50000   1195    70,056    80,256    61,446    53,136    53,136   0.76    52,214
+data_citywide_payroll_da:ot_hours              50000   4076    56,119    73,617    60,769    52,456    52,456   0.93    42,975
+data_civil_service_list_:list_div_code         50000      1        80    14,145       107        20        20   0.25         0
+data_civil_service_list_:sibling_lgy_cred      50000      2       298    14,406       454       235       235   0.79        98
+data_civil_service_list_:mi                    50000     30    23,349    40,776    28,885    20,425    20,425   0.87    19,262
+data_civil_service_list_:list_agency_desc      50000     53    12,594    23,921    11,202     8,002     8,002   0.64     5,725
+data_civil_service_list_:established_date      50000    194    67,516    71,337    51,221    41,584    41,584   0.62    39,626
+data_civil_service_list_:list_title_desc       50000    416    77,584    72,330    54,358    48,746    48,746   0.63    39,319
+
+SYNTHETIC  tables   10  xz    1,012,732  B      959,190  B/A  0.95   B wins 9/10
+REAL       tables   66  xz    2,295,866  B    1,977,061  B/A  0.86   B wins 57/66
+ALL        tables   76  xz    3,308,598  B    2,936,251  B/A  0.89   B wins 66/76
+
+--- where B wins ---
+  syn: constant (k=1)                          B/A 0.148  k/n 0.0000
+  data_citywide_payroll_da:payroll_number      B/A 0.216  k/n 0.0000
+  data_civil_service_list_:list_div_code       B/A 0.250  k/n 0.0000
+  data_building_permits_yd:contact_15_type     B/A 0.274  k/n 0.0000
+  dallasopendata_police_in:reviewbadgenum      B/A 0.278  k/n 0.0000
+  data_311_service_request:park_facility_na    B/A 0.493  k/n 0.0001
+  data_building_permits_c2:permitclass         B/A 0.569  k/n 0.0057
+  data_311_service_request:complaint_type      B/A 0.584  k/n 0.0043
+  data_citywide_payroll_da:pay_basis           B/A 0.606  k/n 0.0001
+  data_2020_general_electi:countyname          B/A 0.615  k/n 0.0013
+  data_civil_service_list_:established_date    B/A 0.616  k/n 0.0039
+  controllerdata_city_empl:job_title           B/A 0.619  k/n 0.0080
+  data_civil_service_list_:list_title_desc     B/A 0.628  k/n 0.0083
+  data_active_businesses_a:associated_name_    B/A 0.635  k/n 0.0001
+  data_civil_service_list_:list_agency_desc    B/A 0.635  k/n 0.0011
+  data_311_service_request:city                B/A 0.637  k/n 0.0015
+  data_building_permits_c2:permittypemapped    B/A 0.644  k/n 0.0000
+  data_adult_jail_booking_:release_reason      B/A 0.645  k/n 0.0004
+  data_2020_general_electi:congressional       B/A 0.663  k/n 0.0004
+  data_2020_general_electi:senate              B/A 0.669  k/n 0.0010
+  data_2020_general_electi:ballotreturnedda    B/A 0.672  k/n 0.0006
+  data_building_permits_c2:issueddate          B/A 0.699  k/n 0.1708
+  dallasopendata_police_in:offensecode         B/A 0.705  k/n 0.0210
+  dallasopendata_police_in:nibrs_type          B/A 0.712  k/n 0.0005
+  data_adult_jail_booking_:rcw_ordinance_nu    B/A 0.712  k/n 0.0100
+  data_building_permits_yd:contact_6_type      B/A 0.713  k/n 0.0009
+  controllerdata_city_empl:job_status          B/A 0.716  k/n 0.0000
+  controllerdata_city_empl:pay_year            B/A 0.724  k/n 0.0002
+  data_adult_jail_booking_:current_facility    B/A 0.732  k/n 0.0001
+  dallasopendata_police_in:date1               B/A 0.740  k/n 0.1172
+  controllerdata_city_empl:fms_department_t    B/A 0.747  k/n 0.0004
+  data_311_service_request:park_borough        B/A 0.747  k/n 0.0002
+  data_building_permits_c2:workclass           B/A 0.750  k/n 0.0002
+  dallasopendata_police_in:nibrs_code          B/A 0.754  k/n 0.0016
+  data_citywide_payroll_da:work_location_bo    B/A 0.755  k/n 0.0001
+  data_citywide_payroll_da:agency_start_dat    B/A 0.758  k/n 0.0239
+  data_2020_general_electi:mailapplicationt    B/A 0.773  k/n 0.0003
+  data_civil_service_list_:sibling_lgy_cred    B/A 0.789  k/n 0.0000
+  data_311_service_request:resolution_actio    B/A 0.806  k/n 0.5028
+  data_building_permits_yd:contact_4_city      B/A 0.810  k/n 0.0186
+  data_311_service_request:intersection_str    B/A 0.819  k/n 0.1036
+  data_active_businesses_a:city                B/A 0.820  k/n 0.0222
+  data_building_permits_yd:application_star    B/A 0.843  k/n 0.1643
+  data_citywide_payroll_da:mid_init            B/A 0.865  k/n 0.0005
+  syn: 2 values, random                        B/A 0.868  k/n 0.0000
+  syn: 10 codes, zipf-ish                      B/A 0.874  k/n 0.0001
+  data_civil_service_list_:mi                  B/A 0.875  k/n 0.0006
+  data_active_trademark_re:state               B/A 0.878  k/n 0.0110
+  controllerdata_city_empl:benefit_pay         B/A 0.887  k/n 0.0919
+  data_building_permits_c2:contractorname      B/A 0.889  k/n 0.0939
+  syn: 7 codes, perfectly cyclic               B/A 0.895  k/n 0.0001
+  syn: 1000 codes, uniform                     B/A 0.901  k/n 0.0100
+  syn: 10 codes, uniform                       B/A 0.903  k/n 0.0001
+  data_2020_general_electi:party               B/A 0.916  k/n 0.0008
+  data_active_trademark_re:city                B/A 0.918  k/n 0.0984
+  data_active_trademark_re:zip                 B/A 0.934  k/n 0.1600
+  data_citywide_payroll_da:ot_hours            B/A 0.935  k/n 0.0815
+  dallasopendata_police_in:gang                B/A 0.940  k/n 0.0002
+  data_adult_jail_booking_:court_case_cause    B/A 0.941  k/n 0.4350
+  data_adult_jail_booking_:middle_name         B/A 0.952  k/n 0.1008
+  syn: distinct 9-digit ids, shuffled          B/A 0.958  k/n 1.0000
+  syn: random walk, 2dp                        B/A 0.967  k/n 0.1311
+  syn: distinct 9-digit ids, SORTED            B/A 0.969  k/n 1.0000
+  data_building_permits_yd:contact_11_type     B/A 0.970  k/n 0.0002
+  data_active_businesses_a:business_name       B/A 0.971  k/n 0.3450
+  data_adult_jail_booking_:last_name           B/A 0.991  k/n 0.2240

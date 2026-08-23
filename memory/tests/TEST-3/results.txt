@@ -1,0 +1,19 @@
+harvesting 10 columns
+
+0 columns
+# TEST-3  Huffman over VALUES vs plain xz, 0 real columns, capped 400,000 B
+# Every variant decoded and compared value by value before counting.
+# Sizes are whole containers: alphabet, code lengths and stream all charged.
+
+column                            kind              n     k        xz-9e     huff-val huff-val-raw    huff-byte     rANS-val      dict+xz  best/xz
+--------------------------------------------------------------------------------------------------------------------------------------------------
+
+TOTALS                                                                 0            0            0            0            0            0
+Traceback (most recent call last):
+  File "/Users/mahdiakbarin/Desktop/Compression/memory/tests/TEST-3/run_test3.py", line 160, in <module>
+    main()
+  File "/Users/mahdiakbarin/Desktop/Compression/memory/tests/TEST-3/run_test3.py", line 128, in main
+    "".join(f"{tot[v] / axz:>13.3f}" for v in VARIANTS))
+  File "/Users/mahdiakbarin/Desktop/Compression/memory/tests/TEST-3/run_test3.py", line 128, in <genexpr>
+    "".join(f"{tot[v] / axz:>13.3f}" for v in VARIANTS))
+ZeroDivisionError: division by zero

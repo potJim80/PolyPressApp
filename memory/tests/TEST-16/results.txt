@@ -1,0 +1,14 @@
+selftest OK -- key detected, exceptions exact, 30 random tables rebuilt exactly
+
+# TEST-16  concatenated keys + geometry, 40,000 rows max
+# every stripped table rebuilt and compared before any size counts
+
+table                      cols geo key     pp full      pp geo      pp key     pp both  best gain
+--------------------------------------------------------------------------------------------------
+chicago_crimes               22   1   1     940,201     738,281     738,274     738,552     21.5%
+nyc_collisions               29   1   1     674,333     560,808     561,486     565,464     16.8%
+seattle_fire911               7   1   1     350,554     286,848     286,841     287,062     18.2%
+--------------------------------------------------------------------------------------------------
+TOTAL (tables with a hit)                 1,965,088                           1,585,923     19.3%
+
+3 of 13 tables carry at least one derivable column

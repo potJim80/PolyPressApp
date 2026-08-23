@@ -1,0 +1,21 @@
+selftest OK -- 4 of 29 columns were template-shaped, all round-trip exact
+
+# TEST-19  structured text columns, 40,000 rows max
+# a column is moved out only if it beats itself, measured; then the whole table is measured again
+
+table                    cols moved     pp full    pp moved   streams    gain   gated
+-------------------------------------------------------------------------------------
+austin_incidents           19     2     572,320     578,419   120,584  -1.1%    0.0%
+chicago_crimes             22     3     940,201     966,900   220,984  -2.8%    0.0%
+chicago_permits           116     3   3,462,565   3,631,081   450,054  -4.9%    0.0%
+noaa_gsoy_ord             102    25       6,545       7,466     2,878 -14.1%    0.0%
+noaa_gsoy_sea             106    17       6,521       7,092     1,824  -8.8%    0.0%
+nyc_311                    44     3   1,356,445   1,517,524   406,210 -11.9%    0.0%
+nyc_collisions             29     1     674,333     667,929    48,536   0.9%    0.9%
+seattle_fire911             7     2     350,554     335,092    36,316   4.4%    4.4%
+usgs_quakes                22     1     472,280     454,928    49,535   3.7%    3.7%
+usgs_quakes_deep           22     1     466,369     448,541    53,214   3.8%    3.8%
+-------------------------------------------------------------------------------------
+TOTAL                                 8,308,133   8,614,972            -3.7%    0.7%
+
+ungated the transform LOSES 3.7%; gated on the whole table it cannot lose, and wins where it wins.
