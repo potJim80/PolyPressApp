@@ -1,0 +1,96 @@
+# Publish work/ to PyPI when a version tag is pushed.
+#
+#   git tag v0.2.1 && git push --tags
+#
+# No token lives anywhere. PyPI's trusted publishing hands this workflow a
+# short-lived OIDC credential, which is why `permissions: id-token: write` and
+# the `pypi` environment below are load-bearing -- the publisher registered on
+# PyPI names this exact repo, this exact filename, and that exact environment.
+# Rename any of the three and the upload is refused.
+#
+# A version number can never be reused on PyPI, so the guard job runs first:
+# it refuses to publish if the tag and pyproject.toml disagree, which is the
+# mistake that cannot be undone by editing.
+
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and test only; do not upload"
+        type: boolean
+        default: true
+
+defaults:
+  run:
+    working-directory: work
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install numpy and the build frontend
+        run: python -m pip install --upgrade build numpy
+
+      # The pure-Python suites only. test_cbin needs the C encoder, which needs
+      # lzma.h, and a release gate that can fail for want of a system header is
+      # a gate that gets disabled. Byte-identity is checked on the machine that
+      # changes the format, per CLAUDE.md invariant 1.
+      - name: Test
+        run: |
+          python tests/test_fast.py
+          python tests/test_dtz.py
+          python tests/test_stream.py
+
+      - name: Refuse a tag that disagrees with pyproject.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pv=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$tag  pyproject=$pv"
+          if [ "$tag" != "$pv" ]; then
+            echo "::error::tag v$tag does not match pyproject version $pv. PyPI version numbers cannot be reused -- fix one of them before publishing."
+            exit 1
+          fi
+
+      - name: Build
+        run: python -m build .
+
+      - name: Round-trip the built wheel, not the checkout
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --quiet dist/*.whl
+          printf 'id,city,zip,n\n1,Chicago,60601,10\n2,Chicago,60601,11\n3,Boston,02108,12\n' > /tmp/t.csv
+          /tmp/v/bin/polypress compress /tmp/t.csv -o /tmp/t.ppz
+          /tmp/v/bin/polypress restore /tmp/t.ppz -o /tmp/back.csv
+          cmp /tmp/t.csv /tmp/back.csv
+          echo "wheel round-trips exactly"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: work/dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # the OIDC token PyPI trades for an upload grant
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
