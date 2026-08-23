@@ -2,6 +2,14 @@
 
 A lossless compressor for data tables.
 
+> **This repository holds two projects.** Polypress is the one documented
+> below, at the repository root. [`handrail/`](handrail/) is the other — a
+> native macOS app that writes R into an RStudio script — with its own README
+> and its own history. It is developed in a separate repository and merged in
+> here by [`scripts/sync-app.sh`](scripts/sync-app.sh), so **editing
+> `handrail/` in this checkout is not how changes get made**: the next sync
+> merges across them.
+
 > **Repository layout changed on 2026-08-04.** The code now lives in `work/`,
 > the corpora in `IN/`, and sweep output in `OUT/results/`. **Every command in
 > this README is run from `work/`** — `cd work` first. That is why data paths

@@ -21,8 +21,13 @@ remote="src-${prefix}"
 
 cd "$(dirname "$0")/.."
 
-if [ -n "$(git status --porcelain)" ]; then
-  echo "The working tree is not clean. Commit or stash first." >&2
+# Untracked files are none of this script's business -- and refusing to run
+# because one exists is how you end up not syncing for a week. Only tracked
+# changes can be lost by what follows. If an untracked file is genuinely in
+# the way, read-tree below refuses rather than overwriting it.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "There are uncommitted changes to tracked files. Commit or stash first." >&2
+  git status --short --untracked-files=no >&2
   exit 1
 fi
 
