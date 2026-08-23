@@ -140,6 +140,59 @@ def refinish(blob: bytes, comp) -> int:
 
 
 # --------------------------------------------------------------------------
+# the context-modelling competitor
+#
+# Added 2026-08-06 after TEST-9. Every other competitor in this file is
+# LZ-family, Huffman or block-sort; PPMd is a context model with an adaptive
+# arithmetic coder, and on 13 real tables it beat `xz -9e` by 10.3% on the raw
+# CSV. A lineup without it was not a lineup, it was a lineup of one idea.
+#
+# It cannot be driven through pipes: `7zz a -si -so` answers E_NOTIMPL for the
+# 7z format, so this goes via a temporary directory. The archive carries a few
+# hundred bytes of container the piped tools do not, which is noise on
+# anything but a tiny file -- and it counts AGAINST PPMd, so the comparison
+# stays honest.
+
+PPMD_ORDERS = (6, 12, 16)
+PPMD_MEM = os.environ.get("PPMD_MEM", "256m")
+
+
+def ppmd_rows(path: str, mb: float, rows: list) -> None:
+    if not have("7zz"):
+        return
+    import shutil
+    import tempfile
+    for order in PPMD_ORDERS:
+        d = tempfile.mkdtemp()
+        try:
+            arc = os.path.join(d, "a.7z")
+            method = f"PPMd:mem={PPMD_MEM}:o={order}"
+
+            def enc():
+                subprocess.run(["7zz", "a", "-t7z", f"-m0={method}", "-mmt=1",
+                                "-bso0", "-bsp0", arc, path],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=True)
+                return os.path.getsize(arc)
+
+            size, te = clock(enc)
+            out = os.path.join(d, "out")
+
+            def dec():
+                os.makedirs(out, exist_ok=True)
+                subprocess.run(["7zz", "x", f"-o{out}", "-bso0", "-bsp0",
+                                "-y", arc], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=True)
+
+            _, td = clock(dec)
+            rows.append([f"7z ppmd o{order}", size, mb / te, mb / td])
+        except Exception:
+            pass
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
 # columnar competitors
 
 def arrow_rows(path: str, mb: float, rows: list) -> bool:
@@ -258,6 +311,8 @@ def measure(path: str) -> dict:
         _, td = clock(lambda: subprocess.run(
             cd, input=comp, stdout=subprocess.PIPE).stdout)
         rows.append([label, len(comp), mb / te, mb / td])
+
+    ppmd_rows(path, mb, rows)
 
     out["parquet_exact"] = arrow_rows(path, mb, rows)
 
