@@ -17,21 +17,23 @@ struct MainWindow: View {
                         .padding(Style.gutter)
                         .frame(minWidth: 230, idealWidth: 270, maxWidth: 340)
 
-                    // A form has to be able to be taller than the window: with
-                    // 209 columns to choose from, "for each" alone is fifty rows
-                    // of chips, and the Add button was below the bottom of the
-                    // pane with no way to reach it.
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: Style.gap) {
-                            if let problem = state.problem { Problem(text: problem) }
-                            if let kind = state.chosenKind {
-                                ActionForm(state: state, kind: kind)
-                            } else {
-                                ActionPalette(state: state)
+                    // Either pane has to be able to be taller than the window:
+                    // with 209 columns to choose from, "for each" alone is fifty
+                    // rows of chips. The form manages its own scrolling, because
+                    // it pins the R and the Add button below it.
+                    Group {
+                        if let kind = state.chosenKind {
+                            ActionForm(state: state, kind: kind)
+                        } else {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: Style.gap) {
+                                    if let problem = state.problem { Problem(text: problem) }
+                                    ActionPalette(state: state)
+                                }
+                                .padding(Style.gutter)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
-                        .padding(Style.gutter)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(minWidth: 440)
                 }

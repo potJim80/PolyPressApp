@@ -1149,4 +1149,41 @@ do {
     }
 }
 
+
+// ===========================================================================
+T.section("colouring the preview")
+
+// The preview is the product: the English comment and the R are shown together,
+// and the comment is the part that survives the app being closed. Colour is how
+// it reads as an annotation rather than as another line of code.
+func spanText(_ src: String, _ token: RToken) -> [String] {
+    let ch = Array(src)
+    return RSyntax.spans(src).filter { $0.token == token }
+        .map { String(ch[$0.start ..< $0.start + $0.length]) }
+}
+
+T.equal("the comment is found whole",
+        spanText("# Keep only the rows where age is more than 65\nfilter(age > 65)", .comment).first,
+        "# Keep only the rows where age is more than 65")
+T.equal("a function called is coloured",
+        spanText("data <- data |>\n  filter(age > 65)", .function).first, "filter")
+T.equal("a name that is not called is left alone",
+        String(spanText("filter(age > 65)", .function).count), "1")
+T.equal("a dotted name is one function, not two",
+        spanText("read.csv(\"data/people.csv\")", .function).first, "read.csv")
+T.equal("the quoted path is a string",
+        spanText("read.csv(\"data/people.csv\")", .string).first, "\"data/people.csv\"")
+// A `#` inside a quoted value is data, not a comment — colouring the rest of the
+// line grey would be exactly the quiet lie this app exists to stop.
+T.equal("a hash inside a string does not start a comment",
+        String(spanText("filter(code == \"#12\")", .comment).count), "0")
+T.equal("and that string is still a string",
+        spanText("filter(code == \"#12\")", .string).first, "\"#12\"")
+T.equal("an escaped quote does not end the string",
+        spanText("x <- \"a\\\"b\"", .string).first, "\"a\\\"b\"")
+T.equal("an unterminated string does not run off the end",
+        spanText("x <- \"oops", .string).first, "\"oops")
+T.equal("nothing is coloured in a bare pipeline of names",
+        String(RSyntax.spans("region_counts").count), "0")
+
 T.finish()

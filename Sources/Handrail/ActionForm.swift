@@ -11,12 +11,35 @@ struct ActionForm: View {
     let kind: ActionKind
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Style.gap) {
-            header
-            fields
-            if let caution = state.caution { Caution(text: caution) }
+        VStack(alignment: .leading, spacing: 0) {
+            // The controls scroll. With 209 columns to choose from, "for each"
+            // alone is fifty rows of chips.
+            ScrollView {
+                VStack(alignment: .leading, spacing: Style.gap) {
+                    header
+                    fields
+                    if let caution = state.caution { Caution(text: caution) }
+                    if state.dataIsOutsideProject {
+                        Caution(text: "This data file is outside the project, so the script has to "
+                                    + "name it by its full path and will not run on another machine. "
+                                    + "Move it into the project folder to fix that.")
+                    }
+                }
+                .padding(Style.gutter)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
+            // The R and the button that writes it do not scroll.
+            //
+            // Making the pane scroll fixed the Add button being unreachable, but
+            // it left the R itself scrolling out of sight while the form was
+            // filled in — and the whole promise of this app is that you see the
+            // line before it is written. So the payoff and the action are pinned
+            // to the bottom, and only the controls move.
+            Divider()
             VStack(alignment: .leading, spacing: 7) {
+                if let problem = state.problem { Problem(text: problem) }
+
                 SectionLabel("The R this writes")
                 if let block = state.block {
                     CodeBlock(text: block.trimmingCharacters(in: .newlines))
@@ -25,31 +48,26 @@ struct ActionForm: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .padding(.vertical, 6)
                 }
-            }
 
-            if state.dataIsOutsideProject {
-                Caution(text: "This data file is outside the project, so the script has to "
-                            + "name it by its full path and will not run on another machine. "
-                            + "Move it into the project folder to fix that.")
-            }
-
-            // No script yet is not a reason to grey a button out and explain it
-            // elsewhere — it is a thing to offer to fix, right here.
-            if state.scriptURL == nil {
-                NoScriptYet(state: state)
-            } else {
-                HStack(spacing: 10) {
-                    Button("Add to script") { state.addToScript() }
-                        .keyboardShortcut(.return, modifiers: [.command])
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!state.canAdd)
-                    Button("Cancel") { state.resetAction() }
-                    Spacer()
-                    Text("Goes to the end of \(state.scriptURL!.lastPathComponent)")
-                        .font(.caption).foregroundStyle(.secondary)
+                if state.scriptURL == nil {
+                    NoScriptYet(state: state)
+                } else {
+                    HStack(spacing: 10) {
+                        Button("Add to script") { state.addToScript() }
+                            .keyboardShortcut(.return, modifiers: [.command])
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!state.canAdd)
+                        Button("Cancel") { state.resetAction() }
+                        Spacer()
+                        Text("Goes to the end of \(state.scriptURL!.lastPathComponent)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 3)
                 }
             }
-            Spacer(minLength: 0)
+            .padding(Style.gutter)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar)
         }
     }
 

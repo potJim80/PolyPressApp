@@ -63,6 +63,10 @@ private struct PaletteRow: View {
             }
             .padding(.vertical, 7)
             .padding(.horizontal, 8)
+            // Held to a readable width. Left to fill the pane, the blurb ends up
+            // stranded against the right edge with a hand-span of empty between
+            // it and the title it belongs to, and the two stop reading as a pair.
+            .frame(maxWidth: 640, alignment: .leading)
             .contentShape(Rectangle())
             .background(hovering ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18)
                                  : Color.clear)
