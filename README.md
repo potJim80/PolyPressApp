@@ -33,7 +33,15 @@ manifest.
 
 That gives **500 tables, 3.57 GB of CSV, 14.3 million rows, 10,557 columns**,
 measured against **17 competing codecs** (plus two re-finishes of our own
-output, which are not competitors):
+output, which are not competitors).
+
+**That seventeen is the lineup as it stood in August 2026, and it is quoted
+here unchanged rather than restated at today's count.** The lineup is **22**
+now: `zip -9` and `7z` at LZMA2 and at PPMd orders 6/12/16 were added
+afterwards, and PPMd in particular turns out to be the strongest rival this
+codec has — see [the shape suite](#the-shape-suite-and-the-rival-that-actually-wins)
+below. The 500-table numbers were not re-measured against it; they are a
+17-competitor result and are labelled as one.
 
 ```bash
 cd work
@@ -162,6 +170,133 @@ Full records: `../OUT/results/socrata100-summary.txt`, `../OUT/results/curated13
 `../OUT/results/matrix-summary.txt`, `../OUT/results/hostile-summary.txt`,
 `../OUT/results/all-summary.txt`, and every individual measurement in
 `../OUT/results/all-results.csv`.
+
+---
+
+## The shape suite, and the rival that actually wins
+
+The 500 unselected tables answer *does it win*. They cannot answer *where*, and
+an aggregate over 500 government tables hides the thing that matters most about
+this codec: it is 2.3x on densely-coded categorical data and 1.00x on random
+text. Those average to a number true of neither.
+
+So there is a second corpus, small and **tagged**. `benchmarks/make_suite.py`
+builds `IN/suite/` in 25 seconds out of the corpora already downloaded: **39
+tables, 267 MB**, in four size tiers and tagged by *form* — categorical, text,
+geo, matrix, scientific, ids, sparse, wide, narrow, unicode, redundant,
+sorted/shuffled, hostile. It is seeded and sha256'd into a committed
+`MANIFEST.json`, so the data itself stays out of git and a number is still
+traceable to the exact bytes that produced it. This is the run to do after a
+codec change; the Socrata sweeps take hours and cannot say where a change
+helped.
+
+```bash
+cd work
+./benchmarks/run_suite.sh    # build, sweep, report -- ~30 min
+```
+
+| | suite v1, 2026-08-28 |
+|---|---|
+| **Round-trips exactly** | **39 of 39** |
+| **Smaller than the best of 22 competitors** | **30 of 39 (77%)** |
+| Margin over the best other tool | median **1.16x**, best 4.22x, worst 0.91x |
+| Whole suite, aggregate | 22,306,557 B vs 26,736,431 B — **1.20x smaller** |
+| Compression vs raw CSV | median **11.09x**, best 225.78x, worst 1.32x |
+
+The breakdown is the point, not that line. **Never quote the aggregate without
+it:**
+
+| form | n | wins | median vs best | median vs CSV |
+|---|---|---|---|---|
+| matrix | 4 | **4/4** | **1.85x** | 11.04x |
+| timestamps | 13 | 10/13 | 1.39x | 13.76x |
+| sparse | 11 | 10/11 | 1.20x | 17.32x |
+| categorical | 19 | 16/19 | 1.20x | 16.51x |
+| numeric | 15 | 12/15 | 1.16x | 6.26x |
+| geo | 9 | 8/9 | 1.13x | 13.93x |
+| **text** | 10 | **5/10** | **1.00x** | 14.86x |
+| **wide** | 5 | **3/5** | **1.02x** | 7.51x |
+| **hostile** | 10 | **5/10** | **1.00x** | 2.51x |
+
+A file carries several tags, so the rows overlap. And the four `nndss` rungs
+are **one table at four sizes** — a scaling axis, not four wins; the report
+prints them apart from everything else for exactly that reason.
+
+That table is the codec in nine lines: **it wins on structure and ties on
+entropy.**
+
+### The rival is a context model, not a columnar format
+
+Best non-Polypress result per table, over all 39:
+
+| | | | |
+|---|---|---|---|
+| `7z ppmd` o6 / o12 / o16 | **8 + 7 + 6 = 21** | `xz -9e` | 3 |
+| `orc+zstd` | 7 | `parquet+brotli` | 2 |
+| `7z lzma2 -mx9` | 4 | `brotli -q11`, `bzip2 -9` | 1, 1 |
+
+**Parquet at four codecs was never once the table to beat**, and seven of the
+nine losses are to PPMd or ORC. Parquet is headlined above because it is what
+people actually use; PPMd is what actually has to be beaten.
+
+It is being measured at its ceiling. Probed on `l_nyc_311.csv` (28 MB):
+
+```
+order  2   6,577,792        mem   16m   1,790,664
+order  6   1,970,162        mem   64m   1,519,719
+order 16   1,393,015        mem  256m   1,393,015
+order 32   1,393,480        mem 1024m   1,393,015
+order 64   E_INVALIDARG  (7-Zip's PPMd caps at order 32)
+```
+
+Order saturates by 16 and is slightly *worse* at 32; memory saturates at
+exactly the 256 MB the harness already hands it. There is no untested setting
+where PPMd does better, which answers "but did you tune it".
+
+**The obvious explanation of why is wrong**, and the wrong version is worth
+writing down: a longer context does *not* reach the cell above. Sorted by row
+width, the order-6 / order-16 ratio (>1 = order 16 wins) climbs with *width* —
+0.78 at 10.9 B/row, 1.00 at 42.7, 1.19 at 245.1, **1.41 at 867.9**. At 868
+bytes per row the cell above is 27x beyond PPMd's hard maximum of 32 bytes. A
+longer order never reaches another row on any real table; it buys longer
+phrases inside the current one.
+
+Which gives the structural fact:
+
+> **PPMd has a rich model with a ≤32-byte reach. LZMA has a 64 MB reach and an
+> order-1 literal model.** Table redundancy is vertical, at a distance of one
+> row width — inside LZMA's window and outside PPMd's context. Each of the
+> field's two strongest general-purpose models holds exactly half of what a
+> table needs, and they swap places by table shape. **Writing the columns
+> contiguously is what removes the distance**, which is why this codec beats
+> both where column structure is real (`nndss` 2.26x) and neither where it is
+> not.
+
+### Where the remaining losses come from: two thirds coder, one third model
+
+The container is three xz sections — metadata, packed ints, text blob.
+Re-finishing each with PPMd instead splits cleanly, and in opposite directions:
+
+- **packed ints** — PPMd is *worse*: +27% (`nndss`), +18% (`nyc_311`), +9%
+  (`permits`). It has no match model at all, and the redundancy in a
+  byte-packed integer stream is periodic at the record stride, which is exactly
+  what LZMA's match finder eats.
+- **text blob** — PPMd is *better* nearly everywhere: −6.6% (`nndss`), −10.7%
+  (`financial_shuffled`), −4.3% (`weblog`), −3.8% (`weblog_big`). Exception:
+  `nyc_311`, +17%.
+
+On `s_weblog` a 5.3% loss becomes 1.8% under a full PPMd re-finish. So roughly
+**two thirds of that loss is our entropy coder and one third is PPMd's
+whole-file context genuinely beating our column split.** That also corrects an
+earlier finding recorded in this project — "our transform and PPMd do not
+stack" was measured by swapping the coder for the *whole* archive. It holds for
+the modelled numeric streams and fails for the residual text pile, which is
+50–80% of the archive on precisely the tables we lose.
+
+Full record: `../OUT/results/suite-v1-summary.txt` (all nine losses, the
+per-competitor table, speeds), `../OUT/results/suite-v1-results.csv`,
+`../OUT/results/competitor-ppmd.txt`. The measurement rules are in
+`benchmarks/PROTOCOL.md`, which is the authority for any number quoted here.
 
 ---
 
@@ -984,7 +1119,7 @@ python3 tests/test_lying_header.py    # headers that are well-formed and dishone
 python3 tests/test_cbin.py            # the C binary must agree with Python on every case
 python3 tests/test_fuzz.py [n] [seed] # random adversarial tables through both implementations
 python3 tests/test_input_guard.py     # the C binary must refuse what it cannot parse
-python3 benchmarks/measure_one.py f.csv  # one table vs all 20 competitors
+python3 benchmarks/measure_one.py f.csv  # one table vs all 22 competitors
 python3 benchmarks/make_hostile.py d/ # generate the adversarial suite
 python3 app/gui.py --selftest         # compile every AppleScript the app can emit
 ```
@@ -997,12 +1132,21 @@ python3 benchmarks/sweep.py ../IN/corpus100/*.csv --out ../OUT/results/socrata10
 python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv   # invariant 1 on real data
 ```
 
-`measure_one.py` runs 20 competitors in three families — general purpose
-(gzip, bzip2, xz, lz4, zstd at three levels, brotli), columnar files (Parquet
-at four codecs, ORC at three, Feather at two), and Polypress including the
-like-for-like re-finishes. Parquet and ORC are in the list because a comparison
-that only beats gzip has not beaten anything anyone uses; nobody stores a
-209-column survey as compressed CSV.
+`measure_one.py` runs 22 competitors in four families — general purpose
+(gzip, bzip2, xz, lz4, zstd at three levels, brotli), archivers (`zip -9`,
+`7z` at LZMA2 -mx9 and at PPMd orders 6/12/16), columnar files (Parquet at four
+codecs, ORC at three, Feather at two), and Polypress including the
+like-for-like re-finishes. The archivers pay for their own container — a zip's
+local header and central directory, a 7z's coder description — and that counts
+against them on purpose, because a reader who zips a file gets a zip.
+`benchmarks/PROTOCOL.md` is the authority on the lineup and the measurement
+rules; read it before producing a number.
+
+Parquet and ORC are in the list because a comparison that only beats gzip has
+not beaten anything anyone uses; nobody stores a 209-column survey as
+compressed CSV. PPMd is in it because every other entry was LZ-family, Huffman
+or block-sort, and a lineup of one idea is not a lineup — on the shape suite it
+is the strongest rival in the field.
 
 It also runs the fidelity check on every dataset and prints the verdict.
 Parquet read with type inference quietly turns `"1.50"` into `1.5`, and on
