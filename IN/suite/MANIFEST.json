@@ -1,0 +1,639 @@
+{
+ "seed": 20260828,
+ "files": [
+  {
+   "name": "xs_yields_400.csv",
+   "tier": "xs",
+   "origin": "slice",
+   "forms": [
+    "numeric",
+    "matrix",
+    "timestamps"
+   ],
+   "why": "the planar predictor's own case, small enough that container overhead shows",
+   "bytes": 21991,
+   "rows": 422,
+   "cols": 9,
+   "sha256": "c701660b6794bbe239353c39b4b684b436e87121805817c931b616fbbf7bf612",
+   "source": "treasury_yields.csv"
+  },
+  {
+   "name": "xs_survey_200.csv",
+   "tier": "xs",
+   "origin": "slice",
+   "forms": [
+    "survey",
+    "categorical",
+    "sparse"
+   ],
+   "why": "skip-pattern survey data at a size where a header costs real percent",
+   "bytes": 23976,
+   "rows": 215,
+   "cols": 21,
+   "sha256": "f2f9c4b383f8ac1fee9169a3df1dbb1f3d2fd98b5149965411caf2129c6a827a",
+   "source": "polypress-demo.csv"
+  },
+  {
+   "name": "xs_quakes_300.csv",
+   "tier": "xs",
+   "origin": "slice",
+   "forms": [
+    "scientific",
+    "geo",
+    "numeric"
+   ],
+   "why": "float-heavy scientific table, small",
+   "bytes": 59890,
+   "rows": 315,
+   "cols": 22,
+   "sha256": "cef9a9d1037db8809370bd19831085e29d855cc73cd06823b1a6ebdd6ba9f58e",
+   "source": "usgs_quakes.csv"
+  },
+  {
+   "name": "xs_nndss_500.csv",
+   "tier": "xs",
+   "origin": "slice",
+   "forms": [
+    "categorical",
+    "sparse",
+    "ladder"
+   ],
+   "why": "ladder rung 1 -- the codec's best genre at 70 KB",
+   "bytes": 69899,
+   "rows": 479,
+   "cols": 16,
+   "sha256": "b3a4caca5a57fda9fdfb15e6f90f0c82fff70eb5feda4b9329a888290dc884fe",
+   "source": "cdc_nndss.csv"
+  },
+  {
+   "name": "xs_noaa_gsoy_ord.csv",
+   "tier": "xs",
+   "origin": "real",
+   "forms": [
+    "wide",
+    "scientific",
+    "sparse"
+   ],
+   "why": "102 columns, 70 rows: a real table that is wider than it is tall",
+   "bytes": 58794,
+   "rows": 69,
+   "cols": 102,
+   "sha256": "adfc76024c30983b260ce017a173cae4da814b338e1b7c3ab3bd9ac9e3e1d150",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/noaa_gsoy_ord.csv"
+  },
+  {
+   "name": "xs_wide_row.csv",
+   "tier": "xs",
+   "origin": "real",
+   "forms": [
+    "wide",
+    "hostile"
+   ],
+   "why": "5,000 columns, one row -- the shape that aborted a sweep on ORC's RSS",
+   "bytes": 78360,
+   "rows": 1,
+   "cols": 5000,
+   "sha256": "c144cf3d404116422534c46b724eeb4e0294afd29f3871b0e93f4d1c1fe7b82d",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/single_wide_row.csv"
+  },
+  {
+   "name": "s_treasury_yields.csv",
+   "tier": "s",
+   "origin": "real",
+   "forms": [
+    "numeric",
+    "matrix",
+    "timestamps"
+   ],
+   "why": "whole yield curve; the 1.86x matrix result came from this file",
+   "bytes": 468315,
+   "rows": 9006,
+   "cols": 9,
+   "sha256": "7c0abb22e0ca89b5519eeab890c80a076e4cb63832795a3b727e3b53698c7f3b",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_matrix/treasury_yields.csv"
+  },
+  {
+   "name": "s_permits_1k.csv",
+   "tier": "s",
+   "origin": "slice",
+   "forms": [
+    "text",
+    "wide",
+    "sparse",
+    "geo"
+   ],
+   "why": "116 columns of which 8 are free text: the known worst case, small",
+   "bytes": 948827,
+   "rows": 1059,
+   "cols": 116,
+   "sha256": "829bb15419b454ae373be058d49036c2bcd13213761e8219e01f786a64b0b4e7",
+   "source": "chicago_permits.csv"
+  },
+  {
+   "name": "s_anticorrelated.csv",
+   "tier": "s",
+   "origin": "real",
+   "forms": [
+    "narrow",
+    "hostile"
+   ],
+   "why": "two columns whose orders fight: sorting one scrambles the other",
+   "bytes": 436637,
+   "rows": 40000,
+   "cols": 2,
+   "sha256": "fa9f8d193b6cf0add3bc5ff063cf0491709eb5f498196b377cc456ea62394b73",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/anticorrelated.csv"
+  },
+  {
+   "name": "s_high_precision.csv",
+   "tier": "s",
+   "origin": "real",
+   "forms": [
+    "numeric",
+    "narrow",
+    "hostile"
+   ],
+   "why": "floats with more digits than a delta can exploit",
+   "bytes": 791216,
+   "rows": 40000,
+   "cols": 2,
+   "sha256": "140b5c24fa14f93748d1fb4327944ecb63a24a4b6603f12fff8a9da9ad0dda0a",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/high_precision.csv"
+  },
+  {
+   "name": "s_mixed_types.csv",
+   "tier": "s",
+   "origin": "real",
+   "forms": [
+    "narrow",
+    "hostile",
+    "sparse"
+   ],
+   "why": "one poisoned column: the all-or-nothing gate's test case",
+   "bytes": 398533,
+   "rows": 40000,
+   "cols": 2,
+   "sha256": "ebcb0ea3b264b36306bd6449c6cfca278253a81e44745575f96abb002973e46a",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/mixed_types.csv"
+  },
+  {
+   "name": "s_shuffled_cats.csv",
+   "tier": "s",
+   "origin": "real",
+   "forms": [
+    "categorical",
+    "shuffled",
+    "hostile"
+   ],
+   "why": "categorical columns in an order chosen to defeat reordering",
+   "bytes": 1215791,
+   "rows": 40000,
+   "cols": 8,
+   "sha256": "629d68086b4b0c563829e4d6efa39dfa2b153136635a6edf525d3cc422167fd1",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/shuffled_cats.csv"
+  },
+  {
+   "name": "s_weblog.csv",
+   "tier": "s",
+   "origin": "gen",
+   "forms": [
+    "text",
+    "timestamps",
+    "categorical",
+    "ids"
+   ],
+   "why": "server log: no government portal genre covers it",
+   "bytes": 600022,
+   "rows": 3426,
+   "cols": 9,
+   "sha256": "785e85cb5a05524cce7c87b19fa68d01dbf509522e9d33ab241861b172673bc9",
+   "source": "generated:weblog"
+  },
+  {
+   "name": "s_multilingual.csv",
+   "tier": "s",
+   "origin": "gen",
+   "forms": [
+    "unicode",
+    "text",
+    "categorical"
+   ],
+   "why": "six scripts of UTF-8; everything else in the suite is effectively Latin-1",
+   "bytes": 755587,
+   "rows": 7799,
+   "cols": 8,
+   "sha256": "d883e61ec083906aaae6ffad2437df7a88fb83d9f1bb050cadb9498298a9acf8",
+   "source": "generated:multilingual"
+  },
+  {
+   "name": "m_baby_names.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "categorical",
+    "numeric",
+    "narrow"
+   ],
+   "why": "six columns, heavily repeated values, sorted by year",
+   "bytes": 1564968,
+   "rows": 29685,
+   "cols": 6,
+   "sha256": "04ff8991b83219b11c0e0bb618758dd92de468b1241d6873751c3a72800ff514",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/nyc_baby_names.csv"
+  },
+  {
+   "name": "m_quakes.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "scientific",
+    "geo",
+    "numeric",
+    "timestamps"
+   ],
+   "why": "the full USGS extract: 22 columns of mostly floats",
+   "bytes": 3054091,
+   "rows": 16190,
+   "cols": 22,
+   "sha256": "2b2de697b9744550fdbfd78a60435e8449d3e14e4be34553cd9092fb2b232315",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/usgs_quakes.csv"
+  },
+  {
+   "name": "m_weather_wide.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "numeric",
+    "matrix",
+    "timestamps"
+   ],
+   "why": "25 commensurable temperature columns -- the 2D group's home ground",
+   "bytes": 3413818,
+   "rows": 26304,
+   "cols": 25,
+   "sha256": "1b0bda729abcc1789aee74d7c5d8358a0195ea4d56e2cd27980c9616f68aaf50",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_matrix/weather_wide.csv"
+  },
+  {
+   "name": "m_weather_hourly.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "numeric",
+    "matrix",
+    "timestamps"
+   ],
+   "why": "hourly grid where one -0.0 once split the matrix in two",
+   "bytes": 5677612,
+   "rows": 87672,
+   "cols": 11,
+   "sha256": "228784edcf056123ce49b73129a320294b0726eef0d4c741156cf89a6df59bed",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_matrix/weather_hourly.csv"
+  },
+  {
+   "name": "m_survey_demo.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "survey",
+    "categorical",
+    "sparse"
+   ],
+   "why": "NEMSIS-shaped survey: skip patterns blank whole branches",
+   "bytes": 4419110,
+   "rows": 40000,
+   "cols": 21,
+   "sha256": "b0a87afbd55cb822bbbfa1c8fddcb00342e7797cb9fe67343ed59bff77222c73",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/polypress-demo.csv"
+  },
+  {
+   "name": "m_nndss_2mb.csv",
+   "tier": "m",
+   "origin": "slice",
+   "forms": [
+    "categorical",
+    "sparse",
+    "ladder"
+   ],
+   "why": "ladder rung 2",
+   "bytes": 1999914,
+   "rows": 14618,
+   "cols": 16,
+   "sha256": "3efa4ffdb54e21c411470f09df51b1e47ed7c5c82f2f4cd1d7d2186a517f4d73",
+   "source": "cdc_nndss.csv"
+  },
+  {
+   "name": "m_financial_sorted.csv",
+   "tier": "m",
+   "origin": "gen",
+   "forms": [
+    "numeric",
+    "timestamps",
+    "categorical",
+    "sorted"
+   ],
+   "why": "OHLCV panel in its natural (ticker, date) order",
+   "bytes": 3041580,
+   "rows": 40175,
+   "cols": 10,
+   "sha256": "cfe252fc3614c1e96c15e95d11ac4492bf5980b58f7f13921cde2aae5bb97855",
+   "source": "generated:financial_sorted"
+  },
+  {
+   "name": "m_financial_shuffled.csv",
+   "tier": "m",
+   "origin": "gen",
+   "forms": [
+    "numeric",
+    "timestamps",
+    "categorical",
+    "shuffled"
+   ],
+   "why": "the same rows shuffled: the difference is what row order is worth",
+   "bytes": 3041580,
+   "rows": 40175,
+   "cols": 10,
+   "sha256": "2ec9ecc337e7e0ce3b1055cdda1ea7d8474353a000f93403ef4676bdc67fddec",
+   "source": "generated:financial_shuffled"
+  },
+  {
+   "name": "m_ecommerce.csv",
+   "tier": "m",
+   "origin": "gen",
+   "forms": [
+    "ids",
+    "redundant",
+    "categorical",
+    "numeric"
+   ],
+   "why": "order_id is four columns pasted together and line_total = qty x price",
+   "bytes": 3000012,
+   "rows": 27584,
+   "cols": 12,
+   "sha256": "5fa296aa29f639825608dfc93d9d232e96f1e80fb99476aaddf4cdcfdcabaeea",
+   "source": "generated:ecommerce"
+  },
+  {
+   "name": "m_genomic.csv",
+   "tier": "m",
+   "origin": "gen",
+   "forms": [
+    "scientific",
+    "categorical",
+    "numeric",
+    "sorted"
+   ],
+   "why": "variant calls: tiny alphabets, a sorted integer, two float precisions",
+   "bytes": 2500026,
+   "rows": 32914,
+   "cols": 11,
+   "sha256": "999bdbc4cc073fd08308e3e8be655493df72cd2be7c2ed78ce616998a1d3e8b4",
+   "source": "generated:genomic"
+  },
+  {
+   "name": "m_uuid_keys.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "ids",
+    "narrow",
+    "hostile"
+   ],
+   "why": "random UUIDs: nothing to model, and the codec must not make it worse",
+   "bytes": 1708897,
+   "rows": 40000,
+   "cols": 2,
+   "sha256": "2f6439f2e62af76a3da0953cd951f0af6fe756801c020b41a17fcecfc5ed58fa",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/uuid_keys.csv"
+  },
+  {
+   "name": "m_random_floats.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "numeric",
+    "hostile"
+   ],
+   "why": "incompressible floats",
+   "bytes": 1726475,
+   "rows": 40000,
+   "cols": 3,
+   "sha256": "e535e26eb87dc55ac037d2e0753a1b288dfb407fb49c1e3d796e099de12f64e2",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/random_floats.csv"
+  },
+  {
+   "name": "m_random_text.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "text",
+    "hostile"
+   ],
+   "why": "incompressible text",
+   "bytes": 1560006,
+   "rows": 40000,
+   "cols": 3,
+   "sha256": "fc6a479dcf69094877882eed24dd97691fecaa7e0d1b4c0de44045ef9b5e3ea2",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/random_text.csv"
+  },
+  {
+   "name": "m_base64_blob.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "text",
+    "narrow",
+    "hostile"
+   ],
+   "why": "one column of base64: a single opaque blob per row",
+   "bytes": 2600005,
+   "rows": 40000,
+   "cols": 1,
+   "sha256": "c8de1033f788d7fe357c014aaaa0e4fce1a9fd782a276adb956ddc3364376c97",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/base64_blob.csv"
+  },
+  {
+   "name": "m_wide_random.csv",
+   "tier": "m",
+   "origin": "real",
+   "forms": [
+    "wide",
+    "numeric",
+    "hostile"
+   ],
+   "why": "200 unrelated numeric columns: wide but with no 2D structure",
+   "bytes": 5511908,
+   "rows": 4000,
+   "cols": 200,
+   "sha256": "fe5c5ae5725c3fb8a4cbb7d6801af5577a1ef5792f6e1bb4e0b58620a34ea102",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/wide_random.csv"
+  },
+  {
+   "name": "l_nndss_8mb.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "categorical",
+    "sparse",
+    "ladder"
+   ],
+   "why": "ladder rung 3",
+   "bytes": 7999964,
+   "rows": 58226,
+   "cols": 16,
+   "sha256": "8620d6ab6c194ad935f9f2e5f97e680478128157356b06c4a0ed37d8a4f3c29a",
+   "source": "cdc_nndss.csv"
+  },
+  {
+   "name": "l_nndss_full.csv",
+   "tier": "l",
+   "origin": "real",
+   "forms": [
+    "categorical",
+    "sparse",
+    "ladder"
+   ],
+   "why": "ladder rung 4 -- the 3.70x headline table, whole",
+   "bytes": 20762998,
+   "rows": 150000,
+   "cols": 16,
+   "sha256": "82491a87207abe3131cf021b4a9ce272ce574f07e5169660604abc95c1624400",
+   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/cdc_nndss.csv"
+  },
+  {
+   "name": "l_chicago_permits.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "text",
+    "wide",
+    "geo",
+    "sparse"
+   ],
+   "why": "the worst real result on record (1.12x): 71% of the output is text blob",
+   "bytes": 27999092,
+   "rows": 28332,
+   "cols": 116,
+   "sha256": "4446e91967d9fc383effa2cd989ee705325dfb6028d34216e3d8db338147ec36",
+   "source": "chicago_permits.csv"
+  },
+  {
+   "name": "l_nyc_311.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "categorical",
+    "text",
+    "geo",
+    "timestamps"
+   ],
+   "why": "44 mixed columns; the most-used open dataset in the world",
+   "bytes": 27999426,
+   "rows": 32262,
+   "cols": 44,
+   "sha256": "3480690ec6e14203886f56776378741dcf08c8fa08a11778a4676cc94cb2cd3e",
+   "source": "nyc_311.csv"
+  },
+  {
+   "name": "l_chicago_crimes.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "categorical",
+    "geo",
+    "timestamps",
+    "ids"
+   ],
+   "why": "coded administrative data with coordinates repeated as text",
+   "bytes": 27999804,
+   "rows": 96703,
+   "cols": 22,
+   "sha256": "9f8a185298b678aa195529d716160521974899c00bad0b3a31cba73cf48d3655",
+   "source": "chicago_crimes.csv"
+  },
+  {
+   "name": "l_wa_ev_population.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "categorical",
+    "ids",
+    "geo"
+   ],
+   "why": "VIN prefixes and vehicle codes: high-cardinality identifiers",
+   "bytes": 27999860,
+   "rows": 102891,
+   "cols": 16,
+   "sha256": "19fc6fe9aabd8c7325e511323f9f0705ed4796cc28e75d5fe36db9943856170e",
+   "source": "wa_ev_population.csv"
+  },
+  {
+   "name": "l_seattle_fire911.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "geo",
+    "text",
+    "timestamps",
+    "narrow"
+   ],
+   "why": "seven columns storing the same point three times",
+   "bytes": 26859107,
+   "rows": 200000,
+   "cols": 7,
+   "sha256": "526717ba7db26aa0ce8116f8a53f6040d7cbb58465b358e609eef7f72e8af943",
+   "source": "seattle_fire911.csv"
+  },
+  {
+   "name": "l_nyc_collisions.csv",
+   "tier": "l",
+   "origin": "slice",
+   "forms": [
+    "geo",
+    "categorical",
+    "text",
+    "redundant"
+   ],
+   "why": "lat, lon and 'POINT (lon lat)' side by side -- known cross-column case",
+   "bytes": 27999913,
+   "rows": 114219,
+   "cols": 29,
+   "sha256": "b77c1d831a1dbd706f929d5ed6ee10cd32c166204072e9447b5afe4fb429c676",
+   "source": "nyc_collisions.csv"
+  },
+  {
+   "name": "l_iot_sensor.csv",
+   "tier": "l",
+   "origin": "gen",
+   "forms": [
+    "numeric",
+    "timestamps",
+    "ids",
+    "sparse"
+   ],
+   "why": "40 devices at a fixed cadence with dropouts that leave blank cells",
+   "bytes": 10163428,
+   "rows": 163240,
+   "cols": 8,
+   "sha256": "6190bc6aa8af4e7a5ef4333c3791456b3677073123acb8097f3716128af2de51",
+   "source": "generated:iot"
+  },
+  {
+   "name": "l_weblog_big.csv",
+   "tier": "l",
+   "origin": "gen",
+   "forms": [
+    "text",
+    "timestamps",
+    "categorical",
+    "ids"
+   ],
+   "why": "the log genre at a size where the text blob dominates",
+   "bytes": 10000153,
+   "rows": 56770,
+   "cols": 9,
+   "sha256": "3a78943c21c1ec45839d0fe71c53d41603d4e0c5abf2b8b661ca3de8376b3139",
+   "source": "generated:weblog_big"
+  }
+ ]
+}

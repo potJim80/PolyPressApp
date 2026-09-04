@@ -171,6 +171,30 @@ tests. Run them directly.
 python3 benchmarks/fetch_matrix.py ../IN/corpus/   # yield curve + 2 sensor grids
 ```
 
+**The benchmark protocol is `work/benchmarks/PROTOCOL.md`. Read it before
+quoting or producing a number.** It fixes the lineup (22 competitors: the
+general-purpose family, `zip` and `7z` at LZMA2 and PPMd, Parquet/ORC/Feather,
+and this codec re-finished with the competitor's own coder), the measurement
+rules, and what invalidates a result.
+
+**The standard suite is `IN/suite/`** -- 39 tables, 267 MB, tiered `xs`/`s`/`m`/`l`
+and tagged by *form* (categorical, text, geo, matrix, scientific, ids, sparse,
+wide, narrow, unicode, redundant, sorted/shuffled, hostile). It is the run to
+do after a codec change, because it answers *where* a change helped; the
+Socrata sweeps answer whether it wins on a random government table and take
+hours. Built in 25 s by `benchmarks/make_suite.py` from the corpora, seeded and
+hashed, so the data is gitignored and only `MANIFEST.json` is committed.
+
+```bash
+./benchmarks/run_suite.sh            # build + sweep + report, pinned env
+```
+
+**Never publish an aggregate over the suite without the by-form breakdown.**
+3.7x on coded categorical data and 0.9x on random floats average to a number
+true of neither. `report.py --manifest ../IN/suite/MANIFEST.json` prints it.
+And the four `nndss` rungs are ONE table at four sizes -- a scaling axis, not
+four wins.
+
 Benchmarks, three steps:
 
 ```bash

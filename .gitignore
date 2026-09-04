@@ -29,6 +29,14 @@ IN/corpus500/
 IN/corpus_matrix/
 IN/corpus_hostile/
 
+# The standard benchmark suite (IN/suite/) is 267 MB rebuilt in 25 seconds by
+# work/benchmarks/make_suite.py from the corpora above -- so the DATA is not
+# committed, but the MANIFEST is. The manifest carries a sha256 per file and
+# is what makes a number traceable: if a result moves and the hash moved with
+# it, the input changed, not the codec.
+IN/suite/*
+!IN/suite/MANIFEST.json
+
 # Sweep working files, now under OUT/. The JSONL, the summary and the CSV under
 # OUT/results/ are committed on purpose -- they are the evidence -- but the
 # truncated copies and the progress logs are not.
@@ -52,3 +60,11 @@ HANDOFF.md
 
 # The Handrail brief -- a different project's document, dropped here by hand.
 PROJECT-BRIEF.md
+
+# Credentials never belong here. A PyPI recovery-codes file sat untracked in
+# the repo root for a week -- one `git add -A` from being published, since this
+# repo has a public remote. The file was moved out; this rule is the second
+# line of defence, not the first. Keep secrets outside the working tree.
+*Recovery-Codes*
+*recovery-codes*
+.pypirc

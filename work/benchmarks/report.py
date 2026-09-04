@@ -40,6 +40,7 @@ import sys
 # exclusion rather than by an allow-list that silently drops a new codec.
 OURS = "polypress"
 OURS_ROW = "polypress"
+TIERS_ORDER = ("xs", "s", "m", "l")
 
 
 def load(paths):
@@ -79,6 +80,10 @@ def main(argv=None) -> int:
                          "'polypress-turbo' headlines the turbo fork instead. "
                          "Everything starting 'polypress' is excluded from "
                          "the competition either way.")
+    ap.add_argument("--manifest", default=None,
+                    help="a suite MANIFEST.json; adds the by-tier and "
+                         "by-form breakdown, which is the whole reason the "
+                         "suite is tagged")
     ap.add_argument("--top", type=int, default=12,
                     help="how many best/worst datasets to list")
     a = ap.parse_args(argv)
@@ -256,9 +261,79 @@ def main(argv=None) -> int:
         print("  {:<18} {:>12.1f} {:>12.1f}".format(
             lab, statistics.median(e), statistics.median(d) if d else 0.0))
 
+    # ---- shape breakdown ---------------------------------------------------
+    # One aggregate number over a corpus of mixed shapes is the least
+    # informative thing this script could print: 3.7x on coded categorical
+    # data and 0.9x on random floats average to something true of neither.
+    # The suite is tagged so the average never has to be the answer.
+    if a.manifest:
+        meta = {m["name"]: m for m in json.load(open(a.manifest))["files"]}
+        tagged = [r for r in recs if r["file"] in meta]
+        if tagged:
+            section("6. By tier and by form")
+
+            def group(rows_):
+                marg, vcsv, w = [], [], 0
+                ours_b = comp_b = raw_b = 0
+                for r in rows_:
+                    o = r["results"][OURS_ROW]["bytes"]
+                    b = min(v["bytes"] for v in competitors(r).values())
+                    marg.append(b / o)
+                    vcsv.append(r["bytes"] / o)
+                    ours_b += o
+                    comp_b += b
+                    raw_b += r["bytes"]
+                    w += o < b
+                return (len(rows_), w, statistics.median(marg),
+                        comp_b / ours_b, statistics.median(vcsv),
+                        raw_b / ours_b)
+
+            hdr = ("  {:<22} {:>4} {:>8} {:>9} {:>9} {:>9} {:>9}"
+                   .format("group", "n", "wins", "med vs best",
+                           "agg vs best", "med vs csv", "agg vs csv"))
+            print("size tiers")
+            print(hdr)
+            for t in TIERS_ORDER:
+                rows_ = [r for r in tagged if meta[r["file"]]["tier"] == t]
+                if not rows_:
+                    continue
+                n, w, mb_, ab, mc, ac = group(rows_)
+                print("  {:<22} {:>4} {:>8} {:>11} {:>11} {:>10} {:>9}"
+                      .format(t, n, "{}/{}".format(w, n), fmt_ratio(mb_),
+                              fmt_ratio(ab), fmt_ratio(mc), fmt_ratio(ac)))
+
+            forms = sorted({f for m in meta.values() for f in m["forms"]})
+            print("\nforms (a file carries several, so these overlap)")
+            print(hdr)
+            for f in forms:
+                rows_ = [r for r in tagged if f in meta[r["file"]]["forms"]]
+                if not rows_:
+                    continue
+                n, w, mb_, ab, mc, ac = group(rows_)
+                print("  {:<22} {:>4} {:>8} {:>11} {:>11} {:>10} {:>9}"
+                      .format(f, n, "{}/{}".format(w, n), fmt_ratio(mb_),
+                              fmt_ratio(ab), fmt_ratio(mc), fmt_ratio(ac)))
+
+            ladder = sorted([r for r in tagged
+                             if "ladder" in meta[r["file"]]["forms"]],
+                            key=lambda r: r["bytes"])
+            if len(ladder) > 1:
+                print("\nthe size ladder -- ONE table at several sizes, not "
+                      "several results")
+                print("  {:<22} {:>12} {:>9} {:>9}  {}".format(
+                    "file", "csv bytes", "vs csv", "vs best", "best other"))
+                for r in ladder:
+                    o = r["results"][OURS_ROW]["bytes"]
+                    bl, bb = min(((k, v["bytes"])
+                                  for k, v in competitors(r).items()),
+                                 key=lambda kv: kv[1])
+                    print("  {:<22} {:>12,} {:>9} {:>9}  {}".format(
+                        r["file"][:22], r["bytes"], fmt_ratio(r["bytes"] / o),
+                        fmt_ratio(bb / o), bl))
+
     # ---- failures ----------------------------------------------------------
     if bad:
-        section("6. Datasets that could not be measured")
+        section("7. Datasets that could not be measured")
         for r in bad:
             print("  {:<50} {}".format(r["file"][:50], r["error"][:70]))
 

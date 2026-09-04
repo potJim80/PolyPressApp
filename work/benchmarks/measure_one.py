@@ -24,6 +24,7 @@ Three families, because "compressed CSV" is not what a competitor would
 actually do with a table:
 
   general purpose  gzip, bzip2, xz, zstd at three levels, brotli, lz4
+  archivers        zip -9, 7z LZMA2 -mx9, 7z PPMd at three orders
   columnar files   Parquet at four codecs, ORC at three, Arrow/Feather at two
   polypress        the shipping encoder, plus the same modelled streams
                    re-finished with zstd and brotli
@@ -193,6 +194,65 @@ def ppmd_rows(path: str, mb: float, rows: list) -> None:
 
 
 # --------------------------------------------------------------------------
+# real archivers
+#
+# Added 2026-08-28 with the benchmark protocol. `zip` is what a person
+# actually does to a CSV before emailing it, and `7z` at LZMA2 -mx=9 is the
+# strongest thing in the general-purpose family that ships as one command.
+# Neither can be driven through a pipe honestly -- zip writes a central
+# directory it has to seek back to -- so both go via a temporary directory.
+#
+# **They pay for their container, and that is deliberate.** A zip holds a
+# local header, a central directory entry and the file name; a 7z holds a
+# header and a coder description. On a 20 KB table that is a few hundred
+# bytes of real overhead. It counts AGAINST them, which is the honest
+# direction: a reader who zips a file gets a zip, not a raw deflate stream.
+
+def archiver_rows(path: str, mb: float, rows: list) -> None:
+    import shutil
+    import tempfile
+
+    def run(label, enc_argv, dec_argv, arc_name):
+        d = tempfile.mkdtemp()
+        try:
+            arc = os.path.join(d, arc_name)
+            out = os.path.join(d, "out")
+            os.makedirs(out, exist_ok=True)
+
+            def enc():
+                subprocess.run([x.format(arc=arc, path=path) for x in enc_argv],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=True)
+                return os.path.getsize(arc)
+
+            size, te = clock(enc)
+
+            def dec():
+                subprocess.run([x.format(arc=arc, out=out) for x in dec_argv],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=True)
+
+            _, td = clock(dec)
+            rows.append([label, size, mb / te, mb / td])
+        except Exception:
+            pass
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    if have("zip") and have("unzip"):
+        # -X drops the extra timestamp/uid fields: smaller, and the same
+        # bytes on any machine.
+        run("zip -9", ["zip", "-9", "-q", "-X", "-j", "{arc}", "{path}"],
+            ["unzip", "-q", "-o", "-d", "{out}", "{arc}"], "a.zip")
+
+    if have("7zz"):
+        run("7z lzma2 -mx9",
+            ["7zz", "a", "-t7z", "-m0=LZMA2:x=9", "-mmt=1", "-bso0", "-bsp0",
+             "{arc}", "{path}"],
+            ["7zz", "x", "-o{out}", "-bso0", "-bsp0", "-y", "{arc}"], "a.7z")
+
+
+# --------------------------------------------------------------------------
 # columnar competitors
 
 def arrow_rows(path: str, mb: float, rows: list) -> bool:
@@ -312,6 +372,7 @@ def measure(path: str) -> dict:
             cd, input=comp, stdout=subprocess.PIPE).stdout)
         rows.append([label, len(comp), mb / te, mb / td])
 
+    archiver_rows(path, mb, rows)
     ppmd_rows(path, mb, rows)
 
     out["parquet_exact"] = arrow_rows(path, mb, rows)
