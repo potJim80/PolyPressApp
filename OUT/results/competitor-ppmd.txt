@@ -1,0 +1,104 @@
+Competitor study 1: 7-Zip PPMd  --  2026-08-28, suite v1
+========================================================
+
+WHY THIS ONE FIRST. On suite v1 (39 tables) the best non-polypress result was
+a PPMd row on 21 of 39 tables:
+
+   7z ppmd o6    8      orc+zstd        7      xz -9e         3
+   7z ppmd o12   7      7z lzma2 -mx9   4      parquet+brotli 2
+   7z ppmd o16   6                             brotli -q11    1
+                                               bzip2 -9       1
+
+Parquet at four codecs was never the table to beat. Seven of our nine losses
+are to PPMd or ORC.
+
+
+1. IS THE COMPETITOR BEING MEASURED AT ITS CEILING?  Yes, at our settings.
+   Probed on l_nyc_311.csv (28 MB), mem=256m:
+
+     order  2   6,577,792        mem   16m   1,790,664
+     order  6   1,970,162        mem   64m   1,519,719
+     order 16   1,393,015        mem  256m   1,393,015
+     order 32   1,393,480        mem 1024m   1,393,015
+     order 64   E_INVALIDARG (7-Zip's PPMd caps at order 32)
+
+   Order saturates by 16 and is very slightly WORSE at 32; memory saturates at
+   256 MB, which is what measure_one.py already gives it (PPMD_MEM). There is
+   no untested setting where PPMd does better. Recording this so nobody has to
+   re-run it to answer "but did you tune it".
+
+
+2. WHERE DOES A LONGER CONTEXT HELP?  Not where intuition says.
+
+   The obvious hypothesis -- a longer context reaches the cell ABOVE, so
+   narrow tables should love high orders -- is FALSE, and the data says so
+   plainly. Sorted by row width, o6/o16 ratio (>1 = order 16 wins):
+
+     10.0 B/row  1.001  s_mixed_types        138.4 B/row  1.183  l_nndss_full
+     10.9 B/row  0.776  s_anticorrelated     245.1 B/row  1.189  l_nyc_collisions
+     19.8 B/row  1.001  s_high_precision     272.1 B/row  1.203  l_wa_ev_population
+     42.7 B/row  1.000  m_uuid_keys          867.9 B/row  1.414  l_nyc_311
+     52.0 B/row  0.991  s_treasury_yields    988.2 B/row  1.270  l_chicago_permits
+
+   The gain is on the WIDEST rows. At 868 bytes per row the cell above is 868
+   bytes back -- 27x beyond PPMd's hard maximum of 32. A longer order never
+   reaches another row on any real table; it buys longer literal phrases
+   inside the current row (agency names, addresses, repeated boilerplate).
+   On narrow numeric rows order 6 already spans a whole field and going higher
+   only splits the statistics across more contexts.
+
+   COROLLARY, and it is the structural point: PPMd is strictly row-major with
+   a <=32-byte reach, so it can NEVER model a column. LZMA can -- a 64 MB
+   window covers thousands of rows -- but its literal model is order-1. So the
+   two swap places by table shape, and neither removes the distance. That is
+   what the transpose does.
+
+
+3. HOW WE LOSE: coder or model?  Both, roughly 2:1 coder.
+
+   The polypress container is three xz sections (meta / packed ints / text
+   blob). Re-finishing each with PPMd instead of xz, 7z container overhead
+   (119 B/section, measured) subtracted:
+
+   file                      ppz(xz)   ppz(ppmd)  best 7z ppmd   beats it?
+   s_weblog.csv                43,600     42,175        41,415   no  (-1.8%)
+   s_permits_1k.csv           126,304    129,027       121,939   no
+   m_financial_shuffled.csv   688,065    645,217       624,550   no  (-3.3%)
+   l_weblog_big.csv           626,908    620,834       608,689   no  (-2.0%)
+   m_wide_random.csv        2,286,318  2,223,436     2,236,311   YES
+   m_financial_sorted.csv     523,636    503,057       605,848   YES
+   l_nndss_full.csv            95,275    118,372       607,738   YES (xz better)
+   l_nyc_311.csv            1,134,489  1,329,926     1,392,991   YES (xz better)
+
+   Per section, the split is consistent and mechanically sensible:
+
+     TEXT BLOB   PPMd beats xz almost everywhere: -4.3% (s_weblog), -5.3%
+                 (financial_sorted), -6.6% (nndss), -10.7% (financial_shuffled),
+                 -3.8% (weblog_big). Exception: nyc_311 +17%.
+     PACKED INTS xz beats PPMd almost everywhere: +27% (nndss), +18% (nyc_311),
+                 +9% (permits), +3% (financial_shuffled). Exception:
+                 wide_random -2.7%.
+
+   PPMd has no match model at all, so byte-packed integer streams -- whose
+   redundancy is periodic at the record stride -- are exactly what it cannot
+   see, and exactly what LZMA's match finder eats. The reverse holds for
+   English-like text.
+
+   On s_weblog the full PPMd re-finish takes a 5.3% loss down to 1.8%. So
+   about two thirds of that loss is our entropy coder and one third is that
+   PPMd's whole-file context beats our column split on that table.
+
+
+4. THE COMPETITOR'S COSTS, which the size table does not show.
+
+   - Decode is as slow as encode: 19-42 MB/s each way, against xz's 4.2 enc /
+     102 dec and our 1.8 / 74. PPMd is the only entry in the lineup with no
+     fast side.
+   - The decoder needs the SAME model memory as the encoder -- 256 MB here,
+     and it is not optional: decoding an archive written at mem=256m requires
+     256 MB or it fails.
+   - No random access, no columns, no schema. It is one adaptive pass over one
+     byte stream.
+   - If the pool fills, var. H RESTARTS the model from empty. That is the
+     16m/64m rows above: not a gentler curve, a cliff.
+
