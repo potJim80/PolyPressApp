@@ -1,9 +1,12 @@
 # Working on Polypress
 
-> **▶ Standing instruction from Mahdi (2026-09-28): rewrite everything to be only C code.**
-> This is the next job, wherever this project is opened. Read the note at the top of
-> `04 Projects/PolyPress/Next.md` in the Obsidian vault first. It lists what to settle
-> with him before deleting any Python, including what becomes of invariant 1.
+> **Polypress is C only since 2026-09-29.** Mahdi's order (2026-09-28): "whatever can be
+> just C, move it to C. If anything needs python, keep it python, but don't have 2 of each
+> unnecessarily ... stop using the python to see if the C is working." Done: the program is
+> `work/csrc/`; the Python codec, its CLI, its tests and the turbo fork were deleted
+> (recoverable from commit `c55f68f`). What is still Python and why: `py/parquet.py`
+> (Arrow) and `benchmarks/` (they drive pyarrow and the other competitors). The Mac app is
+> Swift (`app/PolypressApp.swift` + `app/page/`). **Never reintroduce a second implementation to check the first against.**
 
 A lossless compressor for data tables. Read this before changing the codec —
 most of it is hard-won and several items overturned an "obviously correct"
@@ -33,20 +36,39 @@ at here independently; claim withdrawn — see the prior-art note in README.md.
 
 ## Non-negotiable invariants
 
-1. **The C encoder is byte-identical to the Python one.** Not equivalent —
-   identical. `tests/test_cbin.py` enforces it, against `fast.encode` — which
-   means the *container choice* is part of the guarantee, not just the bytes
-   inside a container. Any format change must land in `polypress/fast.py` and
-   `csrc/ppz_encode.c` in the *same commit*.
-2. **Never worse.** A modelled encoding must beat the plain fallback, and a
+1. **The archive format is frozen, and threads never change bytes.** Every
+   `.ppz` ever written must keep opening: a format change needs a new
+   container magic or a metadata key old decoders refuse, and lands in
+   `ppz_encode.c` and `ppz_decode.c` in the same commit. The encoder is
+   deterministic -- `PPZ_THREADS=1` and the default must write identical
+   bytes (`csrc/tests/` checks it). Until 2026-09-29 this invariant read "the
+   C encoder is byte-identical to the Python one"; the port is why the
+   deterministic-choice rules below exist (quantised entropy scores, index
+   tie-breaks, frozen canonical CSV), and they still bind.
+2. **~~Never worse.~~ RETIRED 2026-09-29 by Mahdi: one pass.** "Just have a
+   single process ... one algorithm to reorder, one compression algorithm."
+   Measured first on the 39-table suite: the trial encodes (strict plan,
+   no-2D plan, four pile layouts) plus the xz+bzip2 check of the whole CSV
+   cost 2.3x encode time (3x single-threaded; the CSV check alone was 69%)
+   for 2.5% smaller output. `ppz_encode` is now: lenient screen -> classify
+   -> parents (entropy + preset-1 probes, cheap) -> one pile (alphabets
+   front-coded) -> xz -9e once per stream. Do NOT re-add a trial encode or
+   a whole-table check without asking him; propose it with numbers. The
+   historical text below explains why each trial existed, and the
+   measured/unmeasured lesson still applies to how a FIXED rule is chosen.
+   Old text: A modelled encoding must beat the plain fallback, and a
    parent must beat no parent, *measured*, not assumed. This binds **both**
-   implementations: the C encoder ran without the plain fallbacks until
-   2026-07-27 and quietly wrote larger files than Python on any table where no
-   trick fired. See "the measured/unmeasured trap" below.
+   paths: the C encoder once ran without the plain fallbacks and quietly wrote
+   larger files on any table where no trick fired. See "the measured/unmeasured
+   trap" below.
 3. **The decoder treats its input as hostile.** It reads files other people
    made. Corrupt input must be refused, never crash, never allocate unbounded.
-4. **Verify before writing.** Both CLIs decode the blob and compare every cell
-   before a file is created.
+4. **Verify before writing.** `compress` and `stream-compress` decode the
+   blob and compare every cell before a file is created; outputs are written
+   beside their name and renamed into place only on success. And the reader
+   refuses rather than repairs -- strict UTF-8 unless `--encoding`, and a row
+   wider than the header is refused unless the extra cells are empty --
+   because a check downstream of the damage cannot see the damage.
 5. **Negative results get written down**, in the README table. Several are
    already there and they are the most valuable part of the document.
 
@@ -75,26 +97,27 @@ IN/            all input data, none of it committed (see .gitignore):
 OUT/results/   sweep output. The .jsonl and the summary are committed; the
                downloaded CSV is not (see .gitignore)
 work/          all code. cd here before running anything:
-  polypress/   the codec. fast.py is the whole thing; dtz.py is table I/O;
-               stream.py is the bounded-memory block variant; caccel.py+tcz.c
-               is an optional ctypes accelerator (NOT the standalone binary)
-  csrc/        the standalone C binary: no Python, no numpy. ppz_encode.c and
-               ppz_decode.c mirror fast.py step for step
-  tzip.py      shim -> polypress/cli.py (the `polypress` console script)
-  app/         the Mac app. build_app.sh, build_app.sh dmg
-  tests/       test_fast, test_dtz, test_stream, test_cbin, test_fuzz,
-               test_hostile, test_encoding
-  benchmarks/  measure_one.py (one table, every competitor) + sweep.py (a
-               corpus, one subprocess per table, resumable) + report.py
-               (aggregate into the claims). fetch_socrata100.py pulls the
-               unbiased 100; fetch_corpus.py + fetch_nhanes.py +
-               fetch_matrix.py pull the curated sets; make_hostile.py
-               generates adversarial tables. probe_cross_column.py and
-               probe_fallback_gate.py are this codec's own evidence, cited
-               under "where the wins are" and "honest status" -- not forks
+  csrc/        THE PROGRAM. ppz_encode.c / ppz_decode.c the codec,
+               ppz_io.c table readers + writers + encodings, ppz_stream.c
+               the PPZS block container, ppz_thread.c the trial threads,
+               ppz_util.c buffers/lzma/bz2/JSON, ppz_main.c the CLI.
+               build.sh links liblzma statically so the binary runs anywhere
+  csrc/tests/  the test suite, in C. run.sh builds and runs all of it
+  py/          parquet.py: Parquet <-> CSV via pyarrow, the one format that
+               needs Python. Pipes through `polypress ... -`
+  app/         the Mac app: PolypressApp.swift (window, drops, runs the
+               binary) + page/index.html (what it draws, in the quiet
+               register of his other apps). build_app.sh, build_app.sh dmg
+  benchmarks/  measure_one.py (one table, every competitor; polypress is
+               timed as a subprocess) + sweep.py (a corpus, one subprocess
+               per table, resumable) + report.py (aggregate into the
+               claims). fetch_socrata100.py pulls the unbiased 100;
+               fetch_corpus.py + fetch_nhanes.py + fetch_matrix.py pull the
+               curated sets; make_hostile.py generates adversarial tables
   docs/        the results PDF and the script that builds it
-  pyproject.toml, build/, dist/, *.egg-info -- the build lives beside
-               pyproject.toml, so it regenerates here, not in OUT/
+  lab/         experiments, not the program. nodegraph/ is C and runs;
+               reorder/ and improve/ were Python harnesses around fast.py and
+               went with it (code at c55f68f, results in OUT/results/)
 ```
 
 ## Retired forks — 2026-08-04
@@ -141,32 +164,29 @@ this; each one is a question already answered.
 ## Running things
 
 ```bash
-python3 tests/test_fast.py      # 0.4s
-python3 tests/test_dtz.py       # 1.5s
-python3 tests/test_stream.py    # 2.0s
-python3 tests/test_cbin.py      # C must match Python byte for byte
-python3 tests/test_fuzz.py      # random adversarial tables, both languages
-python3 tests/test_hostile.py   # corrupt stream archives, run in a
-                                # memory-capped subprocess (invariant 3). Its
-                                # ondemand half self-skips now that the branch
-                                # is gone -- that is by design, not a gap
-python3 tests/test_lying_header.py  # headers that are well-formed and LIE.
-                                # Mutation fuzzing cannot build these, which is
-                                # why three unchecked indices and a segfault
-                                # survived every earlier pass
-python3 tests/test_encoding.py  # BOMs, UTF-16, latin-1: read or refuse
-python3 tests/test_input_guard.py   # the C binary must refuse what it cannot
-                                # parse. It used to read a .parquet as text,
-                                # verify it, and restore garbage
-python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv   # invariant 1 on real
-                                # data, not constructed cases. Slow; needs the
-                                # corpus downloaded. Run before releasing
-python3 app/gui.py --selftest   # compiles every AppleScript AND runs the
-                                # whole menu headless (26 checks). This is
-                                # the build gate in app/build_app.sh.
 ./csrc/build.sh                 # needs lzma.h: brew install xz
-./app/build_app.sh dmg          # -> dist/Polypress.dmg
+./csrc/tests/run.sh             # the whole suite, C. Run after ANY change in
+                                # csrc/: round trips, never-worse, threads
+                                # vs serial byte identity, hostile and lying
+                                # archives in a capped child, readers,
+                                # encodings, streaming, the CLI
+./app/build_app.sh              # builds, runs `Polypress --selftest` (every
+                                # action on real files, no window -- the
+                                # build gate), installs ~/Applications.
+                                # NEVER launch the app to test it: it is a
+                                # shared family Mac. Check the look by
+                                # rendering app/page/index.html with a demo
+                                # state to a PNG, headless
+./app/build_app.sh dmg          # -> dist/Polypress.dmg (DEST=dir to build
+                                # somewhere other than ~/Applications)
 ```
+
+**Before any change that could move bytes, snapshot the suite first**: build
+the committed binary into a scratch dir (`git archive HEAD work/csrc | tar -x
+-C $tmp`), compress every `IN/suite` table with both, and `cmp` the archives.
+That is how the 2026-09-29 port was checked (39/39 identical, threaded and
+serial). A change that is *meant* to move bytes (derived columns, say) gets
+its size effect measured on the suite instead, by form.
 
 **Do not wrap the suites in a `python3 -c` subprocess loop with a long
 timeout** — that has hung twice in this repo for reasons unrelated to the
@@ -230,13 +250,13 @@ the rest of the run with it — `benchmarks/` has no driver for this, it is a
 few lines of shell. A full sweep of 26 datasets takes **19 minutes**, not the
 ~40 recorded earlier.
 
-**Superseded 2026-09-28 by the threaded encoder** (see "threads" at the top of
-`fast.py`). Several xz -9e trials now run at once, each touching ~64 MB plus
-~8 bytes per input byte, so peak memory roughly doubled on the large tables:
-`chicago_permits` 772 → 1,739 MB, `chicago_crimes` 805 → 1,482 MB. The worst
-of the ten `l_` suite tables fits `(input MB x 60) + 200`; use that for
-`fast.encode`. `stream.py` encodes with `parallel=False`, so its `--budget`
-still means what it says, and `PPZ_THREADS=1` gives the serial peak anywhere.
+**Superseded again 2026-09-29: the C program.** Its threaded encoder peaks
+at about **`(input MB x 50) + 100`** (the ten `l_` suite tables: worst
+`chicago_permits` 26 MB -> 1,268 MB, `chicago_crimes` 1,155 MB), against
+~500-630 MB for the same tables on one thread. `stream-compress` runs on one
+thread so its `--budget` means what it says; `PPZ_THREADS=1` gives the serial
+peak anywhere, and `run_suite.sh` sets it so the benchmark compares one thread
+with one thread.
 
 ## The measured/unmeasured trap — read this before optimising
 
@@ -398,15 +418,16 @@ sole gateway to the planar predictor.
 - **Known divergence, recorded not fixed:** a CSV containing a NUL byte is
   *refused* by Python (`_csv.Error: line contains NUL`) and *accepted* by the
   C reader. Not data loss and not invariant 1 — which is about two encoders
-  given the same table — but the two CLIs disagree about whether that file is
-  readable. Changing either reader's mind about NUL is a format decision.
+  given the same table — but the two CLIs disagreed about whether that file
+  was readable. With one reader left, NUL is accepted (it forces quoting in
+  the canonical CSV); changing that is a format decision.
 - **Tkinter looks available on macOS and is not.** Apple's Tk 8.5.9 imports,
   constructs every `ttk` widget, and `destroy()`s cleanly — so a probe that
   builds widgets on a withdrawn window *passes*. It is **mapping** the window
   that wedges: one `update()` on a shown window never returns, with no error
-  and no window. Re-verified 2026-07-28. This is why `app/gui.py` drives
-  osascript instead; do not "improve" it to Tk on the strength of a widget
-  probe.
+  and no window. Re-verified 2026-07-28. This is why the old `app/gui.py`
+  drove osascript, and why the app is Swift + WKWebView now (2026-09-29);
+  do not reach for Tk on the strength of a widget probe.
 - **Python's `csv.writer` is not the obvious CSV writer**, and the plain
   fallback compresses exactly its output, so `table_write_canonical` in
   `ppz_util.c` has to match it byte for byte. Three rules, all found by

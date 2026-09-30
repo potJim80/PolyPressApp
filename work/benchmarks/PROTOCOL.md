@@ -32,7 +32,7 @@ archivers are in it, not just the LZ family.
 | general purpose | `gzip -9`, `bzip2 -9`, `xz -9e`, `lz4 -9`, `zstd -3`, `zstd -19`, `zstd -22`, `brotli -q11` |
 | archivers | `zip -9`, `7z LZMA2 -mx9`, `7z PPMd` at orders 6, 12, 16 |
 | columnar files | Parquet at snappy / gzip-9 / brotli-11 / zstd-22, ORC at snappy / zlib / zstd, Feather at lz4 / zstd |
-| this codec | `polypress`, `polypress-turbo`, and `polypress+zstd` / `polypress+brotli` (re-finished, see §5) |
+| this codec | `polypress` (the C program, `csrc/polypress`, run as its own process with `PPZ_THREADS=1`), and `polypress+zstd` / `polypress+brotli` (re-finished, see §5) |
 
 Rules for the lineup:
 

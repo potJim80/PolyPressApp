@@ -25,6 +25,8 @@
 #include "ppz.h"
 
 #include <math.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -135,7 +137,11 @@ static int64_t *diff_n(const int64_t *a, size_t n, int k, size_t *out_n)
     size_t len = n;
     for (int r = 0; r < k; r++) {
         if (len == 0) break;
-        for (size_t i = 0; i + 1 < len; i++) cur[i] = cur[i + 1] - cur[i];
+        /* unsigned: values reach +-2^62, and a difference of two of them
+         * overflows int64. Wrapping is what the decoder undoes; signed
+         * overflow would be undefined behaviour instead */
+        for (size_t i = 0; i + 1 < len; i++)
+            cur[i] = (int64_t)((uint64_t)cur[i + 1] - (uint64_t)cur[i]);
         len--;
     }
     *out_n = len;
@@ -992,6 +998,34 @@ static size_t probe_order(const Table *t, size_t col, const size_t *perm,
  * entropy measures how often the parent pins the exact value, which is not
  * what shrinks text, and reordering also destroys whatever useful order the
  * file already had. */
+/* One measured candidate: column `tp` in its own order (dp < 0) or sorted by
+ * dictionary column `dp`. Every probe is independent of every other, so they
+ * all run together; the fold afterwards is the serial one. */
+typedef struct {
+    const Table   *t;
+    const ColPlan *plan;
+    size_t         nrows, tp;
+    long           dp;
+    size_t         cost;
+} Probe;
+
+static void probe_task(void *arg)
+{
+    Probe *pr = arg;
+    size_t nrows = pr->nrows;
+    if (pr->dp < 0) { pr->cost = probe_order(pr->t, pr->tp, NULL, nrows); return; }
+    KVI *kv = malloc((nrows ? nrows : 1) * sizeof(KVI));
+    size_t *perm = malloc((nrows ? nrows : 1) * sizeof(size_t));
+    if (!kv || !perm) { free(kv); free(perm); pr->cost = (size_t)-1; return; }
+    const int64_t *pv = pr->plan[pr->dp].ids;
+    for (size_t i = 0; i < nrows; i++) { kv[i].v = pv[i]; kv[i].i = i; }
+    qsort(kv, nrows, sizeof(KVI), kvi_cmp);
+    for (size_t i = 0; i < nrows; i++) perm[i] = kv[i].i;
+    free(kv);
+    pr->cost = probe_order(pr->t, pr->tp, perm, nrows);
+    free(perm);
+}
+
 static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
                               size_t nrows, long *tparent)
 {
@@ -1019,10 +1053,13 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
     if (step < 1) step = 1;
     size_t sn = (nrows + step - 1) / step;
 
+    /* the shortlist: per text column, up to TEXT_PARENT_CANDIDATES parents */
+    Probe *probes = malloc(nt * (TEXT_PARENT_CANDIDATES + 1) * sizeof(Probe));
+    size_t nprobes = 0;
     int64_t **dsample = calloc(nd, sizeof(int64_t *));
     double  *dbase = calloc(nd, sizeof(double));
     size_t  *ddist = calloc(nd, sizeof(size_t));
-    if (!dsample || !dbase || !ddist) goto done;
+    if (!probes || !dsample || !dbase || !ddist) goto done;
     for (size_t i = 0; i < nd; i++) {
         dsample[i] = malloc((sn ? sn : 1) * sizeof(int64_t));
         size_t k = 0;
@@ -1062,30 +1099,35 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
         if (!ncand) { free(cands); continue; }
         qsort(cands, ncand, sizeof(Cand), cand_cmp);
 
-        size_t best_cost = probe_order(t, tp, NULL, nrows);
-        long best = -1;
-        size_t take = ncand < TEXT_PARENT_CANDIDATES
-                    ? ncand : TEXT_PARENT_CANDIDATES;
-        for (size_t c = 0; c < take; c++) {
-            size_t dp = dict_pos[cands[c].dp];
-            KVI *kv = malloc((nrows ? nrows : 1) * sizeof(KVI));
-            int64_t *pv = plan[dp].ids;
-            for (size_t i = 0; i < nrows; i++) { kv[i].v = pv[i]; kv[i].i = i; }
-            qsort(kv, nrows, sizeof(KVI), kvi_cmp);
-            size_t *perm = malloc((nrows ? nrows : 1) * sizeof(size_t));
-            for (size_t i = 0; i < nrows; i++) perm[i] = kv[i].i;
-            free(kv);
-            size_t cost = probe_order(t, tp, perm, nrows);
-            free(perm);
-            if (cost < best_cost) { best_cost = cost; best = (long)dp; }
-        }
+        /* Conditional entropy only NOMINATES; the decision is measured. It
+         * measures how often the parent pins the exact value, which is not
+         * what shrinks text, and reordering also destroys whatever useful
+         * order the file already had. Trusting the score alone made one
+         * real dataset 66% larger. */
+        size_t take = ncand < TEXT_PARENT_CANDIDATES ? ncand : TEXT_PARENT_CANDIDATES;
+        probes[nprobes++] = (Probe){ t, plan, nrows, tp, -1, 0 };
+        for (size_t c = 0; c < take; c++)
+            probes[nprobes++] = (Probe){ t, plan, nrows, tp, (long)dict_pos[cands[c].dp], 0 };
         free(cands);
+    }
+
+    ppz_parallel(probe_task, probes, sizeof(Probe), nprobes);
+
+    /* the serial fold: own order first, then the candidates in rank order,
+     * each kept only if strictly smaller */
+    for (size_t i = 0; i < nprobes; ) {
+        size_t tp = probes[i].tp, best_cost = probes[i].cost;
+        long best = -1;
+        size_t j = i + 1;
+        for (; j < nprobes && probes[j].dp >= 0 && probes[j].tp == tp; j++)
+            if (probes[j].cost < best_cost) { best_cost = probes[j].cost; best = probes[j].dp; }
         tparent[tp] = best;
+        i = j;
     }
 
 done:
     if (dsample) for (size_t i = 0; i < nd; i++) free(dsample[i]);
-    free(dsample); free(dbase); free(ddist);
+    free(dsample); free(dbase); free(ddist); free(probes);
     free(dict_pos); free(text_pos);
 }
 
@@ -1149,38 +1191,6 @@ static void json_int(Buf *b, long long v)
 
 typedef struct { size_t n, b; int nl; int fc; } SMeta;
 
-/* Sampling cap and nomination floors -- must match fast.py exactly, since they
- * decide which groups get front-coded and therefore which archive is written. */
-#define FC_PREFIX_CAP 4000
-#define FC_MIN_BYTES  1024
-#define FC_MIN_NUM    1
-#define FC_MIN_DEN    4
-
-/* Bytes shared with the previous word, and total bytes. Mirrors
- * fast._prefix_stats: byte comparisons, prefix capped at 255, sampled to
- * FC_PREFIX_CAP words. Returned as two integers rather than a ratio so both
- * implementations rank by cross-multiplying and never compare floats. */
-static void prefix_stats(const Str *words, size_t count,
-                         int64_t *shared, int64_t *total)
-{
-    *shared = 0;
-    *total = 0;
-    size_t n = count < FC_PREFIX_CAP ? count : FC_PREFIX_CAP;
-    if (n < 2) return;
-    Str prev = words[0];
-    *total = (int64_t)prev.n;
-    for (size_t i = 1; i < n; i++) {
-        Str c = words[i];
-        size_t m = prev.n < c.n ? prev.n : c.n;
-        if (m > 255) m = 255;
-        size_t k = 0;
-        while (k < m && prev.p[k] == c.p[k]) k++;
-        *shared += (int64_t)k;
-        *total += (int64_t)c.n;
-        prev = c;
-    }
-}
-
 /* One group into the pile. `front` front-codes it; otherwise newline-joined,
  * or concatenated with an external length array when it contains a newline. */
 static void pile_group(Buf *out, const Str *w, size_t count, int has_nl,
@@ -1218,6 +1228,42 @@ static void pile_group(Buf *out, const Str *w, size_t count, int has_nl,
     }
 }
 
+/* One candidate layout of the text pile, built and compressed. The pile
+ * itself is dropped as soon as it is compressed: only its size, its metadata
+ * and its compressed bytes are needed to decide. */
+typedef struct {
+    Str                 **sg;
+    const size_t         *sgn;
+    size_t                nsg;
+    const unsigned char  *has_nl;
+    unsigned char        *front;
+    SMeta                *sm;
+    Buf                   z;
+    int                   ok;
+} PileJob;
+
+static void build_pile(Str **sg, const size_t *sgn, size_t nsg,
+                       const unsigned char *has_nl,
+                       const unsigned char *front, Buf *txt, SMeta *sm);
+
+static void pile_task(void *arg)
+{
+    PileJob *j = arg;
+    Buf txt;
+    buf_init(&txt);
+    build_pile(j->sg, j->sgn, j->nsg, j->has_nl, j->front, &txt, j->sm);
+    j->ok = !ppz_lzma_compress(txt.data, txt.len, &j->z);
+    buf_free(&txt);
+}
+
+typedef struct { const Buf *in; Buf *out; int ok; } BinJob;
+
+static void bins_task(void *arg)
+{
+    BinJob *j = arg;
+    j->ok = !ppz_lzma_compress(j->in->data, j->in->len, j->out);
+}
+
 static void build_pile(Str **sg, const size_t *sgn, size_t nsg,
                        const unsigned char *has_nl,
                        const unsigned char *front, Buf *txt, SMeta *sm)
@@ -1238,15 +1284,45 @@ static void build_pile(Str **sg, const size_t *sgn, size_t nsg,
  * every numeric column falls through to its own measured differencing order.
  * `ngroups_out` reports how many groups formed, so the caller knows whether
  * the second encode is worth running at all. */
+/* Are all the column names valid UTF-8? They travel in the JSON metadata,
+ * and JSON cannot carry a stray byte: the escaper would turn 0xFF into
+ * \u00ff, which comes back as C3 BF -- a renamed column. Tables read from
+ * files never have such names (the readers validate UTF-8); a program using
+ * this as a library can. */
+static int names_are_utf8(const Table *t)
+{
+    for (size_t j = 0; j < t->ncols; j++) {
+        const unsigned char *p = (const unsigned char *)t->names[j];
+        while (*p) {
+            unsigned c = *p;
+            size_t need = c < 0x80 ? 0 : (c >= 0xC2 && c <= 0xDF) ? 1
+                        : (c >= 0xE0 && c <= 0xEF) ? 2 : (c >= 0xF0 && c <= 0xF4) ? 3 : 9;
+            if (need == 9) return 0;
+            unsigned lo = 0x80, hi = 0xBF;
+            if (c == 0xE0) lo = 0xA0; else if (c == 0xED) hi = 0x9F;
+            else if (c == 0xF0) lo = 0x90; else if (c == 0xF4) hi = 0x8F;
+            for (size_t k = 1; k <= need; k++) {
+                unsigned x = p[k];
+                if (x < (k == 1 ? lo : 0x80) || x > (k == 1 ? hi : 0xBF)) return 0;
+            }
+            p += need + 1;
+        }
+    }
+    return 1;
+}
+
 static int encode_modelled(const Table *t, Buf *out, long *fired,
                            int use_2d, size_t *ngroups_out,
                            int use_lenient, size_t *nlax_out)
 {
+    if (!names_are_utf8(t)) return -1;
     if (fired) *fired = 0;
     if (ngroups_out) *ngroups_out = 0;
     if (nlax_out) *nlax_out = 0;
     size_t nc = t->ncols, nr = t->nrows;
+    double tr = ppz_now();
     ColPlan *plan = classify(t, use_lenient);
+    ppz_trace(use_lenient ? "classify (lenient)" : "classify (strict)", tr); tr = ppz_now();
     if (!plan) return -1;
     if (nlax_out) {
         /* only PROMISING columns are reported, because this is what decides
@@ -1260,6 +1336,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     Group *groups = use_2d ? find_2d_groups(plan, nc, nr, &ngroups) : NULL;
     if (ngroups_out) *ngroups_out = ngroups;
     Parents P = pick_parents(plan, nc, nr);
+    ppz_trace("2d groups + dictionary parents", tr); tr = ppz_now();
     if (!P.parent) { plan_free(plan, nc); return -1; }
 
     Buf bins;           /* concatenated binary payloads */
@@ -1312,7 +1389,9 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     /* text columns and standalone numeric columns, in positional order */
     long *tparent = malloc((nc ? nc : 1) * sizeof(long));
     for (size_t i = 0; i < nc; i++) tparent[i] = -1;
+    ppz_trace("dictionary payloads", tr); tr = ppz_now();
     pick_text_parents(t, plan, nc, nr, tparent);
+    ppz_trace("text parents (probes)", tr); tr = ppz_now();
 
     Str **text_cells = calloc(nc ? nc : 1, sizeof(Str *));
     Str **ex_cells = calloc(nc ? nc : 1, sizeof(Str *));
@@ -1381,17 +1460,18 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
         int64_t *flat = malloc(total * sizeof(int64_t));
         /* M[0] row, then first-column differences, then the double difference */
         for (size_t c = 0; c < w; c++) flat[c] = plan[groups[g].pos[c]].ints[0];
+        /* unsigned throughout, for the same reason as diff_n */
         for (size_t i = 1; i < nr; i++)
-            flat[w + (i - 1)] = plan[groups[g].pos[0]].ints[i]
-                              - plan[groups[g].pos[0]].ints[i - 1];
+            flat[w + (i - 1)] = (int64_t)((uint64_t)plan[groups[g].pos[0]].ints[i]
+                              - (uint64_t)plan[groups[g].pos[0]].ints[i - 1]);
         size_t at2 = w + (nr - 1);
         for (size_t i = 1; i < nr; i++)
             for (size_t c = 1; c < w; c++) {
-                int64_t d1 = plan[groups[g].pos[c]].ints[i]
-                           - plan[groups[g].pos[c]].ints[i - 1];
-                int64_t d0 = plan[groups[g].pos[c - 1]].ints[i]
-                           - plan[groups[g].pos[c - 1]].ints[i - 1];
-                flat[at2 + (i - 1) * (w - 1) + (c - 1)] = d1 - d0;
+                uint64_t d1 = (uint64_t)plan[groups[g].pos[c]].ints[i]
+                            - (uint64_t)plan[groups[g].pos[c]].ints[i - 1];
+                uint64_t d0 = (uint64_t)plan[groups[g].pos[c - 1]].ints[i]
+                            - (uint64_t)plan[groups[g].pos[c - 1]].ints[i - 1];
+                flat[at2 + (i - 1) * (w - 1) + (c - 1)] = (int64_t)(d1 - d0);
             }
         size_t at = bins.len;
         pack_ints(flat, total, &bins);
@@ -1409,7 +1489,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     size_t nlenbins = 0;
 
     unsigned char *has_nl = calloc(nsg ? nsg : 1, 1);
-    if (!has_nl) { buf_free(&lenbins); free(lenbinsz); free(smeta); }
+    if (!has_nl) { buf_free(&lenbins); free(lenbinsz); lenbinsz = NULL; }
     for (size_t g = 0; g < nsg && has_nl; g++)
         for (size_t i = 0; i < sgn[g]; i++)
             if (memchr(sg[g][i].p, '\n', sg[g][i].n)) { has_nl[g] = 1; break; }
@@ -1427,141 +1507,50 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
         lenbinsz[nlenbins++] = lenbins.len - la;
         free(lens);
     }
-    /* Front-coding the dictionary alphabets, measured. Mirrors fast.py: the
-     * alphabets are the first P.norder string groups by construction and are
-     * sorted, so neighbours share long prefixes. Worth -1.19% overall and
-     * -7.39% on seattle_fire911, but it LOSES on four of thirteen datasets, so
-     * the blob is built both ways and the smaller kept.
-     *
-     * The shared prefix is counted in BYTES and capped at 255. Python counts
-     * bytes too, deliberately -- counting characters there would produce a
-     * different archive for any word with a non-ASCII prefix.
-     *
-     * Cheap as guards go: this re-compresses only the text pile, where the
-     * exceptions guard costs a second full encode. */
-    /* Declared here rather than at the container, because the text pile is
-     * compressed early: the metadata carries the chosen group sizes, so the
-     * plain-versus-front-coded decision has to be made before meta is built. */
+    /* One text pile, one layout, one compression. The dictionary alphabets
+     * (the first P.norder groups, sorted by construction, so neighbours share
+     * long prefixes) are front-coded; nothing else is. That was the best
+     * single fixed rule on the suite -- the old encoder built up to four
+     * layouts and kept the smallest, which bought ~0.5% for four -9e passes.
+     * The binary payload is final before the pile is built, so the two are
+     * compressed at the same time. */
     Buf mz, bz, tz;
     buf_init(&mz); buf_init(&bz); buf_init(&tz);
     int rc = -1;
-
-    /* Which groups to front-code, decided by compressing the WHOLE pile.
-     * Mirrors fast._choose_front branch for branch, including the order the
-     * candidates are tried in, because the choice selects the archive. */
-    unsigned char *front = calloc(nsg ? nsg : 1, 1);
-    unsigned char *trial = calloc(nsg ? nsg : 1, 1);
-    unsigned char *bestf = calloc(nsg ? nsg : 1, 1);
-    SMeta *smeta_t = calloc(nsg ? nsg : 1, sizeof(SMeta));
-    Buf txt_t;
-    buf_init(&txt_t);
-    if (!front || !trial || !bestf || !smeta_t || !has_nl) {
-        free(front); free(trial); free(bestf); free(smeta_t);
-        buf_free(&txt_t); buf_free(&lenbins); free(lenbinsz); free(has_nl);
-        goto done;
-    }
-
-    /* candidate 1: nothing front-coded */
-    build_pile(sg, sgn, nsg, has_nl, front, &txt, smeta);
-    if (ppz_lzma_compress(txt.data, txt.len, &tz)) {
-        free(front); free(trial); free(bestf); free(smeta_t);
-        buf_free(&txt_t); buf_free(&lenbins); free(lenbinsz); free(has_nl);
-        goto done;
-    }
-    size_t best_z = tz.len;
-
-    #define TAKE_TRIAL()                                                      \
-        do {                                                                  \
-            buf_free(&tz); buf_init(&tz);                                     \
-            buf_put(&tz, tz2.data, tz2.len);                                  \
-            best_z = tz2.len;                                                 \
-            memcpy(bestf, trial, nsg);                                        \
-            memcpy(smeta, smeta_t, nsg * sizeof(SMeta));                      \
-        } while (0)
-
-    /* candidate 2: every dictionary alphabet */
-    if (P.norder > 0) {
-        memset(trial, 0, nsg);
-        for (size_t g = 0; g < P.norder && g < nsg; g++) trial[g] = 1;
-        build_pile(sg, sgn, nsg, has_nl, trial, &txt_t, smeta_t);
-        Buf tz2;
-        buf_init(&tz2);
-        if (!ppz_lzma_compress(txt_t.data, txt_t.len, &tz2) && tz2.len < best_z)
-            TAKE_TRIAL();
-        buf_free(&tz2);
-    }
-
-    /* candidate 3: the winner so far plus the single group with the most bytes
-     * at stake. TEXT_FC_CANDIDATES is 1 because measurement said one trial
-     * takes 96% of the available gain for a sixth of the time penalty. */
-    {
-        long pick = -1;
-        int64_t best_stake = 0;
-        /* Start at P.norder, NOT at 0. Python's loop is
-         * `for i in range(ndict, len(groups))`, so a dictionary alphabet is
-         * only ever front-coded as part of candidate 2 -- the all-or-nothing
-         * block -- and never individually.
-         *
-         * This loop used to start at 0 and skip whatever was already in
-         * `bestf`, which looks equivalent and is not: when candidate 2 loses,
-         * `bestf` is empty, so the alphabets became eligible here and C could
-         * front-code one on its own. Python cannot. Found 2026-07-30 by
-         * tests/test_cbin_corpus.py on a Colombian pharmaceutical register
-         * where all 26 string groups were alphabets: Python had zero
-         * candidates and C picked group 6, giving a 41-byte smaller but
-         * DIFFERENT archive. Both decoded correctly and each read the other's
-         * output, so it was never a data bug -- but invariant 1 is
-         * byte-identity, and "C is 0.13% better here" is exactly the kind of
-         * silent divergence that guarantee exists to forbid. */
-        for (size_t g = P.norder; g < nsg; g++) {
-            if (bestf[g] || has_nl[g] || sgn[g] < 2) continue;
-            int64_t sh = 0, tot = 0;
-            prefix_stats(sg[g], sgn[g], &sh, &tot);
-            if (sh <= 0 || tot <= 0) continue;
-            if (sh * FC_MIN_DEN <= tot * FC_MIN_NUM) continue;
-            size_t sampled = sgn[g] < FC_PREFIX_CAP ? sgn[g] : FC_PREFIX_CAP;
-            int64_t stake = sh * (int64_t)sgn[g] / (int64_t)sampled;
-            if (stake < FC_MIN_BYTES) continue;
-            /* strictly greater keeps the lowest index on a tie, as Python's
-             * sort by (-stake, index) does */
-            if (stake > best_stake) { best_stake = stake; pick = (long)g; }
-        }
-        if (pick >= 0) {
-            memcpy(trial, bestf, nsg);
-            trial[pick] = 1;
-            build_pile(sg, sgn, nsg, has_nl, trial, &txt_t, smeta_t);
-            Buf tz2;
-            buf_init(&tz2);
-            if (!ppz_lzma_compress(txt_t.data, txt_t.len, &tz2)
-                    && tz2.len < best_z)
-                TAKE_TRIAL();
-            buf_free(&tz2);
-        }
-    }
-    #undef TAKE_TRIAL
-
-    /* "exactly the alphabets" is the common case and the archive-level flag
-     * spells it in 7 bytes rather than 7 per group. Same information, smaller
-     * metadata; the decoder reads both spellings. */
-    int use_fc = 0;
-    if (P.norder > 0) {
-        int all_alpha = 1;
-        for (size_t g = 0; g < nsg; g++) {
-            int want = (g < P.norder);
-            if ((bestf[g] != 0) != want) { all_alpha = 0; break; }
-        }
-        use_fc = all_alpha;
-    }
-    for (size_t g = 0; g < nsg; g++) smeta[g].fc = use_fc ? 0 : bestf[g];
-
-    free(front); free(trial); free(bestf); free(smeta_t);
-    buf_free(&txt_t); free(has_nl);
+    if (!has_nl) goto done;
 
     /* length arrays always go last in the binary payload */
     buf_put(&bins, lenbins.data, lenbins.len);
     for (size_t i = 0; i < nlenbins; i++) binsz[nbins++] = lenbinsz[i];
     buf_free(&lenbins);
     free(lenbinsz);
+    BinJob bj = { &bins, &bz, 0 };
+    PpzBg *bins_bg = ppz_bg_start(bins_task, &bj);
+
+    PileJob pile;
+    memset(&pile, 0, sizeof(pile));
+    pile.sg = sg; pile.sgn = sgn; pile.nsg = nsg; pile.has_nl = has_nl;
+    pile.front = calloc(nsg ? nsg : 1, 1);
+    pile.sm = smeta;
+    buf_init(&pile.z);
+    if (pile.front) {
+        for (size_t g = 0; g < P.norder && g < nsg; g++) pile.front[g] = 1;
+        ppz_trace("numeric payloads + pile prep", tr); tr = ppz_now();
+        pile_task(&pile);
+        ppz_trace("text pile xz", tr); tr = ppz_now();
+    }
+    free(pile.front);
+    tz = pile.z;
+    /* "exactly the alphabets" is spelled once, archive-wide, instead of per
+     * group -- the older, shorter form of the same flag; the decoder reads
+     * both. */
+    int use_fc = P.norder > 0;
+    for (size_t g = 0; g < nsg; g++) smeta[g].fc = 0;
+
+    free(has_nl);
+    ppz_bg_join(bins_bg);
+    ppz_trace("binary payload xz (waited for)", tr); tr = ppz_now();
+    if (!pile.ok || !bj.ok) goto done;
 
     /* ------------------------------------------------------- metadata */
     Buf meta;
@@ -1684,8 +1673,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
 
     /* ------------------------------------------------------- container */
     if (ppz_lzma_compress(meta.data, meta.len, &mz)) goto done;
-    if (ppz_lzma_compress(bins.data, bins.len, &bz)) goto done;
-    /* tz is already the winner of the plain / front-coded comparison above */
+    /* bz was compressed in the background; tz is the winning pile */
 
     buf_free(out);
     buf_put(out, PPZ_MAGIC, 4);
@@ -1710,13 +1698,9 @@ done:
     return rc;
 }
 
-/* ------------------------------------------------------------- fallbacks */
+/* ------------------------------------------------------------ the encoder */
 
-/* Do the tables hold the same strings? Used to check that the canonical CSV
- * survives a round trip before the fallback built from it is allowed to win.
- * CSV quoting is not lossless for every conceivable cell -- a bare '\r' is
- * the case that actually occurs -- and a fallback that corrupts data would be
- * far worse than losing by 11%. */
+/* Do the tables hold the same strings? */
 static int tables_equal(const Table *a, const Table *b)
 {
     if (a->ncols != b->ncols || a->nrows != b->nrows) return 0;
@@ -1731,55 +1715,17 @@ static int tables_equal(const Table *a, const Table *b)
     return 1;
 }
 
-/* Smallest plain-codec encoding of the whole table, if one beats `limit`.
- * Mirrors fast._raw_candidates: canonical CSV, round-trip checked, then xz and
- * bzip2, and the winner must be strictly smaller than the modelled container.
- * Returns 1 and fills `out` on success, 0 if nothing qualified. */
-static int raw_candidates(const Table *t, size_t limit, Buf *out)
-{
-    Buf canon;
-    buf_init(&canon);
-    table_write_canonical(t, &canon);
-
-    Table back;
-    int ok = table_parse_csv(&back, canon.data, canon.len) == 0
-             && tables_equal(t, &back);
-    table_free(&back);
-    if (!ok) { buf_free(&canon); return 0; }
-
-    int found = 0;
-    Buf cand;
-    buf_init(&cand);
-    const char *magics[2] = { PPZ_MAGIC_RAW_XZ, PPZ_MAGIC_RAW_BZ };
-    for (int which = 0; which < 2; which++) {
-        Buf z;
-        buf_init(&z);
-        int bad = which == 0 ? ppz_lzma_compress(canon.data, canon.len, &z)
-                             : ppz_bz2_compress(canon.data, canon.len, &z);
-        if (!bad && z.len + 4 < limit && (!found || z.len + 4 < cand.len)) {
-            buf_free(&cand);
-            buf_put(&cand, magics[which], 4);
-            buf_put(&cand, z.data, z.len);
-            found = 1;
-        }
-        buf_free(&z);
-    }
-    buf_free(&canon);
-
-    if (found) { buf_free(out); buf_put(out, cand.data, cand.len); }
-    buf_free(&cand);
-    return found;
-}
-
 int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
 {
     return encode_modelled(t, out, fired, 1, NULL, 1, NULL);
 }
 
 /* Does this table have lenient columns at all, and could any of them win?
- * fast.encode classifies once up front to answer exactly this, because the
- * answer decides which plan is encoded -- so it has to be settled BEFORE any
- * encoding, not after, or the two implementations pick different containers. */
+ * A column that is numeric apart from a few cells (blanks, "-0.0") can be
+ * stored as numbers plus exceptions -- worth 41% of the Treasury yield curve
+ * -- or left as a dictionary/text column. This cheap screen decides; it is
+ * one-sided (it over-estimates the alternative), so it declines only cases
+ * that could not have won. */
 static void lenient_verdict(const Table *t, int *any_lax, int *promising)
 {
     *any_lax = 0;
@@ -1795,83 +1741,50 @@ static void lenient_verdict(const Table *t, int *any_lax, int *promising)
     plan_free(plan, t->ncols);
 }
 
+/* One pass. Mahdi's rule, 2026-09-29: "one algorithm to reorder, one
+ * compression algorithm" -- no encoding the table two ways and keeping the
+ * smaller, and no checking the result against plain xz afterwards.
+ *
+ * What that replaced, measured on the 39-table suite before it went: a
+ * second full encode without the lenient columns, a third without the 2D
+ * groups, up to four text-pile layouts, and xz + bzip2 of the whole table as
+ * CSV to guarantee "never larger than plain xz". Together: 2.3x the time
+ * (3x on one core, where the CSV check alone was 69%) for 2.5% smaller
+ * output. The fixed rules below were each the best single choice measured:
+ * lenient columns when the screen says they can win, 2D groups on, the
+ * alphabets front-coded, text parents chosen by probe. Still smaller than
+ * plain xz -9e on every suite table but one, where it ties.
+ *
+ * The plain containers (PPZX/PPZB) are still READ -- older archives use
+ * them -- and PPZX is still written in one case: column names that are not
+ * UTF-8, which the JSON metadata cannot carry (library use only; the readers
+ * validate UTF-8). */
 int ppz_encode(const Table *t, Buf *out)
 {
-    /* Numeric-with-exceptions, measured. Mirrors fast.encode branch for
-     * branch. Recovering a column that is numeric apart from a few cells is
-     * worth 41% of the Treasury yield curve, but it also moves a column out of
-     * the dictionary path -- exactly the trade that made the reverted
-     * ragged-decimal work 9-23% worse. So the old behaviour is encoded too and
-     * kept if smaller: never-worse per file, not on average.
-     *
-     * The second encode is the expensive part, so it is nominated first. Three
-     * cases, matching Python: no lenient columns at all (the two plans are
-     * identical, encode once); lenient columns but none that could win (encode
-     * the plain plan once); otherwise encode both and measure. */
+    if (!names_are_utf8(t)) {
+        Buf canon, z;
+        buf_init(&canon); buf_init(&z);
+        table_write_canonical(t, &canon);
+        Table back;
+        int ok = table_parse_csv(&back, canon.data, canon.len) == 0
+                 && tables_equal(t, &back);
+        table_free(&back);
+        if (ok) ok = ppz_lzma_compress(canon.data, canon.len, &z) == 0;
+        if (ok) {
+            buf_free(out);
+            buf_put(out, PPZ_MAGIC_RAW_XZ, 4);
+            buf_put(out, z.data, z.len);
+        }
+        buf_free(&canon); buf_free(&z);
+        return ok ? 0 : -1;
+    }
+    double tr = ppz_now();
     int any_lax = 0, promising = 0;
     lenient_verdict(t, &any_lax, &promising);
-    int lenient = (!any_lax) || promising;
-
+    ppz_trace("lenient screen", tr);
+    tr = ppz_now();
     long fired = 0;
-    size_t ngroups = 0;
-    if (encode_modelled(t, out, &fired, 1, &ngroups, lenient, NULL)) return -1;
-
-    if (any_lax && promising) {
-        Buf alt;
-        buf_init(&alt);
-        long alt_fired = 0;
-        size_t alt_groups = 0;
-        if (!encode_modelled(t, &alt, &alt_fired, 1, &alt_groups, 0, NULL)
-                && alt.len < out->len) {
-            buf_free(out);
-            buf_put(out, alt.data, alt.len);
-            fired = alt_fired;
-            ngroups = alt_groups;
-            lenient = 0;
-        }
-        buf_free(&alt);
-    }
-
-    /* The planar predictor, measured. Mirrors fast.encode exactly, and for the
-     * same reason: of the three corpus tables where a group forms at all, two
-     * came out LARGER for it. A grouped column loses its own measured
-     * differencing order to one fixed scheme, so a group trades several
-     * measured decisions for a single unmeasured one.
-     *
-     * End to end is the only check that works. Raw packed length shows -0.0%
-     * on nyc_collisions where the real effect is +28.1%, and a per-group probe
-     * says wide_random gains 1.4% where the file actually loses 0.69% -- the
-     * group's bytes are compressed together with every other payload, so
-     * nothing short of the whole container can see the result.
-     *
-     * Groups formed on 2 of 18 tables here, so the second encode is rare. */
-    if (ngroups) {
-        Buf alt;
-        buf_init(&alt);
-        long alt_fired = 0;
-        if (!encode_modelled(t, &alt, &alt_fired, 0, NULL, lenient, NULL)
-                && alt.len < out->len) {
-            buf_free(out);
-            buf_put(out, alt.data, alt.len);
-            fired = alt_fired;
-        }
-        buf_free(&alt);
-    }
-
-    /* ALWAYS considered, exactly as fast.encode does. This used to read
-     * `if (fired) return 0;` -- skip the plain candidates whenever any
-     * modelling trick fired, on the theory that such a table cannot lose to
-     * plain xz. Measured against 100 unselected datasets the theory fails on
-     * 3, once by 28.1%: the shipped archive was 2,830,752 bytes where the xz
-     * fallback nobody ran was 2,210,086. Invariant 2 is "never worse,
-     * MEASURED, not assumed", and a gate deciding which encodings get built is
-     * an assumption.
-     *
-     * Python caps its compressors at `limit` so a hopeless candidate is
-     * abandoned part-way. That is a speed optimisation only -- it cannot
-     * change which candidate wins -- so this side simply compresses and
-     * compares, and stays byte-identical. */
-    (void)fired;
-    raw_candidates(t, out->len, out);
-    return 0;
+    int rc = encode_modelled(t, out, &fired, 1, NULL, (!any_lax) || promising, NULL);
+    ppz_trace("== encode", tr);
+    return rc;
 }

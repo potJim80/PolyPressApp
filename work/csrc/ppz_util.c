@@ -1,10 +1,9 @@
-/* Buffers, the table, CSV, liblzma/libbz2 wrappers, and a small JSON parser.
+/* Buffers, the table, the canonical CSV, liblzma/libbz2 wrappers, and a small
+ * JSON parser.
  *
- * Everything here is infrastructure the codec sits on. The only parts with
- * opinions are the CSV reader (it must accept exactly what dtz accepts, or
- * the C and Python versions disagree about what the table even is) and the
- * lzma filter chain (it must be the exact chain fast.py uses, or the output
- * is not byte-identical).
+ * Everything here is infrastructure the codec sits on. The parts with
+ * opinions are the canonical CSV and the lzma filter chain: both are part of
+ * the archive format, so changing either changes what existing files mean.
  */
 
 #include "ppz.h"
@@ -61,6 +60,47 @@ void buf_putc(Buf *b, char c)
     b->data[b->len++] = (uint8_t)c;
 }
 
+/* ------------------------------------------------------ partial outputs */
+
+#include <signal.h>
+#include <unistd.h>
+
+#define TMP_SLOTS 8
+static char *volatile tmp_paths[TMP_SLOTS];
+
+void ppz_tmp_register(const char *path)
+{
+    for (int i = 0; i < TMP_SLOTS; i++)
+        if (!tmp_paths[i]) { tmp_paths[i] = strdup(path); return; }
+}
+
+void ppz_tmp_forget(const char *path)
+{
+    for (int i = 0; i < TMP_SLOTS; i++)
+        if (tmp_paths[i] && !strcmp(tmp_paths[i], path)) {
+            char *p = tmp_paths[i];
+            tmp_paths[i] = NULL;
+            free(p);
+        }
+}
+
+/* unlink and _exit are async-signal-safe; nothing else is called here */
+static void on_signal(int sig)
+{
+    for (int i = 0; i < TMP_SLOTS; i++)
+        if (tmp_paths[i]) unlink(tmp_paths[i]);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void ppz_cleanup_on_signals(void)
+{
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGHUP, on_signal);
+    signal(SIGPIPE, on_signal);           /* a reader that went away */
+}
+
 /* ------------------------------------------------------------------ table */
 
 void table_init(Table *t)
@@ -85,217 +125,16 @@ Str table_at(const Table *t, size_t row, size_t col)
 
 /* ------------------------------------------------------------------- csv */
 
-/* Cells are appended to the arena, which may realloc and move. So cells are
- * recorded as offsets during the parse and converted to pointers at the end.
- * Storing pointers directly and hoping the arena never grows is a bug that
- * only shows up on large files. */
-typedef struct { size_t off, len; } Span;
-
-int table_read_csv(Table *t, const char *path)
-{
-    FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin;
-    if (!f) return -1;
-
-    Buf src;
-    buf_init(&src);
-    uint8_t chunk[65536];
-    size_t got;
-    while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0) buf_put(&src, chunk, got);
-    if (f != stdin) fclose(f);
-
-    int rc = table_parse_csv(t, src.data, src.len);
-    buf_free(&src);
-    return rc;
-}
-
-/* The parse proper, over bytes already in memory. Split out from
- * table_read_csv so the encoder can re-parse its own canonical CSV to check
- * the plain fallback round-trips before letting it win.
+/* The canonical CSV the plain fallback compresses. Its rules were taken from
+ * Python's csv.writer(lineterminator="\n") when this was a port, and they are
+ * frozen now because every PPZX/PPZB archive in existence is built on them.
+ * It is NOT what `restore` writes (ppz_io.c does that). Three quirks:
  *
- * Reads `data` in place rather than copying it -- the cells it keeps are
- * copied into the table's own arena, so nothing here outlives the caller's
- * buffer. Copying first would have put a second full image of the input in
- * memory beside the arena, which on the largest corpus file is another 77 MB
- * for nothing. */
-int table_parse_csv(Table *t, const uint8_t *data, size_t n)
-{
-    table_init(t);
-
-    Span  *spans = NULL;
-    size_t nspans = 0, spancap = 0;
-    size_t fields_this_row = 0, width = 0, nrows = 0;
-    int    in_quotes = 0, field_open = 0;
-    size_t fstart = 0;
-
-    Buf cell;                      /* the field being assembled */
-    buf_init(&cell);
-
-    #define PUSH_FIELD()                                                     \
-        do {                                                                 \
-            if (nspans == spancap) {                                         \
-                spancap = spancap ? spancap * 2 : 1024;                      \
-                Span *np = realloc(spans, spancap * sizeof(Span));           \
-                if (!np) die_oom();                                          \
-                spans = np;                                                  \
-            }                                                                \
-            fstart = t->arena.len;                                           \
-            buf_put(&t->arena, cell.data, cell.len);                         \
-            spans[nspans].off = fstart;                                      \
-            spans[nspans].len = cell.len;                                    \
-            nspans++;                                                        \
-            cell.len = 0;                                                    \
-            fields_this_row++;                                               \
-            field_open = 0;                                                  \
-        } while (0)
-
-    #define END_ROW()                                                        \
-        do {                                                                 \
-            if (width == 0) width = fields_this_row;                         \
-            else {                                                           \
-                while (fields_this_row < width) {                            \
-                    /* ragged: pad, same rule as dtz */                      \
-                    if (nspans == spancap) {                                 \
-                        spancap = spancap ? spancap * 2 : 1024;              \
-                        Span *np = realloc(spans, spancap * sizeof(Span));   \
-                        if (!np) die_oom();                                  \
-                        spans = np;                                          \
-                    }                                                        \
-                    spans[nspans].off = 0;                                   \
-                    spans[nspans].len = 0;                                   \
-                    nspans++; fields_this_row++;                             \
-                }                                                            \
-                while (fields_this_row > width) { nspans--; fields_this_row--; }\
-            }                                                                \
-            nrows++;                                                         \
-            fields_this_row = 0;                                             \
-        } while (0)
-
-    for (size_t i = 0; i < n; i++) {
-        char c = (char)data[i];
-        if (in_quotes) {
-            if (c == '"') {
-                if (i + 1 < n && data[i + 1] == '"') {
-                    buf_putc(&cell, '"');
-                    i++;
-                } else {
-                    in_quotes = 0;
-                }
-            } else {
-                buf_putc(&cell, c);
-            }
-            continue;
-        }
-        if (c == '"' && !field_open) { in_quotes = 1; field_open = 1; continue; }
-        if (c == ',') { PUSH_FIELD(); continue; }
-        if (c == '\r') {
-            if (i + 1 < n && data[i + 1] == '\n') continue;
-            PUSH_FIELD(); END_ROW(); continue;
-        }
-        if (c == '\n') { PUSH_FIELD(); END_ROW(); continue; }
-        buf_putc(&cell, c);
-        field_open = 1;
-    }
-    /* a final line with no terminator still counts */
-    if (cell.len || field_open || fields_this_row) { PUSH_FIELD(); END_ROW(); }
-
-    buf_free(&cell);
-
-    if (nrows == 0 || width == 0) { free(spans); return 0; }
-
-    t->ncols = width;
-    t->nrows = nrows - 1;                       /* first row is the header */
-    t->names = calloc(width, sizeof(char *));
-    if (!t->names) die_oom();
-    for (size_t j = 0; j < width; j++) {
-        Span s = spans[j];
-        char *nm = malloc(s.len + 1);
-        if (!nm) die_oom();
-        memcpy(nm, (char *)t->arena.data + s.off, s.len);
-        nm[s.len] = 0;
-        t->names[j] = nm;
-    }
-
-    t->cells = calloc(t->nrows * width ? t->nrows * width : 1, sizeof(Str));
-    if (!t->cells) die_oom();
-    for (size_t k = 0; k < t->nrows * width; k++) {
-        Span s = spans[width + k];
-        t->cells[k].p = (const char *)t->arena.data + s.off;
-        t->cells[k].n = s.len;
-    }
-    free(spans);
-    return 0;
-}
-
-static int csv_needs_quotes(Str s)
-{
-    for (size_t i = 0; i < s.n; i++) {
-        char c = s.p[i];
-        if (c == ',' || c == '"' || c == '\n' || c == '\r') return 1;
-    }
-    return 0;
-}
-
-static void csv_write_field(Buf *out, Str s)
-{
-    if (!csv_needs_quotes(s)) { buf_put(out, s.p, s.n); return; }
-    buf_putc(out, '"');
-    for (size_t i = 0; i < s.n; i++) {
-        if (s.p[i] == '"') buf_putc(out, '"');
-        buf_putc(out, s.p[i]);
-    }
-    buf_putc(out, '"');
-}
-
-int table_write_csv_buf(const Table *t, Buf *out)
-{
-    for (size_t j = 0; j < t->ncols; j++) {
-        if (j) buf_putc(out, ',');
-        Str s = { t->names[j], strlen(t->names[j]) };
-        csv_write_field(out, s);
-    }
-    buf_putc(out, '\n');
-    for (size_t i = 0; i < t->nrows; i++) {
-        for (size_t j = 0; j < t->ncols; j++) {
-            if (j) buf_putc(out, ',');
-            csv_write_field(out, table_at(t, i, j));
-        }
-        buf_putc(out, '\n');
-    }
-    return 0;
-}
-
-int table_write_csv(const Table *t, const char *path)
-{
-    Buf out;
-    buf_init(&out);
-    table_write_csv_buf(t, &out);
-    FILE *f = strcmp(path, "-") ? fopen(path, "wb") : stdout;
-    if (!f) { buf_free(&out); return -1; }
-    /* Capture the length before freeing: buf_free zeroes it, so comparing
-     * against out.len afterwards reported failure on every successful write. */
-    size_t want = out.len;
-    size_t w = fwrite(out.data, 1, want, f);
-    if (f != stdout) fclose(f);
-    buf_free(&out);
-    return w == want ? 0 : -1;
-}
-
-/* The canonical CSV the plain fallback compresses -- byte-for-byte what
- * Python's csv.writer(lineterminator="\n") emits, which is NOT the same as
- * what table_write_csv produces above. Three differences, all of them found
- * by testing the Python writer rather than by reading it:
- *
- *   - a bare '\r' is NOT quoted. csv.writer quotes on characters *in the
- *     lineterminator*, and the lineterminator here is "\n" alone. (That makes
- *     Python's own CSV round trip lossy for such a cell, which is exactly why
- *     the fallback is round-trip checked before it is allowed to win -- both
- *     implementations then refuse it, and they agree.)
+ *   - a bare '\r' is NOT quoted, so such a cell does not survive the trip
+ *     -- which is exactly why the fallback is round-trip checked before it
+ *     is allowed to win (raw_candidates in ppz_encode.c).
  *   - an empty field IS quoted when it is the only field in its row.
  *   - a NUL byte forces quoting.
- *
- * Getting any of these wrong produces a fallback that is a few bytes off
- * Python's, which breaks byte-identity on precisely the tables where the
- * fallback fires.
  */
 static int canon_needs_quotes(Str s, size_t ncols)
 {
@@ -337,6 +176,12 @@ void table_write_canonical(const Table *t, Buf *out)
 
 /* ------------------------------------------------------------------- lzma */
 
+/* Raw LZMA2 at preset 9e, streamed a megabyte at a time. Each run holds one
+ * of the process-wide slots (ppz_thread.c), so however many blocks and
+ * streams are being compressed at once, only ppz_workers() xz -9e working
+ * sets exist at the same moment. */
+#define CHUNK ((size_t)1 << 20)
+
 int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out)
 {
     lzma_options_lzma opt;
@@ -345,14 +190,35 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out)
         { LZMA_FILTER_LZMA2, &opt },
         { LZMA_VLI_UNKNOWN, NULL },
     };
-    size_t cap = n + n / 2 + 4096;
     buf_free(out);
-    buf_need(out, cap);
-    size_t pos = 0;
-    if (lzma_raw_buffer_encode(filters, NULL, in, n, out->data, &pos, cap))
-        return -1;
-    out->len = pos;
-    return 0;
+    ppz_slot_take();
+    lzma_stream strm = LZMA_STREAM_INIT;
+    int rc = -1;
+    if (lzma_raw_encoder(&strm, filters) != LZMA_OK) goto done;
+    size_t fed = 0;
+    for (;;) {
+        size_t piece = n - fed < CHUNK ? n - fed : CHUNK;
+        strm.next_in = in + fed;
+        strm.avail_in = piece;
+        fed += piece;
+        lzma_action act = fed < n ? LZMA_RUN : LZMA_FINISH;
+        for (;;) {
+            buf_need(out, CHUNK);
+            strm.next_out = out->data + out->len;
+            strm.avail_out = out->cap - out->len;
+            size_t before = strm.avail_out;
+            lzma_ret r = lzma_code(&strm, act);
+            out->len += before - strm.avail_out;
+            if (r == LZMA_STREAM_END) { rc = 0; goto done; }
+            if (r != LZMA_OK) goto done;
+            if (act == LZMA_RUN && strm.avail_in == 0) break;
+        }
+    }
+done:
+    lzma_end(&strm);
+    ppz_slot_give();
+    if (rc) buf_free(out);
+    return rc;
 }
 
 /* A decoder reads files other people made, so both of these treat their input
@@ -415,8 +281,10 @@ int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out)
         if (r == LZMA_STREAM_END) { rc = 0; goto done; }
         if (r != LZMA_OK) goto done;          /* corrupt: do not grow, stop */
         if (strm.avail_in == 0 && before == strm.avail_out) {
-            /* input exhausted and nothing more is coming out */
-            rc = 0;
+            /* Input exhausted and nothing more coming out, but no end marker:
+             * the stream was cut short. Every stream this program writes ends
+             * with one, so this is a truncated file -- and treating it as
+             * complete restored half a table and exited 0. */
             goto done;
         }
     }
@@ -426,28 +294,8 @@ done:
     return rc;
 }
 
-/* bzip2 at level 9, matching Python's bz2.compress(data, 9) byte for byte --
- * verified on empty, repetitive, real-CSV and incompressible inputs. Python's
- * bz2 module calls BZ2_bzCompressInit(level, 0, 0), and workFactor 0 means
- * the library default, so the one-shot helper below is the same coder. */
-int ppz_bz2_compress(const uint8_t *in, size_t n, Buf *out)
-{
-    /* libbz2's documented worst case is 1% over plus 600 bytes; bzip2 expands
-     * incompressible input, so this is a real bound, not padding. */
-    size_t cap = n + n / 100 + 1024;
-    if (cap > UINT_MAX) return -1;
-    buf_free(out);
-    char *dst = malloc(cap ? cap : 1);
-    if (!dst) return -1;
-    unsigned int outlen = (unsigned int)cap;
-    int r = BZ2_bzBuffToBuffCompress(dst, &outlen, (char *)(uintptr_t)in,
-                                     (unsigned int)n, 9, 0, 0);
-    if (r != BZ_OK) { free(dst); return -1; }
-    buf_put(out, dst, outlen);
-    free(dst);
-    return 0;
-}
-
+/* bzip2 is only ever DECODED now: archives written before 2026-09-29 may be
+ * the plain-bzip2 container (PPZB), and they must keep opening. */
 int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out)
 {
     bz_stream strm;
@@ -485,7 +333,14 @@ typedef struct {
     const char *p;
     size_t      n, i;
     int         bad;
+    int         depth;
 } Jp;
+
+/* Nesting deeper than this is refused. The parser recurses, and 100,000
+ * '[' overflowed the stack -- from a .json handed to `compress`, or from the
+ * metadata of a hostile archive, which is JSON too. Real metadata is three
+ * levels deep and real table JSON a handful. */
+#define JS_MAX_DEPTH 512
 
 static void jp_ws(Jp *j)
 {
@@ -506,7 +361,7 @@ static Js *js_new(JsKind k)
 
 static Js *jp_value(Jp *j);
 
-static char *jp_string_raw(Jp *j)
+static char *jp_string_raw(Jp *j, size_t *len_out)
 {
     if (j->i >= j->n || j->p[j->i] != '"') { j->bad = 1; return NULL; }
     j->i++;
@@ -576,11 +431,32 @@ static char *jp_string_raw(Jp *j)
     }
     if (j->i >= j->n) { j->bad = 1; buf_free(&b); return NULL; }
     j->i++;                                   /* closing quote */
+    if (len_out) *len_out = b.len;            /* a \u0000 is a real byte */
     buf_putc(&b, 0);
     return (char *)b.data;
 }
 
+static Js *jp_value_inner(Jp *j);
+
+static void js_token(Js *v, const char *start, const char *end)
+{
+    size_t tl = (size_t)(end - start);
+    v->str = malloc(tl + 1);
+    if (!v->str) die_oom();
+    memcpy(v->str, start, tl);
+    v->str[tl] = 0;
+    v->len = tl;
+}
+
 static Js *jp_value(Jp *j)
+{
+    if (++j->depth > JS_MAX_DEPTH) { j->bad = 1; j->depth--; return NULL; }
+    Js *v = jp_value_inner(j);
+    j->depth--;
+    return v;
+}
+
+static Js *jp_value_inner(Jp *j)
 {
     jp_ws(j);
     if (j->i >= j->n) { j->bad = 1; return NULL; }
@@ -588,7 +464,7 @@ static Js *jp_value(Jp *j)
 
     if (c == '"') {
         Js *v = js_new(JS_STR);
-        v->str = jp_string_raw(j);
+        v->str = jp_string_raw(j, &v->len);
         return v;
     }
     if (c == '[') {
@@ -633,7 +509,7 @@ static Js *jp_value(Jp *j)
                 v->keys = nk;
             }
             jp_ws(j);
-            v->keys[v->count] = jp_string_raw(j);
+            v->keys[v->count] = jp_string_raw(j, NULL);
             if (j->bad) return v;
             jp_ws(j);
             if (j->i >= j->n || j->p[j->i] != ':') { j->bad = 1; return v; }
@@ -671,41 +547,69 @@ static Js *jp_value(Jp *j)
          * going through a double silently rounds them -- which decodes to a
          * wrong number rather than an error. Only fall back to strtod for
          * tokens that are genuinely not integers. */
-        const char *start = j->p + j->i;
-        const char *scan = start;
-        const char *end_lim = j->p + j->n;
-        if (scan < end_lim && (*scan == '-' || *scan == '+')) scan++;
-        int is_int = scan < end_lim && *scan >= '0' && *scan <= '9';
-        while (scan < end_lim && *scan >= '0' && *scan <= '9') scan++;
-        if (scan < end_lim && (*scan == '.' || *scan == 'e' || *scan == 'E'))
-            is_int = 0;
-
-        char *end = NULL;
+        /* Copied out first: strtoll and strtod read until something stops
+         * them, and this text is a slice of a buffer with no terminator, so
+         * a number at its very end would be parsed from whatever memory lies
+         * beyond. A number token is short; anything longer is refused. */
+        char tok[80];
+        size_t tl = 0;
+        while (j->i + tl < j->n && tl < sizeof(tok) - 1) {
+            char ch = j->p[j->i + tl];
+            if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
+                (ch >= 'A' && ch <= 'Z') || ch == '+' || ch == '-' || ch == '.')
+                tok[tl++] = ch;
+            else break;
+        }
+        tok[tl] = 0;
         Js *v = js_new(JS_NUM);
+        if (tl == 0 || tl == sizeof(tok) - 1) { j->bad = 1; v->kind = JS_NULL; return v; }
+
+        const char *scan = tok;
+        if (*scan == '-' || *scan == '+') scan++;
+        int is_int = *scan >= '0' && *scan <= '9';
+        while (*scan >= '0' && *scan <= '9') scan++;
+        if (*scan == '.' || *scan == 'e' || *scan == 'E') is_int = 0;
+
+        /* The token text is recorded from wherever the parse actually
+         * stopped -- so "1.50" stays "1.50", and NaN or Infinity (which
+         * strtod accepts, as Python's json does) come out as written. */
+        char *end = NULL;
         if (is_int) {
             errno = 0;
-            long long iv = strtoll(start, &end, 10);
-            if (end != start && errno != ERANGE) {
-                j->i = (size_t)(end - j->p);
+            long long iv = strtoll(tok, &end, 10);
+            if (end != tok && errno != ERANGE) {
                 v->inum = (int64_t)iv;
                 v->is_int = 1;
                 v->num = (double)iv;
+                js_token(v, tok, end);
+                j->i += (size_t)(end - tok);
                 return v;
             }
         }
-        double d = strtod(start, &end);
-        if (!end || end == start) { j->bad = 1; v->kind = JS_NULL; return v; }
-        j->i = (size_t)(end - j->p);
+        double d = strtod(tok, &end);
+        if (!end || end == tok) { j->bad = 1; v->kind = JS_NULL; return v; }
         v->num = d;
+        js_token(v, tok, end);
+        j->i += (size_t)(end - tok);
         return v;
     }
 }
 
 Js *js_parse(const char *text, size_t len)
 {
-    Jp j = { text, len, 0, 0 };
+    size_t used;
+    return js_parse_prefix(text, len, &used);
+}
+
+/* One value from the front of `text`; *used says where it ended, so a caller
+ * can insist nothing but whitespace follows. */
+Js *js_parse_prefix(const char *text, size_t len, size_t *used)
+{
+    Jp j = { text, len, 0, 0, 0 };
     Js *v = jp_value(&j);
     if (j.bad) { js_free(v); return NULL; }
+    jp_ws(&j);
+    *used = j.i;
     return v;
 }
 

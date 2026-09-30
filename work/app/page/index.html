@@ -1,0 +1,199 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Polypress</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+/* The window around the C program. Nothing here does any work: the Swift
+ * shell (PolypressApp.swift) runs `polypress` and calls render(state) with
+ * the list of files; this page draws it and posts back what was clicked.
+ *
+ * The register is the one the school calendar settled on after two louder
+ * versions were turned down: no headline, no chrome, hierarchy from weight
+ * and grey rather than size, largest text 15px, one dark element at most. */
+:root{
+  --paper:#fcfcfa; --ink:#1c1c19; --body:#55534c; --muted:#8a887f; --faint:#b3b1a8;
+  --hair:#eceae4; --late:#b5554d;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#131312; --ink:#e9e7e0; --body:#b3b0a7; --muted:#87847b; --faint:#5f5d57;
+    --hair:#262523; --late:#d98a82;
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0; background:var(--paper); color:var(--body);
+  font-family:"Hanken Grotesk",ui-sans-serif,system-ui,sans-serif; font-size:14px; line-height:1.45;
+  -webkit-font-smoothing:antialiased; -webkit-user-select:none; user-select:none; cursor:default}
+.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums}
+a{color:inherit; text-decoration:none; cursor:pointer}
+a:hover{color:var(--ink)}
+
+/* dropping: a thin frame, the one dark thing on the page */
+#frame{position:fixed; inset:10px; border:1px solid var(--ink); border-radius:6px;
+  pointer-events:none; opacity:0; transition:opacity .12s}
+body.over #frame{opacity:1}
+
+/* empty */
+#empty{height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:10px; padding:0 40px; text-align:center}
+#empty p{margin:0; color:var(--muted); font-size:15px}
+#empty a{color:var(--body); text-decoration:underline; text-decoration-color:var(--faint);
+  text-underline-offset:3px}
+#empty a:hover{color:var(--ink); text-decoration-color:var(--ink)}
+
+/* the list */
+#list{display:none; min-height:100%; flex-direction:column; padding:22px 28px 16px}
+body.has #list{display:flex} body.has #empty{display:none}
+.rows{flex:1}
+.row{padding:11px 0 12px; border-bottom:1px solid var(--hair); position:relative}
+.l1,.l2{display:flex; justify-content:space-between; align-items:baseline; gap:16px}
+.name{color:var(--ink); font-weight:500; font-size:14px; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; min-width:0; cursor:pointer}
+.nums{font-size:12px; white-space:nowrap; color:var(--body)}
+.nums .x{color:var(--ink); font-weight:500; margin-left:12px}
+.l2{margin-top:2px; font-size:11.5px; color:var(--muted)}
+.status{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0}
+.acts{white-space:nowrap; flex:none; display:none}
+.row:hover .acts{display:inline}
+.acts a{margin-left:9px}
+.acts .as{margin-left:14px; color:var(--faint)}
+.err .status{color:var(--late); white-space:normal}
+.detail{display:none; margin-top:8px; font-size:11.5px; color:var(--muted); line-height:1.7}
+.detail b{font-weight:400; color:var(--body)}
+.row.open .detail{display:block}
+
+/* working: a hairline under the row -- filling when the program can say how
+ * far it is, travelling when it cannot */
+.bar{position:absolute; left:0; right:0; bottom:-1px; height:1px; overflow:hidden; display:none}
+.row.busy .bar{display:block}
+.bar i{position:absolute; top:0; bottom:0; width:28%; background:var(--ink);
+  animation:go 1.3s ease-in-out infinite}
+.bar b{position:absolute; top:0; bottom:0; left:0; background:var(--ink); transition:width .4s}
+@keyframes go{from{left:-28%} to{left:100%}}
+.row.busy .acts, .row.wait .acts{display:inline}
+.stop{color:var(--muted)}
+
+.foot{display:flex; justify-content:space-between; padding-top:14px; font-size:11.5px; color:var(--faint)}
+.foot a{color:var(--muted)} .foot a:hover{color:var(--ink)}
+</style>
+
+<div id="frame"></div>
+
+<div id="empty">
+  <p>Drop a table to compress it, or a .ppz to restore it.</p>
+  <a id="choose1">choose a file</a>
+</div>
+
+<div id="list">
+  <div class="rows" id="rows"></div>
+  <div class="foot mono"><span>drop more, or <a id="choose2">choose</a></span><a id="clear">clear</a></div>
+</div>
+
+<script>
+const post = m => { try { webkit.messageHandlers.polypress.postMessage(m) } catch (e) {} };
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const open = new Set();          // rows whose details are showing
+
+function size(n) {
+  if (n == null) return "";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < 3) { n /= 1024; i++; }
+  return (i ? n.toFixed(n < 10 ? 2 : 1) : n.toFixed(0)) + " " + u[i];
+}
+const secs = s => s < 10 ? s.toFixed(1) + " s" : s < 90 ? Math.round(s) + " s"
+                         : Math.floor(s / 60) + " min " + Math.round(s % 60) + " s";
+const ago = ms => (Date.now() - ms) / 1000;
+const left = s => s < 60 ? "under a minute left" : s < 3600 ? "about " + Math.round(s / 60) + " min left"
+                            : "about " + (s / 3600).toFixed(1) + " h left";
+const ratio = (a, b) => { const r = a / Math.max(b, 1); return (r < 10 ? r.toFixed(2) : r.toFixed(1)) + "×"; };
+
+function status(j) {
+  if (j.state === "queued") return "waiting";
+  if (j.state === "stopped") return "stopped";
+  if (j.state === "working") {
+    const bits = [j.note || "working"];
+    if (j.fraction != null && j.stageMs) {
+      bits.push(Math.floor(j.fraction * 100) + "%");
+      const t = ago(j.stageMs);
+      if (j.fraction > 0.02 && t > 3) bits.push(left(t * (1 - j.fraction) / j.fraction));
+    } else if (j.startedMs) bits.push(secs(ago(j.startedMs)));
+    return bits.join(" · ");
+  }
+  if (j.state === "failed") return j.message || "failed";
+  const bits = [j.outName];
+  if (j.kind === "compress") bits.push(j.stream ? "verified block by block" : "verified");
+  if (j.secs != null) bits.push(secs(j.secs));
+  return bits.join(" · ");
+}
+
+function detail(d) {
+  if (!d) return "";
+  const lines = [];
+  const kind = { modelled: "modelled", xz: "plain xz, nothing modelled beat it",
+                 bzip2: "plain bzip2, nothing modelled beat it", stream: "in blocks" }[d.container] || d.container;
+  let first = "<b>" + Number(d.rows).toLocaleString() + "</b> rows · <b>" + d.columns + "</b> columns · " + esc(kind);
+  if (d.blocks) first += " · " + d.blocks + " blocks of " + Number(d.rows_per_block).toLocaleString();
+  lines.push(first);
+  const plan = Object.entries(d.plan || {}).map(([k, v]) => v + " " + k).join(", ");
+  if (plan) lines.push("plan " + esc(plan) + (d.reordered ? " · " + d.reordered + " sorted by a parent" : ""));
+  for (const g of d.groups || []) lines.push("2d group " + esc(g.join(", ")));
+  return lines.join("<br>");
+}
+
+function row(j, formats) {
+  const done = j.state === "done";
+  let nums = "";
+  if (done && j.from != null && j.to != null) {
+    nums = size(j.from) + " → " + size(j.to);
+    if (j.kind === "compress") nums += '<span class="x">' + ratio(j.from, j.to) + "</span>";
+  } else if (j.from != null) nums = size(j.from);
+  let acts = "";
+  if (j.state === "working" || j.state === "queued") acts = '<a class="stop" data-a="stop">stop</a>';
+  if (done) {
+    acts = '<a data-a="reveal">show</a>';
+    acts += '<span class="as">as</span>' + formats.map(f => '<a data-a="as" data-f="' + f + '">' + f + "</a>").join("");
+  }
+  const bar = j.fraction != null ? '<b style="width:' + (j.fraction * 100).toFixed(1) + '%"></b>' : "<i></i>";
+  return '<div class="row' + (j.state === "working" ? " busy" : "") + (j.state === "queued" ? " wait" : "")
+    + (j.state === "failed" ? " err" : "")
+    + (open.has(j.id) ? " open" : "") + '" data-id="' + j.id + '">'
+    + '<div class="l1"><span class="name" title="' + esc(j.path || j.name) + '">' + esc(j.name) + "</span>"
+    + '<span class="nums mono">' + nums + "</span></div>"
+    + '<div class="l2 mono"><span class="status">' + esc(status(j)) + '</span><span class="acts">' + acts + "</span></div>"
+    + '<div class="detail mono">' + detail(j.details) + "</div>"
+    + '<div class="bar">' + bar + "</div></div>";
+}
+
+let last = { jobs: [], formats: [] };
+window.render = state => {
+  last = state;
+  document.body.classList.toggle("has", state.jobs.length > 0);
+  $("rows").innerHTML = state.jobs.map(j => row(j, state.formats)).join("");
+};
+window.dragging = on => document.body.classList.toggle("over", !!on);
+
+document.addEventListener("click", e => {
+  const a = e.target.closest("a");
+  const r = e.target.closest(".row");
+  if (a && (a.id === "choose1" || a.id === "choose2")) return post({ type: "choose" });
+  if (a && a.id === "clear") { open.clear(); return post({ type: "clear" }); }
+  if (!r) return;
+  const id = Number(r.dataset.id);
+  if (a && a.dataset.a === "reveal") return post({ type: "reveal", id });
+  if (a && a.dataset.a === "stop") return post({ type: "stop", id });
+  if (a && a.dataset.a === "as") return post({ type: "saveAs", id, format: a.dataset.f });
+  if (e.target.closest(".name")) {
+    open.has(id) ? open.delete(id) : open.add(id);
+    r.classList.toggle("open");
+  }
+});
+document.addEventListener("keydown", e => {
+  if ((e.metaKey && e.key === "o")) { e.preventDefault(); post({ type: "choose" }); }
+});
+// the clock and the time-left estimate tick between the program's reports
+setInterval(() => { if (last.jobs.some(j => j.state === "working")) render(last); }, 1000);
+post({ type: "ready" });
+</script>

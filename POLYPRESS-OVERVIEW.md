@@ -141,8 +141,12 @@ removed redundancy the Burrows-Wheeler transform had been exploiting; the gap
 is 0.1%–1.6%. That leaves **one genuine loss**,
 `sars_cov_2_variant_proportions` at 0.65x to `orc+zstd`, and it is undiagnosed.
 
-The honest form of the guarantee is: **never worse than our own plain
-fallback**, not "never worse than any tool on your original bytes."
+The honest form of the guarantee was: **never worse than our own plain
+fallback**, not "never worse than any tool on your original bytes." **Retired
+2026-09-29**: the encoder is one pass now -- no trial encodes and no plain-xz
+check -- 2.3x faster for 2.5% bigger output on the test suite, still smaller
+than xz -9e on 38 of 39 test tables (61 bytes bigger on the last, random
+base64).
 
 ## 5. The engineering principles (these are the interesting part)
 
@@ -223,26 +227,23 @@ front end, taken further and tested harder than the prior art was.
 ## 8. How you actually use it
 
 ```bash
-pip install polypress                 # the codec and the `polypress` command
-pip install 'polypress[parquet]'      # add pyarrow, for .parquet in/out
+cd work && ./csrc/build.sh            # -> csrc/polypress, one C program
 
-polypress compress data.csv           # -> data.csv.ppz
+polypress compress data.csv           # -> data.csv.ppz (also TSV, JSON, JSON Lines)
 polypress restore  data.csv.ppz       # -> data.csv
-polypress restore  data.csv.ppz -o out.parquet   # doubles as a converter
+polypress restore  data.csv.ppz -o out.json      # doubles as a converter
 polypress info     data.csv.ppz       # plan, shape, how much was reordered
 ```
 
-numpy is the only hard requirement. There is a C accelerator that compiles
-itself on first import and silently falls back to numpy if there is no
-compiler, so it is never a dependency.
+**It is one C program** since 2026-09-29 -- the Python codec it was ported
+from was retired, and nothing needs installing to run it. Parquet goes
+through a small Python bridge (`py/parquet.py`, needs pyarrow), because
+reading Parquet properly means the Arrow library.
 
 **For files larger than RAM**, a block-at-a-time mode with a settable memory
-budget (`--budget 1.0` for ~1 GB peak). Blocks compress independently, so peak
-memory is one block rather than one file; the cost is that reordering only sees
-correlations inside a block.
-
-**There is also a standalone C binary** — no Python, no numpy — that produces
-byte-identical output to the Python encoder.
+budget (`stream-compress --budget 1.0` for ~1 GB peak). Blocks compress
+independently, so peak memory is one block rather than one file; the cost is
+that reordering only sees correlations inside a block.
 
 **And a Mac app**: launch it and pick a table, double-click a `.ppz` to restore
 it, or drop files on the Dock icon. Nothing is written until the compressed

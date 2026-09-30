@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build the standalone polypress binary.
+# Build polypress -- the whole program: codec, table readers and writers,
+# streaming container, command line.
 #
 #     csrc/build.sh            -> csrc/polypress
 #     PREFIX=/usr/local csrc/build.sh install
@@ -16,7 +17,7 @@ set -e
 here=$(cd "$(dirname "$0")" && pwd)
 out="$here/polypress"
 
-CFLAGS="-O2 -std=c99 -Wall -Wextra -Wno-unused-parameter"
+CFLAGS="-O2 -std=gnu99 -pthread -Wall -Wextra -Wno-unused-parameter"
 INC=""
 LIB="-llzma -lbz2"
 
@@ -40,10 +41,25 @@ if [ -z "$INC" ] && [ ! -f /usr/include/lzma.h ]; then
     exit 1
 fi
 
+# liblzma is not part of macOS, so a binary linked to Homebrew's copy only
+# runs on Macs that have Homebrew's xz. Link the static archive when there is
+# one, so the program -- and the app that ships it -- runs anywhere.
+# (bzip2 and iconv ship with the OS and stay dynamic.)
+for a in $(echo "$LIB" | tr ' ' '\n' | sed -n 's/^-L//p') /opt/homebrew/lib /usr/local/lib; do
+    if [ -f "$a/liblzma.a" ]; then
+        LIB="$(echo "$LIB" | sed 's/-llzma//') $a/liblzma.a"
+        break
+    fi
+done
+
+# iconv (for --encoding) is part of libc on Linux, a separate library on macOS
+[ "$(uname)" = "Darwin" ] && LIB="$LIB -liconv"
+
 echo "cc $CFLAGS $INC ... $LIB"
 # shellcheck disable=SC2086
 cc $CFLAGS $INC \
-    "$here/ppz_util.c" "$here/ppz_decode.c" "$here/ppz_encode.c" \
+    "$here/ppz_util.c" "$here/ppz_io.c" "$here/ppz_thread.c" \
+    "$here/ppz_decode.c" "$here/ppz_encode.c" "$here/ppz_stream.c" \
     "$here/ppz_main.c" \
     -o "$out" $LIB
 

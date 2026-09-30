@@ -1,13 +1,16 @@
-/* Decoding a Polypress archive, in C.
+/* Decoding a Polypress archive.
  *
- * This mirrors fast.py's decode() step for step. Where a line here looks
- * gratuitously specific -- the stable argsort, the warm-start handling in
- * undiff, the two different string layouts -- it is matching a decision made
- * on the Python side, and the comment says which.
+ * Where a line here looks gratuitously specific -- the stable argsort, the
+ * warm-start handling in undiff, the two string layouts -- it is the exact
+ * inverse of a decision in ppz_encode.c, and the archive format depends on it.
  *
- * Decode came first in the port because it is what a researcher handed a
- * .ppz actually needs, and because it can be verified immediately: every
- * archive the Python encoder produces is a test case with a known answer.
+ * This reads files other people made, so every count, size and index in the
+ * metadata is a CLAIM, checked against the bytes actually present before
+ * anything is allocated or read from it. The metadata is JSON inside the
+ * archive; a header can be perfectly well-formed and still lie. Every column
+ * must also account for exactly `nrows` cells: a short column used to be
+ * padded with empties, which turns a damaged archive into a table that looks
+ * fine and is wrong. The tests in tests/t_hostile.c build such liars.
  */
 
 #include "ppz.h"
@@ -18,6 +21,30 @@
 
 #define ESCAPE 255
 
+/* Far above any real table (a trillion rows), far below where size
+ * arithmetic on it could overflow. */
+#define MAX_ROWS ((uint64_t)1 << 40)
+
+/* A count from the metadata: a non-negative integer no larger than `max`.
+ * Absent is 0 when `absent_ok`. Anything else -- negative, fractional, a
+ * string, too large -- is a lie, and the archive is refused. */
+static int count_of(const Js *j, uint64_t max, int absent_ok, size_t *out)
+{
+    if (!j) { *out = 0; return absent_ok ? 0 : -1; }
+    if (j->kind != JS_NUM || !j->is_int || j->inum < 0 || (uint64_t)j->inum > max)
+        return -1;
+    *out = (size_t)j->inum;
+    return 0;
+}
+
+/* a*b, or -1 when it would not fit in a size_t */
+static int mul_ok(size_t a, size_t b, size_t *out)
+{
+    if (a && b > SIZE_MAX / a) return -1;
+    *out = a * b;
+    return 0;
+}
+
 /* --------------------------------------------------------------- varints */
 
 /* Mirror of fast.unpack_ints. `buf` is width byte, then n head bytes, then
@@ -25,7 +52,7 @@
 static int64_t *unpack_ints(const uint8_t *buf, size_t buflen, size_t n)
 {
     if (n == 0) return calloc(1, sizeof(int64_t));
-    if (buflen < 1 + n) return NULL;
+    if (buflen < 1 || n > buflen - 1) return NULL;
     int width = buf[0];
     const uint8_t *head = buf + 1;
 
@@ -33,8 +60,8 @@ static int64_t *unpack_ints(const uint8_t *buf, size_t buflen, size_t n)
     for (size_t i = 0; i < n; i++) if (head[i] == ESCAPE) nbig++;
 
     const uint8_t *tail = buf + 1 + n;
-    size_t need = (width == 8 ? 8 : 4) * nbig;
-    if (buflen < 1 + n + need) return NULL;
+    size_t need = (width == 8 ? 8 : 4) * nbig;       /* nbig <= n < buflen */
+    if (need > buflen - 1 - n) return NULL;
 
     int64_t *out = malloc(n * sizeof(int64_t));
     if (!out) return NULL;
@@ -115,7 +142,8 @@ static int64_t *undiff(int64_t *d, size_t dn, const int64_t *warm, int k,
             for (int i = 0; i <= k && i < 8; i++) tmp[i] = warm[i];
             int len = k < 8 ? k : 8;
             for (int r = 0; r < j; r++) {
-                for (int i = 0; i < len - 1; i++) tmp[i] = tmp[i + 1] - tmp[i];
+                for (int i = 0; i < len - 1; i++)
+                    tmp[i] = (int64_t)((uint64_t)tmp[i + 1] - (uint64_t)tmp[i]);
                 len--;
             }
             first = tmp[0];
@@ -125,8 +153,10 @@ static int64_t *undiff(int64_t *d, size_t dn, const int64_t *warm, int k,
         b[0] = first;
         memcpy(b + 1, a, n * sizeof(int64_t));
         n++;
-        int64_t run = 0;
-        for (size_t i = 0; i < n; i++) { run += b[i]; b[i] = run; }
+        /* unsigned: the encoder's differences wrap the same way, and signed
+         * overflow would be undefined rather than merely wrong */
+        uint64_t run = 0;
+        for (size_t i = 0; i < n; i++) { run += (uint64_t)b[i]; b[i] = (int64_t)run; }
         free(a);
         a = b;
     }
@@ -178,17 +208,9 @@ static int decode_fallback(const uint8_t *blob, size_t n, Table *out, int bz)
                : ppz_lzma_decompress(blob + 4, n - 4, &plain);
     if (r) { buf_free(&plain); return -1; }
 
-    /* The fallback stores canonical CSV, so reuse the CSV reader via a temp
-     * file-free path: write to a memory buffer and parse it. */
-    char tmpl[] = "/tmp/ppzfbXXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) { buf_free(&plain); return -1; }
-    FILE *f = fdopen(fd, "wb");
-    fwrite(plain.data, 1, plain.len, f);
-    fclose(f);
+    /* The fallback stores canonical CSV; parse it where it lies. */
+    int rc = table_parse_csv(out, plain.data, plain.len);
     buf_free(&plain);
-    int rc = table_read_csv(out, tmpl);
-    remove(tmpl);
     return rc;
 }
 
@@ -206,9 +228,10 @@ static int read_exceptions(const Js *sp, size_t nrows,
                            size_t ngroups_s, size_t *bi, size_t *ti,
                            Str *cells)
 {
-    size_t nex = (size_t)js_int(js_get(sp, "nex"), 0);
+    size_t nex;
+    if (count_of(js_get(sp, "nex"), nrows, 1, &nex)) return -1;
     if (!nex) return 0;
-    if (nex > nrows || *bi >= nbins || *ti >= ngroups_s) return -1;
+    if (*bi >= nbins || *ti >= ngroups_s) return -1;
 
     int64_t *gaps = unpack_ints(cut[*bi], cutlen[*bi], nex);
     (*bi)++;
@@ -217,13 +240,12 @@ static int read_exceptions(const Js *sp, size_t nrows,
     size_t nvals = sgroup_n[*ti];
     (*ti)++;
 
-    int64_t acc = 0;
+    if (nvals != nex || !vals) { free(gaps); return -1; }
+    uint64_t acc = 0;
     for (size_t i = 0; i < nex; i++) {
-        acc += gaps[i];
-        if (acc < 0 || (size_t)acc >= nrows || i >= nvals || !vals) {
-            free(gaps);
-            return -1;
-        }
+        if (gaps[i] < 0 || (uint64_t)gaps[i] >= nrows) { free(gaps); return -1; }
+        acc += (uint64_t)gaps[i];
+        if (acc >= nrows) { free(gaps); return -1; }
         cells[acc] = vals[i];
     }
     free(gaps);
@@ -265,20 +287,28 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     if (!jcolumns || !jcols || !jbins || !jsmeta || !jorder || !jgroups)
         goto fail_meta;
 
-    size_t nrows = (size_t)js_int(js_get(meta, "nrows"), 0);
+    size_t nrows, nlen;
     size_t ncols = jcols->count;
-    size_t nlen  = (size_t)js_int(js_get(meta, "nlenbins"), 0);
+    size_t nbins = jbins->count;
+    if (jcols->kind != JS_ARR || jbins->kind != JS_ARR || jsmeta->kind != JS_ARR
+        || jorder->kind != JS_ARR || jgroups->kind != JS_ARR || jcolumns->kind != JS_ARR)
+        goto fail_meta;
+    if (count_of(js_get(meta, "nrows"), MAX_ROWS, 0, &nrows)) goto fail_meta;
+    if (count_of(js_get(meta, "nlenbins"), nbins, 1, &nlen)) goto fail_meta;
+    /* a table with no columns has no rows either; claiming 2^40 of them made
+     * the assembly below loop for hours over nothing */
+    if (ncols == 0 && nrows != 0) goto fail_meta;
 
     /* slice the concatenated binary payload */
-    size_t nbins = jbins->count;
     const uint8_t **cut = calloc(nbins ? nbins : 1, sizeof(uint8_t *));
     size_t *cutlen = calloc(nbins ? nbins : 1, sizeof(size_t));
     if (!cut || !cutlen) goto fail_meta;
     {
         size_t at = 0;
         for (size_t i = 0; i < nbins; i++) {
-            size_t sz = (size_t)js_int(&jbins->items[i], 0);
-            if (at + sz > rawb.len) goto fail_cuts;
+            size_t sz;
+            if (count_of(&jbins->items[i], rawb.len, 0, &sz)) goto fail_cuts;
+            if (sz > rawb.len - at) goto fail_cuts;
             cut[i] = rawb.data + at;
             cutlen[i] = sz;
             at += sz;
@@ -303,17 +333,25 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     int fc_on = (int)js_int(js_get(meta, "fc"), 0);
     {
         size_t at = 0, li = 0;
-        size_t first_len_bin = nbins - nlen;
+        size_t first_len_bin = nbins - nlen;        /* nlen <= nbins, checked */
         for (size_t g = 0; g < ngroups_s; g++) {
             const Js *m = &jsmeta->items[g];
-            size_t cnt = (size_t)js_int(js_get(m, "n"), 0);
-            size_t nb  = (size_t)js_int(js_get(m, "b"), 0);
+            size_t cnt, nb;
+            if (count_of(js_get(m, "n"), MAX_ROWS, 0, &cnt)) goto fail_sgroup;
+            if (count_of(js_get(m, "b"), txtb.len - at, 0, &nb)) goto fail_sgroup;
             int    nl  = (int)js_int(js_get(m, "nl"), 1);
             const char *chunk = (const char *)txtb.data + at;
-            if (at + nb > txtb.len) goto fail_sgroup;
             at += nb;
+            /* The words have to be in the bytes: newline-joined needs n-1
+             * newlines, front-coded a prefix byte each, and explicit lengths
+             * a byte each in their length bin. So a count the bytes cannot
+             * hold is refused here, before `cnt` sizes any allocation. */
+            if (!nl) {
+                if (li >= nlen || first_len_bin + li >= nbins) goto fail_sgroup;
+                if (cnt > cutlen[first_len_bin + li]) goto fail_sgroup;
+            } else if (cnt > nb + 1) goto fail_sgroup;
             sgroup_n[g] = cnt;
-            if (cnt == 0) { sgroup[g] = NULL; continue; }
+            if (cnt == 0) { sgroup[g] = NULL; if (!nl) li++; continue; }
             Str *arr = malloc(cnt * sizeof(Str));
             if (!arr) goto fail_sgroup;
             /* Front-coding is recorded per group. The archive-level "fc",
@@ -376,16 +414,23 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                                             cutlen[first_len_bin + li], cnt);
                 li++;
                 if (!lens) { free(arr); goto fail_sgroup; }
+                /* every length inside the group's own bytes, and all of them
+                 * accounting for exactly those bytes */
                 size_t pos = 0;
                 for (size_t k = 0; k < cnt; k++) {
+                    if (lens[k] < 0 || (uint64_t)lens[k] > nb - pos) {
+                        free(lens); free(arr); goto fail_sgroup;
+                    }
                     arr[k].p = chunk + pos;
                     arr[k].n = (size_t)lens[k];
                     pos += (size_t)lens[k];
                 }
                 free(lens);
+                if (pos != nb) { free(arr); goto fail_sgroup; }
             }
             sgroup[g] = arr;
         }
+        if (li != nlen) goto fail_sgroup;          /* a length bin nobody used */
     }
 
     /* ----------------------------------------------------- columns */
@@ -407,8 +452,10 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     /* dictionary columns, in the order the encoder wrote them so a parent is
      * always rebuilt before its child */
     for (size_t oi = 0; oi < jorder->count; oi++) {
-        size_t pos = (size_t)js_int(&jorder->items[oi], 0);
-        if (pos >= ncols) goto fail_ids;
+        size_t pos;
+        if (count_of(&jorder->items[oi], ncols ? ncols - 1 : 0, 0, &pos) || pos >= ncols)
+            goto fail_ids;
+        if (cols[pos].cells) goto fail_ids;        /* listed twice */
         const Js *sp = &jcols->items[pos];
         /* A crafted archive can name more columns than it carries payloads
          * for; reading past these arrays would be an out-of-bounds read on a
@@ -456,10 +503,11 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
 
         Str *cells = malloc((nrows ? nrows : 1) * sizeof(Str));
         if (!cells) goto fail_ids;
+        if (alpha_n == 0 && nrows) { free(cells); goto fail_ids; }
         for (size_t i = 0; i < nrows; i++) {
-            if (alpha_n == 0) { cells[i].p = ""; cells[i].n = 0; continue; }
             size_t k = (size_t)ids[i];
-            if (k >= alpha_n) k = 0;
+            /* an id past the alphabet is not something the encoder writes */
+            if (k >= alpha_n) { free(cells); goto fail_ids; }
             cells[i] = alpha[k];
         }
         cols[pos].cells = cells;
@@ -488,12 +536,10 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             Str *src = sgroup[ti];
             size_t cnt = sgroup_n[ti];
             ti++;
+            if (cnt != nrows || cols[pos].cells) goto fail_ids;
             Str *cells = malloc((nrows ? nrows : 1) * sizeof(Str));
             if (!cells) goto fail_ids;
-            for (size_t i = 0; i < nrows; i++) {
-                if (i < cnt) cells[i] = src[i];
-                else { cells[i].p = ""; cells[i].n = 0; }
-            }
+            for (size_t i = 0; i < nrows; i++) cells[i] = src[i];
             /* a text column may carry a parent, exactly like a dictionary
              * column; invert the same stable argsort */
             const Js *jtp = js_get(sp, "parent");
@@ -510,12 +556,14 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             }
             cols[pos].cells = cells;
         } else if (!strcmp(jk->str, "num")) {
-            int k = (int)js_int(js_get(sp, "k"), 0);
-            int dec = (int)js_int(js_get(sp, "dec"), 0);
+            size_t ks, decs;
             /* diff_order only ever emits 0..4, and fmt_fixed_one indexes a
              * 19-entry POW10 table. Anything outside those was not written by
              * this encoder, and trusting it reads off the end of an array. */
-            if (k < 0 || k > 4 || dec < 0 || dec > 18) goto fail_ids;
+            if (count_of(js_get(sp, "k"), 4, 1, &ks) || count_of(js_get(sp, "dec"), 18, 1, &decs))
+                goto fail_ids;
+            if (cols[pos].cells) goto fail_ids;
+            int k = (int)ks, dec = (int)decs;
             size_t want = nrows >= (size_t)k ? nrows - (size_t)k : 0;
             if (bi >= nbins) goto fail_ids;
             int64_t *d = unpack_ints(cut[bi], cutlen[bi], want);
@@ -530,6 +578,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                 d = undiff(d, want, warm, k, &an);
                 if (!d) goto fail_ids;
             }
+            if (an != nrows && nrows) { free(d); goto fail_ids; }
             Str *cells = malloc((nrows ? nrows : 1) * sizeof(Str));
             if (!cells) { free(d); goto fail_ids; }
             Buf *store = &cols[pos].store;
@@ -538,7 +587,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             if (!offs || !lens) { free(offs); free(lens); free(cells); free(d); goto fail_ids; }
             for (size_t i = 0; i < nrows; i++) {
                 offs[i] = store->len;
-                fmt_fixed_one(store, i < an ? d[i] : 0, dec);
+                fmt_fixed_one(store, d[i], dec);
                 lens[i] = store->len - offs[i];
             }
             for (size_t i = 0; i < nrows; i++) {
@@ -562,22 +611,24 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             /* A grouped column's exceptions are read here, in the same walk
              * the encoder wrote them, but cannot be applied until the group
              * has been rebuilt below. */
-            size_t nex = (size_t)js_int(js_get(sp, "nex"), 0);
+            size_t nex;
+            if (count_of(js_get(sp, "nex"), nrows, 1, &nex)) goto fail_ids;
             if (nex) {
-                if (nex > nrows || bi >= nbins || ti >= ngroups_s)
-                    goto fail_ids;
+                if (bi >= nbins || ti >= ngroups_s || grp_ex_pos[pos]) goto fail_ids;
+                if (sgroup_n[ti] != nex) goto fail_ids;
                 int64_t *gaps = unpack_ints(cut[bi], cutlen[bi], nex);
                 bi++;
                 if (!gaps) goto fail_ids;
-                int64_t acc = 0;
+                uint64_t acc = 0;
                 for (size_t i = 0; i < nex; i++) {
-                    acc += gaps[i];
-                    if (acc < 0 || (size_t)acc >= nrows) { free(gaps); goto fail_ids; }
-                    gaps[i] = acc;
+                    if (gaps[i] < 0 || (uint64_t)gaps[i] >= nrows) { free(gaps); goto fail_ids; }
+                    acc += (uint64_t)gaps[i];
+                    if (acc >= nrows) { free(gaps); goto fail_ids; }
+                    gaps[i] = (int64_t)acc;
                 }
                 grp_ex_pos[pos] = gaps;
                 grp_ex_val[pos] = sgroup[ti];
-                grp_ex_n[pos] = nex < sgroup_n[ti] ? nex : sgroup_n[ti];
+                grp_ex_n[pos] = nex;
                 ti++;
             }
         }
@@ -586,10 +637,14 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     /* 2D groups: rebuild the matrix by cumulative sums, then format */
     for (size_t gi = 0; gi < jgroups->count; gi++) {
         const Js *g = &jgroups->items[gi];
+        if (g->kind != JS_ARR) goto fail_ids;
         size_t w = g->count;
         if (w == 0 || nrows == 0) continue;
-        size_t n_side = w + (nrows - 1);
-        size_t total = n_side + (nrows - 1) * (w - 1);
+        if (w > ncols) goto fail_ids;
+        size_t n_side = w + (nrows - 1), inner, total, cells_n;
+        if (mul_ok(nrows - 1, w - 1, &inner) || inner > SIZE_MAX - n_side) goto fail_ids;
+        total = n_side + inner;
+        if (mul_ok(nrows, w, &cells_n) || cells_n > SIZE_MAX / sizeof(int64_t)) goto fail_ids;
         if (bi >= nbins) goto fail_ids;
         int64_t *flat = unpack_ints(cut[bi], cutlen[bi], total);
         bi++;
@@ -598,32 +653,37 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         /* M[0] = row0; column 0 of the rest = col0; interior = D.
          * Rebuild D1 by cumsum along axis 1, then M by cumsum along axis 0 --
          * the exact inverse of the encoder's np.diff twice. */
-        int64_t *M = malloc(nrows * w * sizeof(int64_t));
+        int64_t *M = malloc(cells_n * sizeof(int64_t));
         if (!M) { free(flat); goto fail_ids; }
         for (size_t c = 0; c < w; c++) M[c] = flat[c];
+        /* unsigned sums: wrap is defined, and matches the encoder's */
         for (size_t i = 1; i < nrows; i++) {
-            int64_t run = flat[w + (i - 1)];
-            M[i * w + 0] = run;
+            uint64_t run = (uint64_t)flat[w + (i - 1)];
+            M[i * w + 0] = (int64_t)run;
             for (size_t c = 1; c < w; c++) {
-                run += flat[n_side + (i - 1) * (w - 1) + (c - 1)];
-                M[i * w + c] = run;
+                run += (uint64_t)flat[n_side + (i - 1) * (w - 1) + (c - 1)];
+                M[i * w + c] = (int64_t)run;
             }
         }
         for (size_t c = 0; c < w; c++) {
-            int64_t run = M[c];
+            uint64_t run = (uint64_t)M[c];
             for (size_t i = 1; i < nrows; i++) {
-                run += M[i * w + c];
-                M[i * w + c] = run;
+                run += (uint64_t)M[i * w + c];
+                M[i * w + c] = (int64_t)run;
             }
         }
         free(flat);
 
         for (size_t c = 0; c < w; c++) {
-            size_t pos = (size_t)js_int(&g->items[c], 0);
-            if (pos >= ncols) continue;
-            int dec = (int)js_int(js_get(&jcols->items[pos], "dec"), 0);
+            size_t pos, decs;
+            if (count_of(&g->items[c], ncols - 1, 0, &pos)) { free(M); goto fail_ids; }
+            const Js *gk = js_get(&jcols->items[pos], "kind");
+            /* only a "grp" column belongs in a group, and only once */
+            if (!gk || gk->kind != JS_STR || strcmp(gk->str, "grp") || cols[pos].cells)
+                { free(M); goto fail_ids; }
             /* same POW10 bound as the ungrouped numeric path */
-            if (dec < 0 || dec > 18) { free(M); goto fail_ids; }
+            if (count_of(js_get(&jcols->items[pos], "dec"), 18, 1, &decs)) { free(M); goto fail_ids; }
+            int dec = (int)decs;
             Str *cells = malloc(nrows * sizeof(Str));
             size_t *offs = malloc(nrows * sizeof(size_t));
             size_t *lens = malloc(nrows * sizeof(size_t));
@@ -640,11 +700,8 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             }
             free(offs); free(lens);
             /* the group is rebuilt now, so the stashed exceptions can land */
-            for (size_t e = 0; e < grp_ex_n[pos]; e++) {
-                size_t p = (size_t)grp_ex_pos[pos][e];
-                if (p < nrows) cells[p] = grp_ex_val[pos][e];
-            }
-            free(cols[pos].cells);
+            for (size_t e = 0; e < grp_ex_n[pos]; e++)
+                cells[(size_t)grp_ex_pos[pos][e]] = grp_ex_val[pos][e];
             cols[pos].cells = cells;
             cols[pos].owned = 1;
         }
@@ -652,6 +709,11 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     }
 
     /* ------------------------------------------------ assemble the table */
+    /* Every column must have been rebuilt, and every payload used. A column
+     * nothing filled in (a "dict" missing from the order, a "grp" in no group)
+     * or a leftover bin is an archive this encoder did not write. */
+    for (size_t j = 0; j < ncols; j++) if (!cols[j].cells) goto fail_ids;
+    if (bi + nlen != nbins || ti != ngroups_s) goto fail_ids;
     table_init(out);
     out->ncols = ncols;
     out->nrows = nrows;
@@ -667,14 +729,15 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     {
         size_t total = 0;
         for (size_t j = 0; j < ncols; j++)
-            if (cols[j].cells)
-                for (size_t i = 0; i < nrows; i++) total += cols[j].cells[i].n;
+            for (size_t i = 0; i < nrows; i++) total += cols[j].cells[i].n;
         buf_need(&out->arena, total + 1);
-        out->cells = calloc(nrows * ncols ? nrows * ncols : 1, sizeof(Str));
+        size_t ncell;
+        if (mul_ok(nrows, ncols, &ncell)) goto fail_ids;
+        out->cells = calloc(ncell ? ncell : 1, sizeof(Str));
         if (!out->cells) goto fail_ids;
         for (size_t i = 0; i < nrows; i++) {
             for (size_t j = 0; j < ncols; j++) {
-                Str s = cols[j].cells ? cols[j].cells[i] : (Str){ "", 0 };
+                Str s = cols[j].cells[i];
                 size_t at = out->arena.len;
                 buf_put(&out->arena, s.p, s.n);
                 out->cells[i * ncols + j].p = (const char *)out->arena.data + at;

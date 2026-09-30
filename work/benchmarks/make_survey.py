@@ -33,7 +33,7 @@ Proc_Attempts<-Proc_Done, Destination<-Transported, Disposition<-
 Destination_Type. That tree is the survey's own skip logic, recovered from the
 data. Check it with:
 
-    python3 tzip.py compress out.csv && python3 tzip.py info out.csv.ppz
+    csrc/polypress compress out.csv && csrc/polypress info out.csv.ppz
 """
 
 from __future__ import annotations

@@ -19,7 +19,12 @@ OUT=../OUT/results
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 ARROW_NUM_THREADS=1
 export PYTHONHASHSEED=0
+# The polypress encoder's threads never change its bytes (tests/ pins that),
+# but they do change its time and memory, and every competitor here runs on
+# one thread -- so it runs on one too.
+export PPZ_THREADS=1
 
+./csrc/build.sh >/dev/null
 python3 benchmarks/make_suite.py "$SUITE"
 
 # --max-mb 30 is above the largest file in the suite on purpose: the suite

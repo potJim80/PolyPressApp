@@ -26,8 +26,8 @@ actually do with a table:
   general purpose  gzip, bzip2, xz, zstd at three levels, brotli, lz4
   archivers        zip -9, 7z LZMA2 -mx9, 7z PPMd at three orders
   columnar files   Parquet at four codecs, ORC at three, Arrow/Feather at two
-  polypress        the shipping encoder, plus the same modelled streams
-                   re-finished with zstd and brotli
+  polypress        the C program (csrc/polypress), plus the same modelled
+                   streams re-finished with zstd and brotli
 
 That last one is the point of the whole file. Polypress finishes with xz and
 Parquet cannot use xz at all -- pyarrow answers `Unsupported compression: xz`
@@ -50,8 +50,16 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from polypress import dtz, fast, turbo
+WORK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The program under test is the C binary; nothing of it is imported. Build it
+# with csrc/build.sh. POLYPRESS overrides the path.
+POLYPRESS = os.environ.get("POLYPRESS") or os.path.join(WORK, "csrc", "polypress")
+sys.path.insert(0, os.path.join(WORK, "py"))
+from parquet import _cell as parquet_cell                     # noqa: E402
+
+# Raw LZMA2 at 9e: the filter chain every xz section of an archive uses.
+XZ = dict(format=lzma.FORMAT_RAW,
+          filters=[{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME}])
 
 CLI_TOOLS = [
     ("gzip -9",        ["gzip", "-9", "-c"],                   ["gzip", "-dc"]),
@@ -122,11 +130,11 @@ def refinish(blob: bytes, comp) -> int:
     way, and pretending otherwise would flatter the result.
     """
     head = blob[:4]
-    if head == fast.MAGIC_RAW_XZ:
-        return 4 + len(comp(lzma.decompress(blob[4:], **fast.XZ)))
-    if head == fast.MAGIC_RAW_BZ:
+    if head == b"PPZX":
+        return 4 + len(comp(lzma.decompress(blob[4:], **XZ)))
+    if head == b"PPZB":
         return 4 + len(comp(bz2.decompress(blob[4:])))
-    if head not in (fast.MAGIC, fast.MAGIC_V0):
+    if head not in (b"PPZ1", b"FAST"):
         raise ValueError("not a polypress archive")
     ml = int.from_bytes(blob[4:8], "big")
     bl = int.from_bytes(blob[8:12], "big")
@@ -134,7 +142,7 @@ def refinish(blob: bytes, comp) -> int:
     total = 16
     for size in (ml, bl, None):
         section = blob[o:o + size] if size is not None else blob[o:]
-        total += len(comp(lzma.decompress(section, **fast.XZ)))
+        total += len(comp(lzma.decompress(section, **XZ)))
         if size is not None:
             o += size
     return total
@@ -337,21 +345,44 @@ def arrow_rows(path: str, mb: float, rows: list) -> bool:
     # silently becoming 1.5 is a smaller file for a reason that is not
     # compression, and a size table without this verdict is not a comparison.
     try:
-        original = dtz.read_any(path)
+        # the table as Polypress reads it, cell for cell
+        text = subprocess.run([POLYPRESS, "convert", path, "-"],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, check=True).stdout
+        import csv as _csv
+        grid = list(_csv.reader(io.StringIO(text.decode("utf-8"), newline="")))
+        names, body = grid[0], grid[1:]
         buf = io.BytesIO()
         pq.write_table(table, buf, compression="zstd", compression_level=22)
         buf.seek(0)
         back = pq.read_table(buf)
         cols = {c: back.column(c).to_pylist() for c in back.column_names}
-        for j, name in enumerate(original.columns):
+        for j, name in enumerate(names):
             if name not in cols:
                 return False
-            got = ["" if v is None else dtz._scalar(v) for v in cols[name]]
-            if got != original.column(j):
+            got = [parquet_cell(v) for v in cols[name]]
+            if got != [(r[j] if j < len(r) else "") for r in body]:
                 return False
         return True
     except Exception:
         return None
+
+
+def run_polypress(args):
+    """Run the binary; (seconds, peak RSS MB of that one process). os.wait4
+    gives the child's own rusage, so the other tools' peaks never mix in."""
+    t0 = time.time()
+    p = subprocess.Popen([POLYPRESS] + args, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.PIPE)
+    _, status, ru = os.wait4(p.pid, 0)
+    secs = max(time.time() - t0, 1e-6)
+    err = p.stderr.read().decode("utf-8", "replace")
+    p.stderr.close()
+    p.returncode = os.waitstatus_to_exitcode(status)
+    if p.returncode != 0:
+        raise RuntimeError(err.strip()[:200] or "polypress failed")
+    rss = ru.ru_maxrss / 1e6 if sys.platform == "darwin" else ru.ru_maxrss / 1e3
+    return secs, rss
 
 
 # --------------------------------------------------------------------------
@@ -377,45 +408,50 @@ def measure(path: str) -> dict:
 
     out["parquet_exact"] = arrow_rows(path, mb, rows)
 
-    t = dtz.read_any(path)
-    out["rows"], out["cols"] = t.shape
     del data
 
-    blob, te = clock(lambda: fast.encode(t))
-    back, td = clock(lambda: fast.decode(blob))
-    out["roundtrip"] = (back.columns == t.columns and back.rows == t.rows)
-    del back
-    rows.append(["polypress", len(blob), mb / te, mb / td])
-
-    # Like for like: strip xz out and use the competitor's own finisher.
-    for label, comp in (("zstd", _zstd22), ("brotli", _brotli11)):
-        try:
-            rows.append(["polypress+" + label, refinish(blob, comp),
-                         None, None])
-        except Exception:
-            pass
-    del blob
-
-    # The turbo fork, measured the same way and round-trip checked the same
-    # way. It is a different container (PPZT) with no C port, so it is a
-    # separate row rather than a replacement for the one above -- the point of
-    # this sweep is to see both against the same competitors on the same
-    # tables, not to pick one.
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="measure-")
     try:
-        tblob, te = clock(lambda: turbo.encode(t))
-        tback, td = clock(lambda: turbo.decode(tblob))
-        out["turbo_roundtrip"] = (tback.columns == t.columns
-                                  and tback.rows == t.rows)
-        del tback
-        rows.append(["polypress-turbo", len(tblob), mb / te, mb / td])
-        del tblob
-    except Exception as exc:                                    # noqa: BLE001
-        out["turbo_error"] = str(exc)[:120]
-    del t
+        arc = os.path.join(tmp, "t.ppz")
+        # --no-verify: the timing is the encoder's; the round trip is checked
+        # separately below, against the table as read, cell for cell
+        best_e = best_d = None
+        for _ in range(REPS):
+            te, rss_e = run_polypress(["compress", path, "-o", arc, "--no-verify"])
+            best_e = te if best_e is None else min(best_e, te)
+        for _ in range(REPS):
+            td, rss_d = run_polypress(["restore", arc, "-o", os.path.join(tmp, "back.csv")])
+            best_d = td if best_d is None else min(best_d, td)
+        blob = open(arc, "rb").read()
+        h = json.loads(subprocess.run([POLYPRESS, "info", arc, "--json"],
+                                      stdout=subprocess.PIPE, check=True).stdout)
+        out["rows"], out["cols"] = h["rows"], h["columns"]
+        want = os.path.join(tmp, "want.csv")
+        subprocess.run([POLYPRESS, "convert", path, want],
+                       stdout=subprocess.DEVNULL, check=True)
+        out["roundtrip"] = (open(want, "rb").read()
+                            == open(os.path.join(tmp, "back.csv"), "rb").read())
+        out["polypress_peak_mb"] = round(rss_e, 1)
+        rows.append(["polypress", len(blob), mb / best_e, mb / best_d])
+
+        # Like for like: strip xz out and use the competitor's own finisher.
+        for label, comp in (("zstd", _zstd22), ("brotli", _brotli11)):
+            try:
+                rows.append(["polypress+" + label, refinish(blob, comp),
+                             None, None])
+            except Exception:
+                pass
+        del blob
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
 
     out["results"] = {r[0]: {"bytes": r[1], "enc_mbs": r[2], "dec_mbs": r[3]}
                       for r in rows}
-    out["peak_mb"] = round(peak_mb(), 1)
+    # the larger of this process (pyarrow, the competitors' buffers) and the
+    # polypress process -- what the machine had to have free for this table
+    out["peak_mb"] = round(max(peak_mb(), out.get("polypress_peak_mb", 0)), 1)
     return out
 
 

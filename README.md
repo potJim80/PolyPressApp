@@ -16,6 +16,21 @@ A lossless compressor for data tables.
 > below read `../IN/…` and `../OUT/…`. Full detail, including every file edited
 > and how to undo it, is in [`memory/RESTRUCTURE-2026-08-04.md`](memory/RESTRUCTURE-2026-08-04.md).
 
+> **One pass, since 2026-09-29 -- read this before any number below.** The
+> encoder no longer tries a table several ways and keeps the smallest, and no
+> longer checks the result against plain xz and bzip2 of the whole table.
+> Mahdi's call, after a 6.8 GB table took over an hour: "one algorithm to
+> reorder, one compression algorithm". Measured on the 39-table suite first:
+> the trials and the check cost **2.3x the encode time (3x on one core, where
+> the plain-xz check alone was 69%) for 2.5% smaller output**. So the
+> **"never worse than plain xz" guarantee described below is retired**: on
+> the suite the one-pass archive is still smaller than `xz -9e` on 38 of 39
+> tables and 61 bytes (0.003%) bigger on the 39th, a table of random base64,
+> but that is now a measurement, not a promise.
+> The 500-table headline and the other sweep results below were produced by
+> the earlier encoder, with the guarantee; they have not been re-run.
+> Details: [One pass](#one-pass).
+
 ## The headline: 500 datasets nobody chose
 
 The obvious objection to any compression result is **"you picked the files"**,
@@ -364,7 +379,7 @@ Polypress finished with zstd-22 instead of xz is **8% larger and several times
 faster**, and still beats Parquet on every table. Nothing in the format
 prevents offering that as a flag.
 
-`tzip.py info` explains where the win comes from: **172 of the 200
+`polypress info` explains where the win comes from: **172 of the 200
 dictionary columns were sorted by a parent**. Survey columns predict each
 other heavily, and no columnar format exploits that — Parquet compresses
 each column chunk independently.
@@ -560,101 +575,102 @@ Since 2026-08-04 the repository follows a four-folder convention:
 ```
 memory/         restructure log and working notes for future sessions
 IN/             benchmark corpora -- all re-fetchable, none committed
-                corpus/ corpus100/ corpus500/ corpus_matrix/ corpus_hostile/
-                plus polypress-demo.csv and polypress-demo-hard.csv
 OUT/results/    sweep output: the JSONL, summaries and CSVs that are the evidence
 work/           everything below is inside work/ -- run commands from there
-  polypress/    the codec: fast (single-shot), stream (bounded memory),
-                dtz (table I/O), codec, caccel + tcz.c (C accelerator)
-  csrc/         the standalone C binary -- reads archives with nothing installed
-  tzip.py       command line entry point
-  app/          the Mac app: gui.py, build_app.sh, make_icon.py
-  tests/        fidelity suites
-  benchmarks/   size and speed against real binaries
+  csrc/         THE PROGRAM, in C: codec, table readers and writers,
+                streaming container, threads, command line
+  csrc/tests/   its test suite, also C
+  py/           parquet.py -- the one format that needs Python (Arrow)
+  app/          the Mac app: PolypressApp.swift + page/ (one window around the
+                C program), build_app.sh
+  benchmarks/   size and speed against every competitor (Python: they drive
+                pyarrow, 7z, brotli... and time the C program as a process)
   docs/         the results PDF and the script that generates it
-  attic/        superseded work, kept for the record
-  pyproject.toml
+  lab/          experiments; not part of the program
 ```
 
-## The standalone binary
+## One pass
+
+Since 2026-09-29 an encode is exactly this, once:
+
+1. **Classify each column** -- dictionary (few distinct values), numeric
+   (differences packed small, with exceptions for the odd blank or "-0.0"),
+   or text. Whether a column that is numeric apart from a few cells is stored
+   as numbers is decided by a cheap one-sided screen, not by encoding twice.
+2. **Reorder**: each dictionary column is sorted by the parent column that
+   best predicts it (conditional entropy, with a fast preset-1 probe as the
+   check), and each text column by the dictionary column a probe says shrinks
+   it. The decoder rebuilds the parent first and recomputes the same sort, so
+   the order is free.
+3. **Predict**: numeric columns differenced to their best order; adjacent
+   commensurable numeric columns predicted in 2D.
+4. **Compress**: three streams (metadata, binary payloads, text pile), each
+   through `xz -9e` once. xz was measured against the alternatives on the
+   modelled streams: brotli -11 is 1% smaller and 6.5x slower, bzip3 2%
+   bigger, bzip2 7%, zstd -19/-22 11% bigger. Keeping xz also means every
+   archive ever written still opens.
+
+What was removed, and what it cost, on the 39-table suite:
+
+| | total size | encode time |
+|---|---|---|
+| before: trials + the plain-xz/bzip2 check | 1.000 | 72 s |
+| without the check only | 1.002 | 48 s |
+| **one pass (now)** | **1.025** | **31 s** |
+| one pass with no reordering at all | 1.20 | 28 s |
+| plain `xz -9e` on the CSV | 1.35 | -- |
+
+Taking the reordering out makes the one-pass output 17% bigger on this suite
+-- the cross-column idea is real -- where the trials were worth 2.5%. On one core (what the big-file mode used to
+run on) the gap was 3x: 9.0 s against 2.5 s on 200,000 rows of NEMSIS.
+Tables that came out more than 3% bigger than before: `chicago_crimes`
++11.8%, `nyc_311` +6.9%, `chicago_permits` +4.8%, and five within 3.3-3.7%.
+
+**Big files** are compressed a block at a time, now with up to four blocks
+side by side (they are independent), and the program reports how far it has
+got (`--progress`, which the app turns into a bar and a time estimate).
+
+## The program is C
+
+**Since 2026-09-29 Polypress is one C program** (`work/csrc/`). Until then
+there were two implementations: the Python codec (`polypress/fast.py` and
+friends, numpy behind it) and a C port that had to match it byte for byte,
+checked by a test that ran both. The Python side was retired -- deleted, and
+recoverable from git at commit `c55f68f` -- so there is one codec, one set of
+readers, one command line. The archive format did not change: every `.ppz`
+written before opens exactly as it did, and the C encoder still writes the
+same bytes it wrote when it was the port (checked on all 39 suite tables
+before the Python went).
 
 ```bash
-./csrc/build.sh                         # -> csrc/polypress
-./csrc/polypress compress data.csv      # no Python, no numpy
-./csrc/polypress restore  data.csv.ppz
-./csrc/polypress info     data.csv.ppz
+./csrc/build.sh                              # -> csrc/polypress
+./csrc/polypress compress data.csv           # -> data.csv.ppz
+./csrc/polypress restore  data.csv.ppz       # -> data.csv
+./csrc/polypress info     data.csv.ppz       # plan, shape, what was reordered
 ```
 
-**Using it needs nothing installed.** That is the point. The Python codec
-needs Python 3.9+, numpy, and ideally a compiler; a researcher sent a `.ppz`
-should not have to build an environment to open it.
+**Using it needs nothing installed.** liblzma is linked into the binary;
+libbz2 and iconv ship with macOS and every Linux. Building needs the liblzma
+headers (`brew install xz`, or `apt install liblzma-dev libbz2-dev`).
 
-**The C encoder is byte-identical to the Python one.** Not "equivalent" —
-the same bytes, verified on every case in `tests/test_cbin.py` (39/39,
-including 421-column real NHANES data), plus 1,450 randomly generated tables
-through `tests/test_fuzz.py` across five seeds. The comparison is against
-`fast.encode`, so the choice of *which* container to write is covered as well
-as the bytes inside it. That is the strongest correctness
-signal available: any divergence is a bug with a known location, and the
-Python implementation stays usable as the oracle.
+**What is still Python, and why:**
 
-Getting there required three things that are not obvious, and each is
-commented where it lives:
+| part | why it stays Python |
+|---|---|
+| `py/parquet.py` | Parquet is a binary container with its own encodings; reading it properly means the Arrow library, whose C API is a far heavier dependency than this whole program. So Parquet is converted at the edge: `python3 py/parquet.py to-csv x.parquet \| polypress compress - -o x.ppz`. |
+| `benchmarks/` | They drive the competitors -- pyarrow's Parquet/ORC/Feather, 7z, brotli -- and time the C program as one more subprocess. |
 
-- **Summation order.** The parent search compares entropies, and `np.sum` is
-  pairwise, not left-to-right. A different last bit flips a `>`, picks a
-  different parent, and changes every byte after it. `pairwise_sum()`
-  reproduces numpy's algorithm, block size and all.
-- **Tie-breaking.** `pick_parents` used a Python `set`, so which of two
-  equally-good parents won was an artefact of CPython's hash table. It is a
-  list in both languages now — lowest column index wins. An encoder whose
-  output can shift with an interpreter's internals is not one to build a
-  format on, so this is a fix regardless of the port.
-- **JSON.** The metadata is compared byte for byte, so the emitter matches
-  `json.dumps(..., separators=(",",":"))` exactly, including `ensure_ascii`
-  escaping and surrogate pairs above the BMP.
+**Threads.** 72-92% of encode time is xz trial compressions -- candidate
+layouts that are compressed, measured and compared. The trials of one
+decision are independent, so they run at the same time (up to 4, or
+`PPZ_THREADS`), and every decision still folds its sizes in the original
+order with the original strict `<`, so **the archive is the same bytes with
+one thread or four**. On the suite: 29 small and medium tables 63 s -> 14 s,
+the ten large ones 170 s -> 56 s. The price is memory -- several xz -9e
+working sets at once, about (input MB x 50) + 100 at peak -- so streaming
+mode runs on one thread and `PPZ_THREADS=1` does the same anywhere.
 
-Speed is a side effect, not the reason. Compress is ~1.4x faster on NHANES,
-restore ~1.3x. Profiling puts liblzma at 62–100% of encode time, so there was
-never much to win: the Python around it was not the bottleneck.
-
-`tests/test_cbin.py` runs the shared corpus plus cases that force each piece
-of machinery — the parent permutation, the 2D group reconstruction, undiff at
-orders 1 to 3, the 8-byte varint tail, and JSON escaping via non-ASCII column
-names — and checks both directions: bytes out of the encoder, cells out of
-the decoder. All three container types are covered.
-
-**The C encoder now makes the same container choice too**, which it did not
-until 2026-07-27. It used to always write the modelled container, so on a
-table where none of the three tricks fired it produced a larger file than
-`tzip.py compress` — never a *wrong* one, but bigger, and that broke the
-"never worse" rule for anyone using the standalone binary. It now builds the
-same canonical CSV, checks it round-trips, and takes the smallest of xz,
-bzip2 and modelled. Across the fidelity case set that is **52.6% off in
-total**, and up to **13x on a very small table** (163 bytes → 12), which is
-exactly the "I tried it on a small file first" case a new user hits.
-
-On real data it changes much less: of 15 real and adversarial tables, only two
-moved at all (`high_precision` 3.3%, `base64_blob` 1.3%), because on real
-tables a trick usually does fire. Both numbers are worth stating — the fix
-matters for the guarantee and for first impressions, not for the headline
-ratios.
-
-The subtle part is that the fallback compresses the table re-serialised as
-canonical CSV, so the C writer has to match Python's `csv.writer` byte for
-byte — including that a bare `\r` is *not* quoted, that an empty field *is*
-quoted when it is alone in its row, and that a NUL forces quoting. The first
-of those makes Python's own CSV lossy for such a cell, so the candidate is
-re-parsed and compared before it is allowed to win, and both implementations
-then decline it and agree. `tests/test_cbin.py` pins nine such cases.
-
-Needs `liblzma` and `libbz2` headers (`brew install xz`, or
-`apt install liblzma-dev libbz2-dev`). The build script finds them via
-pkg-config. liblzma 5.4.3 and 5.8.3 were both verified to emit byte-identical
-output to Python's `lzma` module for this filter chain, which is what makes a
-byte-identical port possible at all.
-
-## The three ideas
+## ## The three ideas
 
 **1. Local function building.** Fit a low-degree polynomial to the last few
 values in a column, extrapolate one step, store only the error. Because the
@@ -686,50 +702,51 @@ into C instead of a Python loop.
 ## Install
 
 ```bash
-pip install polypress          # the codec and the `polypress` command
-pip install 'polypress[parquet]'   # add pyarrow, for reading/writing .parquet
+cd work && ./csrc/build.sh                                  # -> csrc/polypress
+PREFIX=/usr/local ./csrc/build.sh install                   # put it on PATH
 ```
 
-numpy is the only hard requirement. The C accelerator compiles itself on first
-import and falls back to numpy if there is no compiler, so it is never a
-dependency. Or use it straight from a checkout with no install at all --
-`python3 tzip.py ...` still works and calls the same code.
-
-For the standalone binary, which needs no Python at all, see
-[The standalone binary](#the-standalone-binary).
+The PyPI package (`pip install polypress`, last release 0.2.1) was the
+Python codec. It is retired with it: 0.2.1 stays on PyPI and still works,
+but new versions are the C program.
 
 ## Use
 
 ```bash
-polypress compress data.csv                # -> data.csv.ppz
-python3 tzip.py compress data.csv          # identical, no install needed
-python3 tzip.py restore  data.csv.ppz      # -> data.csv
-python3 tzip.py restore  data.csv.ppz -o out.parquet
-python3 tzip.py info     data.csv.ppz      # plan, shape, how much was reordered
+polypress compress data.csv                 # -> data.csv.ppz
+polypress compress data.tsv -o d.ppz        # TSV, PSV, .txt (delimiter sniffed),
+polypress compress data.json                #   JSON records or columns, JSON Lines
+polypress compress old.csv --encoding latin-1
+polypress restore  data.csv.ppz             # -> data.csv
+polypress restore  data.csv.ppz -o out.json # the extension picks the format
+polypress convert  data.tsv data.jsonl      # a plain format change, no archive
+polypress info     data.csv.ppz [--json]
 ```
 
-Restoring writes whatever format the output extension asks for, so it doubles
-as a converter.
-
-For a file larger than RAM, the same three commands in a block-at-a-time form
-with a settable memory budget:
+`-` is standard input or output as CSV, which is how Parquet gets in and out:
 
 ```bash
-python3 tzip.py stream-compress big.csv --budget 1.0   # ~1 GB peak
-python3 tzip.py stream-restore  big.csv.ppz -o back.csv
-python3 tzip.py stream-info     big.csv.ppz            # blocks and sizes
+python3 py/parquet.py to-csv data.parquet | polypress compress - -o data.ppz
+polypress restore data.ppz -o - | python3 py/parquet.py from-csv - out.parquet
+```
+
+For a file larger than RAM, compress a block at a time with a settable
+memory budget; `restore` and `info` recognise the result by themselves:
+
+```bash
+polypress stream-compress big.csv --budget 1.0     # ~1 GB peak
+polypress restore big.csv.ppz -o back.csv
+polypress info    big.csv.ppz                      # blocks and sizes
 ```
 
 Blocks are compressed independently, so peak memory is one block rather than
 one file. The cost is real: the cross-column reordering only sees correlations
-*inside* a block, so smaller blocks compress slightly worse. Restoring honours
-the output extension here too — `.parquet` output becomes one row group per
-block, which keeps the write bounded as well.
+*inside* a block, so smaller blocks compress slightly worse.
 
 Or the Mac app:
 
 ```bash
-./app/build_app.sh          # installs to ~/Applications/Polypress.app
+./app/build_app.sh          # builds the program, then ~/Applications/Polypress.app
 ./app/build_app.sh dmg      # also writes dist/Polypress.dmg to hand to someone
 open ~/Applications/Polypress.app
 ```
@@ -742,22 +759,21 @@ Apple Developer certificate, not a fault in the build; right-click → Open → 
 once and it is fine thereafter. The note in the image says exactly that, because
 a download that appears broken on first launch is a download nobody uses.
 
-Three ways to use it:
+It is one quiet window (Swift + a bundled page, since 2026-09-29; it was a
+chain of AppleScript dialogs before):
 
-- **launch it** — pick any table, get a `.ppz`
-- **double-click a `.ppz`** — restores it; the bundle registers the extension
-  (archives written before the rename, `.tcz`, still open)
-- **drop files on the Dock icon** — same thing
+- **drop a table** on it — compressed into a `.ppz` beside the original,
+  verified cell for cell. Big files go a block at a time automatically.
+- **drop a `.ppz`** — restored beside itself, never over an existing file
+- **hover a line** — "show" in Finder, and "as csv tsv json jsonl parquet" to
+  write the same table in another format
+- **click a file's name** — rows, columns, and what the codec did with them
+- **double-click a `.ppz`** in Finder, or drop files on the Dock icon
 
-Right-click the Dock icon → Options → Keep in Dock. Nothing is written until
-the compressed blob has been decoded in memory and compared to the original.
-
-The app is an AppleScript droplet rather than a shell wrapper for one
-reason: only an applet receives the `on open` Apple Event Finder sends when
-you double-click a document. A plain launcher never sees the path.
-
-Needs Python 3.9+ and numpy. `cc` is optional — `caccel.py` compiles
-`tcz.c` on first import and falls back to numpy if there is no compiler.
+The C program ships inside the bundle, so the app needs nothing installed;
+Parquet is offered only when the system Python has pyarrow.
+`Polypress --selftest` runs every action on generated files without opening
+a window, and `build_app.sh` refuses to install a build that fails it.
 
 ## Fidelity
 
@@ -768,6 +784,15 @@ compress.
 It does *not* promise byte-identical files, because CSV quoting and line
 endings are not canonical. Read a file and write it back and you get an
 equivalent table, not identical bytes.
+
+**A row is never cut to fit.** A row shorter than the header is padded with
+empty cells -- CSV writers drop trailing empties all the time, and nothing is
+lost. A row *longer* than the header used to be trimmed silently, and the
+round-trip check could not see it, because it compared the already-trimmed
+table with its own decoding (found 2026-09-15: Romeo and Juliet as raw text
+lost the tail of every line with a comma in it). Now the extra cells are
+dropped only when they are all empty, and otherwise the file is refused with
+the row named.
 
 **Text encoding is read or refused, never guessed.** A byte-order mark is
 honoured, so the UTF-8-with-BOM and UTF-16 files Excel produces are read
@@ -786,7 +811,7 @@ U+FFFD. A latin-1 file lost every accented character and reported success —
 and *the round-trip check could not catch it*, because the table was already
 wrong before it was encoded, so the check compared a corrupted table against
 itself. Three of six test encodings destroyed data that way.
-`tests/test_encoding.py` pins all of it.
+`csrc/tests/` pins all of it.
 
 ## Where it loses
 
@@ -897,8 +922,9 @@ anything previously measured here**, and the gap is 9% rather than 0.8%.
 This is the same lesson as the `cdc_nndss` row further up. A benchmark lineup
 that is too small does not produce wrong numbers, it produces flattering ones.
 
-**The guarantee is: never worse than xz or bzip2 on any table**, because both
-are carried as candidates and the smaller wins. As the section above records it
+**The guarantee was: never worse than xz or bzip2 on any table** (retired
+2026-09-29, see [One pass](#one-pass)), because both were carried as
+candidates and the smaller won. As the section above records it
 did not hold until 2026-07-31; it now does, and the head-to-head table shows it
 — `xz -9e` and `bzip2 -9` are both **100/100** across the unselected corpus.
 
@@ -941,19 +967,19 @@ Full numbers, every contender, in `../OUT/results/hostile-summary.txt`.
 
 ## Honest limitations
 
-- **Pure Python + numpy + a small C library, and it sits in the slow tier.**
-  Median across the 100 unselected datasets: **2.0 MB/s encode, 134 MB/s
-  decode** — down from 3.6 MB/s encode before the fallback check became
-  unconditional, which is what the "never worse" guarantee cost. For context,
-  on the same corpus and the same machine, `xz -9e` is 3.9 / 203,
+- **It sits in the slow tier.** Median across the 100 unselected datasets,
+  measured on the Python codec: **2.0 MB/s encode, 134 MB/s decode**. For
+  context, on the same corpus and machine, `xz -9e` is 3.9 / 203,
   `brotli -q 11` is 1.1 / 501, `zstd -22` is 2.8 / 871 and `zstd -3` is
-  187 / 716. So encoding is now slower than `xz -9e` and roughly twice
-  `brotli -q 11`, and two orders of magnitude off the fast tier, which is where
-  it will stay. Note also that these are not measured on the same basis: the
-  general-purpose tools are handed raw CSV bytes, while Parquet, ORC, Feather
-  and Polypress are handed an already-parsed table and are not charged for
-  reading the CSV.
-- **Never-worse costs encode time, and the bill has gone up.** Every guard in
+  187 / 716. The C program with threads is roughly 3-4x faster than that on
+  the suite (170 s -> 56 s on the ten large tables), but the sweep has not
+  been re-run on it yet, so the median above is the last *measured* one.
+  Either way it is two orders of magnitude off the fast tier, where it will
+  stay. These are not measured on the same basis: the general-purpose tools
+  are handed raw CSV bytes, while Parquet, ORC, Feather and Polypress read the
+  table themselves.
+- **(Historical -- the encoder is one pass since 2026-09-29.) Never-worse
+  cost encode time, and the bill had gone up.** Every guard in
   here works by encoding the table both ways and keeping the smaller, so a
   table eligible for a guard is encoded twice. Measured across 21 tables, the
   2026-07-29 changes made encode **1.86x slower for 1.66% smaller output**.
@@ -964,9 +990,10 @@ Full numbers, every contender, in `../OUT/results/hostile-summary.txt`.
   work; the guarantee is not negotiable, the price of it is.
 - **The 2x cases are matrix-shaped tables.** The 1.3–1.5x cases are the more
   typical result.
-- **Bit-identity with numpy is not achievable, and the codec no longer depends
-  on it.** `tests/test_cbin_corpus.py` — the first check of invariant 1 against
-  real data rather than constructed cases — found three C/Python divergences.
+- **Bit-identity with numpy was not achievable, and the codec does not depend
+  on it** (a lesson from the port, kept because it shaped the format).
+  `tests/test_cbin_corpus.py` — the first check of C against Python on
+  real data rather than constructed cases — found three divergences.
   After the fixes it reports **108 of 108 datasets byte-identical**, with both
   decoders reproducing every table.
   Chasing the last two established why: `pairwise_sum()` in the C port
@@ -978,12 +1005,12 @@ Full numbers, every contender, in `../OUT/results/hostile-summary.txt`.
   other. Entropy scores are therefore quantised to a ~1e-6 grid and compared as
   integers, with ties falling to the lower column index. The last bit never
   carried information; letting it choose a parent decided every byte after it.
-- **Encode got slower to make "never worse" true.** Every table now builds the
+- **(Historical, see One pass.) Encode got slower to make "never worse" true.** Every table builds the
   canonical CSV and checks the plain fallbacks against the modelled encoding.
   Measured before the abort-early cap: **+63% encode time**. That bought the
   guarantee — `xz`, `bzip2` and `zstd -22` all go to 100/100 — and it is the
-  right trade, but it is a real cost and it is not yet reclaimed on the C side,
-  which still compresses each candidate in full.
+  right trade. The fallbacks now run alongside the modelled encode and stop
+  the moment they cannot win, which reclaims most of it.
 - **Breadth is no longer the gap it was, but the corpus is still one genre.**
   100 unselected tables answers "you picked the files", and it does not answer
   "you picked the *kind* of file". Every one of them is a government
@@ -1077,8 +1104,9 @@ These are kept because the negative results are the useful part.
 |---|---|
 | `attic/exact_interp.py` | **Exact polynomial interpolation cannot compress.** Storing the interpolating polynomial's coefficients costs *more* than the values, and gets worse with more points (6.8x worse at n=24). Interpolation is an invertible linear map — n values in, n coefficients out. |
 | `attic/smart.py`, `attic/rc.py` | A working adaptive binary range coder with cross-column context modelling. **Superseded**: reordering plus xz beat it on both size and speed. Kept as the reference implementation. |
-| `polypress/dtz.py` | The earlier "try every strategy and keep the smallest" container. Its apparent 1% win over `xz -9e` turned out to be **CSV quote-stripping, not compression** — feeding xz the same canonicalised bytes matched it to within 68 bytes. |
-| `polypress/codec.py` | Rice coding and the original fixed-order predictors. The predictor idea survived into `fast.py`; Rice coding did not — it cannot spend fractional bits. |
+| `polypress/dtz.py` (deleted 2026-09-29, in git at `c55f68f`) | The earlier "try every strategy and keep the smallest" container. Its apparent 1% win over `xz -9e` turned out to be **CSV quote-stripping, not compression** — feeding xz the same canonicalised bytes matched it to within 68 bytes. |
+| `polypress/codec.py` (deleted 2026-09-29, in git at `c55f68f`) | Rice coding and the original fixed-order predictors. The predictor idea survived into the codec; Rice coding did not — it cannot spend fractional bits. |
+| `polypress/turbo.py` (deleted 2026-09-29, in git at `c55f68f`) | A speed fork with independently compressed column streams (container `PPZT`), so each column had a size of its own and decisions could be local. Cheap for binary payloads (+0.2–5%), expensive for text (+13% where text columns resemble each other). The threaded encoder got the speed without changing the format, so the fork was retired rather than ported. |
 | ragged-decimal numeric columns | **Tried, measured, reverted.** `latitude` is rejected as numeric because its decimal places vary row to row (11–15) and it has 1,153 blanks — and since every modern language prints floats at shortest-round-trip precision, *every* real float column is ragged. Recovering them by storing a per-cell decimal count and a null mask looked obviously right and made things **9–23% worse**. Two reasons. Scaling to the column's maximum decimal count inflates every value to ~4x10^16, so consecutive differences need 8 bytes each — worse than the 18 characters of text xz already handles well. And more importantly, moving a column out of `text` removes it from the text-reordering machinery: `chicago_crimes` gains 19.3% from a text parent, and converting those columns to numbers gave all of it back. A per-column size probe cannot see that, because the loss lands somewhere else. |
 
 The exploratory scripts from the functional-dependency work (`fd_probe*.py`,
@@ -1111,25 +1139,22 @@ python3 docs/report.py docs/Polypress-Results.pdf ../OUT/results/socrata500.json
 ## Tests and benchmarks
 
 ```bash
-python3 tests/test_fast.py            # 32 fidelity cases, C path and fallback
-python3 tests/test_dtz.py             # 18 fidelity cases for the table I/O
-python3 tests/test_encoding.py        # BOMs, UTF-16, latin-1: read or refuse
-python3 tests/test_stream.py          # 180 checks: block counts and every output format
-python3 tests/test_lying_header.py    # headers that are well-formed and dishonest
-python3 tests/test_cbin.py            # the C binary must agree with Python on every case
-python3 tests/test_fuzz.py [n] [seed] # random adversarial tables through both implementations
-python3 tests/test_input_guard.py     # the C binary must refuse what it cannot parse
+./csrc/tests/run.sh                    # the whole suite, in C, about 30 s:
+                                       # codec round trips + fuzzing, threads vs
+                                       # serial bytes, readers and encodings,
+                                       # streaming, hostile and lying archives
+                                       # (each in a watched child), the CLI
+SANITIZE=1 ./csrc/tests/run.sh         # the same under AddressSanitizer
+./app/build_app.sh                     # runs `Polypress --selftest` as its gate
 python3 benchmarks/measure_one.py f.csv  # one table vs all 22 competitors
 python3 benchmarks/make_hostile.py d/ # generate the adversarial suite
-python3 app/gui.py --selftest         # compile every AppleScript the app can emit
 ```
 
-And before releasing anything, the two slow ones that need the corpus
+And before releasing anything, the slow one that needs the corpus
 downloaded:
 
 ```bash
 python3 benchmarks/sweep.py ../IN/corpus100/*.csv --out ../OUT/results/socrata100.jsonl
-python3 tests/test_cbin_corpus.py ../IN/corpus100/*.csv   # invariant 1 on real data
 ```
 
 `measure_one.py` runs 22 competitors in four families — general purpose

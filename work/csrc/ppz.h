@@ -1,15 +1,13 @@
-/* Polypress in C -- shared declarations.
+/* Polypress -- shared declarations.
  *
- * This is the standalone binary, not the ctypes accelerator. tcz.c stays as
- * it is: it is loaded by caccel.py to speed up the Python codec, and it only
- * ever held four hot loops. This tree is the whole codec, so that a
- * researcher can be handed one file that runs with nothing installed. That
- * -- not speed -- is why it exists. Profiling put liblzma at 62-100% of
- * encode time, so C buys ~1.0-1.15x on the tables the compression win lives
- * on; what it buys is a program with no Python and no numpy behind it.
- *
- * The contract with the Python implementation is byte-identical output. The
- * Python version is the oracle, and every stage here is diffed against it.
+ * This tree IS Polypress: the codec, the table readers and writers, the
+ * streaming container and the command line, with nothing but liblzma and
+ * libbz2 behind it. The Python implementation it was ported from was retired
+ * on 2026-09-29 (recoverable from git); there is no second implementation to
+ * agree with any more, so tests/ checks this one against its own contract:
+ * every table round-trips cell for cell, the output never loses to plain xz
+ * or bzip2, hostile archives are refused, and the threaded encoder writes
+ * exactly the bytes the serial one does.
  */
 
 #ifndef PPZ_H
@@ -61,22 +59,99 @@ void   table_init(Table *t);
 void   table_free(Table *t);
 Str    table_at(const Table *t, size_t row, size_t col);
 
-/* CSV. read_csv accepts what dtz accepts: ragged rows are padded or clipped
- * to the header width, which is the same rule the Python reader uses. */
-int  table_read_csv(Table *t, const char *path);
+/* Comma-separated text already in memory. Only the encoder uses this, to
+ * check its own canonical CSV parses back before the plain fallback built on
+ * it may win. Files go through ppz_io.c. */
 int  table_parse_csv(Table *t, const uint8_t *data, size_t n);
-int  table_write_csv(const Table *t, const char *path);
-int  table_write_csv_buf(const Table *t, Buf *out);
 
-/* The exact bytes Python's csv.writer(lineterminator="\n") would emit. Only
- * for the plain fallback -- table_write_csv is what `restore` writes. */
+/* The canonical CSV the plain fallback compresses. Its quoting rules are
+ * frozen: they decide the bytes of every PPZX/PPZB archive. */
 void table_write_canonical(const Table *t, Buf *out);
+
+/* ------------------------------------------------------------- table I/O */
+
+/* ppz_io.c. Every function that can fail fills `err` with a message meant
+ * for the person at the keyboard. */
+
+/* "csv", "tsv", "psv", "json", "jsonl", "parquet", or "text" (delimiter
+ * sniffed from the header), from the extension. "-" is csv. */
+const char *ppz_format_of(const char *path);
+
+/* A delimited file a block of rows at a time. encoding NULL: a byte-order
+ * mark, else strict UTF-8. delim 0: from the extension, else sniffed. */
+typedef struct CsvIn CsvIn;
+CsvIn      *csv_open(const char *path, const char *encoding, char delim,
+                     char *err, size_t cap);
+int         csv_next(CsvIn *c, Table *t, size_t max_rows); /* 1 block, 0 end, -1 */
+const char *csv_error(const CsvIn *c);
+size_t      csv_width(const CsvIn *c);
+uint64_t    csv_bytes_read(const CsvIn *c);   /* of the file, so far */
+char        csv_delim(const CsvIn *c);
+void        csv_close(CsvIn *c);
+
+/* A whole table from any readable format, chosen by extension. */
+int table_read_any(Table *t, const char *path, const char *encoding,
+                   char *err, size_t cap);
+
+/* Output in the format the extension names ("-" is CSV on stdout), fed a
+ * block at a time. The file appears under its name only when writer_close
+ * succeeds; ok=0 abandons it. */
+typedef struct Writer Writer;
+Writer *writer_open(const char *path, char *const *names, size_t ncols,
+                    char *err, size_t cap);
+int     writer_rows(Writer *w, const Table *t);
+int     writer_close(Writer *w, int ok, char *err, size_t cap);
+int     table_write_any(const Table *t, const char *path, char *err, size_t cap);
+
+/* A JSON string: quote, backslash and control characters escaped, UTF-8 as is. */
+void    ppz_json_str(Buf *b, const char *s, size_t n);
+
+/* ------------------------------------------------------------- streaming */
+
+/* ppz_stream.c: files bigger than memory, one block of rows at a time.
+ *
+ *   "PPZS" 0 0 0 0 | block | block | ... | header | header length (8, BE)
+ *
+ * Each block is a complete single-shot archive; the header is raw LZMA2 over
+ * {"columns":[...],"nrows":N,"rows_per_block":R,"blocks":[sizes]}. */
+#define PPZ_MAGIC_STREAM "PPZS"
+
+typedef struct {
+    unsigned long long rows;
+    size_t   blocks;
+    size_t   rows_per_block;
+    uint64_t bytes;          /* output file size */
+} StreamStats;
+
+typedef struct {
+    char   **columns;
+    size_t   ncols;
+    unsigned long long nrows;
+    size_t   rows_per_block;
+    size_t   nblocks;
+    uint64_t *blocks;        /* each block's size */
+    uint64_t size;           /* the whole file */
+} StreamInfo;
+
+/* After each batch of blocks: blocks and rows so far, archive bytes written,
+ * input bytes read, and the input's size (0 when unknown, e.g. stdin). */
+typedef void (*StreamProgress)(size_t blocks, unsigned long long rows,
+                               uint64_t out_bytes, uint64_t in_bytes,
+                               uint64_t in_total);
+
+/* rows 0: sized from budget_gb and the file's own row width. */
+int  ppz_stream_compress(const char *src, const char *dst, double budget_gb,
+                         size_t rows, int verify, const char *encoding,
+                         StreamProgress progress, StreamStats *st,
+                         char *err, size_t cap);
+int  ppz_stream_restore(const char *src, const char *dst, StreamStats *st,
+                        char *err, size_t cap);
+int  ppz_stream_info(const char *src, StreamInfo *info, char *err, size_t cap);
+void ppz_stream_info_free(StreamInfo *info);
 
 /* ------------------------------------------------------------------- lzma */
 
-/* Raw LZMA2 at preset 9|EXTREME -- the exact filter chain fast.py uses.
- * Verified byte-identical against Python's lzma module on liblzma 5.4.3 and
- * 5.8.3, which is what makes a byte-identical port possible at all. */
+/* Raw LZMA2 at preset 9|EXTREME, the one compressor every stream uses. */
 int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);
 
 /* Compressed length at preset 1, used only to choose between two orderings of
@@ -85,7 +160,6 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);
  * ranks candidates the same way. */
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
-int ppz_bz2_compress(const uint8_t *in, size_t n, Buf *out);
 int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out);
 
 /* ------------------------------------------------------------------- json */
@@ -101,7 +175,8 @@ struct Js {
     int64_t inum;      /* exact value when `is_int`; `num` cannot be trusted */
     int     is_int;    /* the token was a plain integer, parsed with strtoll */
     int     boolean;
-    char   *str;       /* decoded, NUL-terminated */
+    char   *str;       /* decoded, NUL-terminated; for JS_NUM, the token text */
+    size_t  len;       /* bytes in str -- a \u0000 inside a string is data */
     Js     *items;     /* array elements / object values */
     char  **keys;      /* object keys */
     size_t  count;
@@ -114,10 +189,40 @@ struct Js {
  * kept exactly, and js_i64 is the accessor to use for anything that is a
  * value rather than a small count. */
 Js  *js_parse(const char *text, size_t len);
+Js  *js_parse_prefix(const char *text, size_t len, size_t *used);
 void js_free(Js *j);
 const Js *js_get(const Js *obj, const char *key);   /* NULL if absent */
 long      js_int(const Js *j, long fallback);
 int64_t   js_i64(const Js *j, int64_t fallback);
+
+/* ------------------------------------------------------ partial outputs */
+
+/* Outputs are written beside their name and renamed into place at the end.
+ * A registered temp file is removed if the program is interrupted (Ctrl-C,
+ * or the app's Stop), so a stopped run leaves nothing half-written behind. */
+void ppz_tmp_register(const char *path);
+void ppz_tmp_forget(const char *path);
+void ppz_cleanup_on_signals(void);
+
+/* ---------------------------------------------------------------- threads */
+
+typedef void (*PpzTask)(void *arg);
+typedef struct PpzBg PpzBg;
+
+int    ppz_nthreads(void);            /* 1 when serial, else ppz_workers() */
+int    ppz_workers(void);             /* PPZ_THREADS, else min(4, cores) */
+void   ppz_set_serial(int on);        /* force one thread (streaming mode) */
+int    ppz_serial(void);
+double ppz_now(void);
+void   ppz_trace(const char *what, double since);   /* PPZ_TRACE=1 */
+void   ppz_slot_take(void);           /* bound the concurrent xz -9e runs */
+void   ppz_slot_give(void);
+/* fn(args + i*argsize) for i < n, concurrently; returns when all are done.
+ * Leaf work only: a task must not wait on another task. */
+void   ppz_parallel(PpzTask fn, void *args, size_t argsize, size_t n);
+/* fn(arg) on its own thread now (inline at join time when serial). */
+PpzBg *ppz_bg_start(PpzTask fn, void *arg);
+void   ppz_bg_join(PpzBg *b);
 
 /* --------------------------------------------------------------- decoding */
 
@@ -126,12 +231,11 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out);
 
 /* --------------------------------------------------------------- encoding */
 
-/* Encode a table. Byte-identical to fast.encode, including its choice between
- * the modelled container and the plain xz/bzip2 fallbacks. */
+/* Encode a table, in one pass (see ppz_encode in ppz_encode.c). */
 int ppz_encode(const Table *t, Buf *out);
 
 /* Just the modelled container (PPZ1), with `*fired` set to the number of times
- * one of the three ideas actually did something. Mirrors fast._encode_plan. */
+ * one of the three ideas actually did something. */
 int ppz_encode_modelled(const Table *t, Buf *out, long *fired);
 
 #endif /* PPZ_H */

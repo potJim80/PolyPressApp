@@ -1,7 +1,8 @@
 # Polypress
 
-**A lossless compressor for data tables.** CSV, Parquet, and anything else
-shaped like rows and columns.
+**A lossless compressor for data tables.** CSV, TSV, JSON, JSON Lines,
+Parquet (through a small Python bridge), and anything else shaped like rows
+and columns.
 
 General-purpose compressors see a table as a stream of bytes. Columnar formats
 see it as columns, and compress each one on its own. Polypress is built on the
@@ -14,7 +15,7 @@ The original table comes back **exactly**: same columns, same column order,
 same row order, every cell as the exact string it was.
 
 ```sh
-pip install polypress
+./csrc/build.sh                    # -> csrc/polypress, one C program
 polypress compress data.csv        # -> data.csv.ppz
 polypress restore  data.csv.ppz    # -> data.csv
 polypress info     data.csv.ppz    # plan, shape, how much was reordered
@@ -69,9 +70,11 @@ competitor's own entropy coder still wins 449 of 450 against `parquet+zstd`.
 
 ## What it is honest about
 
-- **It is slow to compress.** Median 2.0 MB/s encode, 134 MB/s decode. The
-  never-worse guarantee is what costs it: eligible tables are encoded twice and
-  the smaller result wins.
+- **It is slow to compress.** Median 2.0 MB/s encode, 134 MB/s decode when
+  it was Python; the C program with threads is roughly 3x faster on the suite,
+  not yet re-measured on the 500. Since 2026-09-29 it encodes in one pass --
+  no trial encodes and no "never larger than plain xz" check -- which is
+  2.3x faster again for 2.5% bigger output on the test suite.
 - **The core idea is not novel.** US 8,312,026 B2 (Vo, AT&T, filed 2009)
   discloses it. It was arrived at here independently and the novelty claim was
   withdrawn. Both relevant patents have expired.
@@ -85,9 +88,10 @@ competitor's own entropy coder still wins 449 of 450 against `parquet+zstd`.
 
 ## Requirements
 
-Python 3.9+ and numpy. A C compiler is optional — the accelerator compiles
-itself on first import and falls back to numpy without one. `pyarrow` is
-needed only for `.parquet` input and output: `pip install 'polypress[parquet]'`.
+To run: nothing -- the program is C with liblzma linked in. To build: a C
+compiler and the liblzma headers (`brew install xz`, or `apt install
+liblzma-dev libbz2-dev`). Parquet input and output go through
+`py/parquet.py`, which needs Python and `pyarrow`.
 
 ## More
 

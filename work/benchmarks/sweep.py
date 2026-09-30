@@ -12,10 +12,12 @@ Memory
 ------
 Every dataset is measured in a fresh subprocess, so peak RSS is whatever the
 single largest table needs rather than the accumulated total. The working
-ceiling is 2 GB. `fast.py` expands CSV about 8.5x into Python strings and the
-run holds an encoded and a decoded copy at once, which CLAUDE.md's corrected
-rule prices at (input MB x 22) + 700 -- so the default 40 MB input cap
-predicts about 1.6 GB.
+ceiling is 2 GB. The polypress row runs the C program as its own process;
+with its trial compressions threaded it peaks near (input MB x 50) + 100
+(measured on the ten `l_` suite tables, 2026-09-29), and the worker itself
+holds pyarrow's copies for the columnar rows -- so the default 40 MB input cap
+predicts about 2 GB at worst. run_suite.sh pins PPZ_THREADS=1, which roughly
+halves that.
 
 That rule has been wrong before, by 18%, so it is only used to decide what to
 *start*. Every worker reports its measured peak, this script prints the

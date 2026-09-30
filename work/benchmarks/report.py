@@ -76,8 +76,7 @@ def main(argv=None) -> int:
     ap.add_argument("--csv", default=None,
                     help="also write one row per dataset per codec")
     ap.add_argument("--ours", default="polypress",
-                    help="which row is the subject of the report; "
-                         "'polypress-turbo' headlines the turbo fork instead. "
+                    help="which row is the subject of the report. "
                          "Everything starting 'polypress' is excluded from "
                          "the competition either way.")
     ap.add_argument("--manifest", default=None,
@@ -90,8 +89,8 @@ def main(argv=None) -> int:
     globals()["OURS_ROW"] = a.ours
 
     recs, bad = load(a.paths)
-    # A record without the subject row cannot be reported on -- turbo is
-    # allowed to fail on a table without invalidating the rest of the sweep.
+    # A record without the subject row cannot be reported on; it is counted
+    # and set aside rather than invalidating the rest of the sweep.
     missing = [r for r in recs if OURS_ROW not in r.get("results", {})]
     recs = [r for r in recs if OURS_ROW in r.get("results", {})]
     if missing:
