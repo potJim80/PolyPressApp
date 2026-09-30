@@ -1,5 +1,10 @@
 # Working on Polypress
 
+> **▶ Standing instruction from Mahdi (2026-09-28): rewrite everything to be only C code.**
+> This is the next job, wherever this project is opened. Read the note at the top of
+> `04 Projects/PolyPress/Next.md` in the Obsidian vault first. It lists what to settle
+> with him before deleting any Python, including what becomes of invariant 1.
+
 A lossless compressor for data tables. Read this before changing the codec —
 most of it is hard-won and several items overturned an "obviously correct"
 change.
@@ -224,6 +229,14 @@ phases, smallest first, so a memory problem on the largest file cannot take
 the rest of the run with it — `benchmarks/` has no driver for this, it is a
 few lines of shell. A full sweep of 26 datasets takes **19 minutes**, not the
 ~40 recorded earlier.
+
+**Superseded 2026-09-28 by the threaded encoder** (see "threads" at the top of
+`fast.py`). Several xz -9e trials now run at once, each touching ~64 MB plus
+~8 bytes per input byte, so peak memory roughly doubled on the large tables:
+`chicago_permits` 772 → 1,739 MB, `chicago_crimes` 805 → 1,482 MB. The worst
+of the ten `l_` suite tables fits `(input MB x 60) + 200`; use that for
+`fast.encode`. `stream.py` encodes with `parallel=False`, so its `--budget`
+still means what it says, and `PPZ_THREADS=1` gives the serial peak anywhere.
 
 ## The measured/unmeasured trap — read this before optimising
 
@@ -456,6 +469,16 @@ Remaining backlog, in value order — see the memory directory for detail:
    that the canonical CSV must match Python's `csv.writer` byte for byte —
    see "traps that have already bitten".
 4. **Encode is O(columns²)** in the parent search. 1.9 MB/s on 421 columns.
+5. **Encode speed — threaded 2026-09-28, byte-identical.** 72-92% of encode
+   was lzma trial compressions run one after another. They now run together
+   (fallbacks alongside the modelled encode, front-coding and text-parent
+   trials in parallel, lenient/strict plans concurrently). Every archive is
+   the same bytes as before: 29/29 `xs`/`s`/`m` and 10/10 `l` suite tables
+   by SHA, plus the full test suite. Time: `l` tables 131.3 s → 67.2 s
+   (1.95x; `nyc_311` 2.39x, `chicago_permits` 2.35x), `xs`/`s`/`m` 30.2 s →
+   18.0 s (1.68x). What is left is mostly one xz -9e pass that cannot be
+   split without changing bytes — `m_survey_demo` is bound by the fallback's
+   full pass over its canonical CSV. The C encoder is still serial.
 
 ## Honest status
 
@@ -527,3 +550,15 @@ Also measured 2026-07-29:
 README table from a commit message.** Doing that after the parent-guard change
 left five of thirteen rows wrong and the committed results file a whole commit
 behind what the README claimed.
+
+## Session notes (Obsidian)
+
+Your notes live in `~/Desktop/School/AP Biology/AP Bio/04 Projects/PolyPress/` — three files:
+`Next.md` (objectives for the next session), `Log.md` (dated entries, newest first) and
+`Version.md` (version, branch, last commit). A SessionStart hook hands you `Next.md` when
+the session opens; summarize it and ask "Continue from last time?" before doing anything.
+
+At the end of a session: add a dated `Log.md` entry, update `Version.md` if anything shipped,
+and rewrite `Next.md` with what comes next. **Write only inside that folder** — nothing else in
+the Obsidian vault is yours. Mahdi edits these notes himself between sessions, so re-read
+rather than assume.

@@ -29,7 +29,10 @@ import bz2
 import json
 import lzma
 import math
+import os
+import threading
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -55,6 +58,99 @@ MAGIC_V0 = b"FAST"         # pre-rename archives still open
 # output stream. Every byte of container is a byte of deficit.
 MAGIC_RAW_XZ = b"PPZX"
 MAGIC_RAW_BZ = b"PPZB"
+
+
+# ---------------------------------------------------------------- threads
+#
+# 72-92% of encode time is lzma, and most of it is TRIAL compressions --
+# candidates that are compressed, measured and compared (measured 2026-09-28,
+# cProfile on m_quakes and m_survey_demo). The trials of one decision are
+# independent of each other, and lzma and bz2 release the GIL, so they run
+# concurrently on threads with no pickling and no copied table.
+#
+# This changes when the work happens, never what is chosen: every decision
+# below still folds its measured sizes in the original order with the original
+# strict `<`, so ties fall exactly where they did and the archive is byte for
+# byte the one the serial code wrote (invariant 1 -- the C encoder is serial
+# and tests/test_cbin.py compares the two).
+#
+# Only LEAF work goes to the pool: a task never submits to the pool and waits,
+# so a bounded pool cannot deadlock. Whole-encode concurrency (the alternative
+# plans, the fallbacks) uses plain threads instead.
+#
+# PPZ_THREADS=1 restores the serial path, for timing comparisons and for the
+# benchmark protocol's pinned environment if one is ever wanted.
+#
+# The price is memory. An xz -9e compressor touches ~64 MB plus ~8 bytes per
+# input byte, and several now run at once: chicago_permits (28 MB) peaks at
+# 1.73 GB against 0.81 GB serial. stream.py promises a memory budget, so it
+# encodes with parallel=False and keeps the serial peak.
+
+_LOCAL = threading.local()     # .serial: encode(parallel=False) in progress
+
+
+def _nthreads() -> int:
+    if getattr(_LOCAL, "serial", False):
+        return 1
+    try:
+        n = int(os.environ.get("PPZ_THREADS", "0"))
+    except ValueError:
+        n = 0
+    # Four, not every core: each xz -9e compressor zeroes a 64 MB hash table,
+    # and this is a fanless laptop. Four took the bulk of the gain measured.
+    return n if n > 0 else min(4, os.cpu_count() or 1)
+
+
+_POOL: Optional[ThreadPoolExecutor] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _pool() -> ThreadPoolExecutor:
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = ThreadPoolExecutor(max_workers=_nthreads(),
+                                       thread_name_prefix="ppz")
+        return _POOL
+
+
+def _pmap(fn, items) -> list:
+    """`[fn(x) for x in items]`, the calls run concurrently. Results come back
+    in input order, so callers fold them exactly as the serial loop did. `fn`
+    must be leaf work -- it must not call `_pmap` itself."""
+    items = list(items)
+    if len(items) < 2 or _nthreads() == 1:
+        return [fn(x) for x in items]
+    return list(_pool().map(fn, items))
+
+
+class _Background:
+    """Run `fn` on its own thread now; `.result()` joins and returns it (or
+    re-raises). Serial mode runs it on first `.result()` instead."""
+
+    def __init__(self, fn):
+        self._fn, self._value, self._exc = fn, None, None
+        self._thread = None
+        if _nthreads() > 1:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def _run(self):
+        try:
+            self._value = self._fn()
+        except BaseException as e:      # handed to the caller of .result()
+            self._exc = e
+
+    def result(self):
+        if self._thread is None:
+            if self._fn is not None:
+                self._run()
+                self._fn = None
+        else:
+            self._thread.join()
+        if self._exc is not None:
+            raise self._exc
+        return self._value
 
 # Fallback codecs. stdlib only, deliberately. An adversarial suite found four
 # tables where the modelling lost to a plain general-purpose compressor -- by
@@ -264,8 +360,15 @@ def _numeric_lenient(cells):
     vals: List[Optional[int]] = [None] * n
     expos: List[int] = []
     exvals: List[str] = []
+    # _exact_int is a pure function of the cell, and a numeric column repeats
+    # itself -- weather_hourly's columns hold ~40 cells per distinct value --
+    # so each distinct cell is parsed once. Same answers, a fraction of the
+    # calls; this loop was the largest pure-Python cost left in encode.
+    seen: Dict[str, Optional[int]] = {}
     for i, c in enumerate(cells):
-        v = _exact_int(c, dec)
+        v = seen.get(c, seen)
+        if v is seen:
+            v = seen[c] = _exact_int(c, dec)
         if v is None:
             expos.append(i)
             exvals.append(c)
@@ -673,6 +776,7 @@ def pick_text_parents(plan, nrows, parent, order) -> Dict[int, Optional[int]]:
     for p in dict_pos:
         dbase[p] = _entropy_and_distinct(dsample[p])
 
+    shortlist: Dict[int, List[int]] = {}
     for tp in text_pos:
         cells = plan[tp]["cells"][::step]
         uniq = sorted(set(cells))
@@ -702,12 +806,25 @@ def pick_text_parents(plan, nrows, parent, order) -> Dict[int, Optional[int]]:
         # measured. A cheap preset picks between them; the real entropy stage
         # runs later on whichever won. Never-worse is the same rule the
         # fallback container follows, and for the same reason.
+        shortlist[tp] = [dp for _g, dp in ranked[:TEXT_PARENT_CANDIDATES]]
+
+    # Every probe of every text column is independent, so they all run
+    # together; the fold below is the original serial one.
+    def probe(task):
+        tp, dp = task
         full = plan[tp]["cells"]
-        keep_none = _probe_len(full)
-        best, best_cost = None, keep_none
-        for _g, dp in ranked[:TEXT_PARENT_CANDIDATES]:
-            perm = np.argsort(plan[dp]["ids"], kind="stable")
-            cost = _probe_len([full[i] for i in perm])
+        if dp is None:
+            return _probe_len(full)
+        perm = np.argsort(plan[dp]["ids"], kind="stable")
+        return _probe_len([full[i] for i in perm])
+
+    tasks = [(tp, dp) for tp, dps in shortlist.items()
+             for dp in [None] + dps]
+    costs = dict(zip(tasks, _pmap(probe, tasks)))
+    for tp, dps in shortlist.items():
+        best, best_cost = None, costs[(tp, None)]
+        for dp in dps:
+            cost = costs[(tp, dp)]
             if cost < best_cost:
                 best, best_cost = dp, cost
         out[tp] = best
@@ -883,18 +1000,9 @@ def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
         packed = _pack_strings(groups, front)
         return packed, lzma.compress(packed[0], **XZ)
 
-    best = frozenset()
-    best_packed, best_zb = build(best)
-    best_z = len(best_zb)
+    alpha = frozenset(range(ndict)) if ndict else None
 
-    # the alphabets as one block, which is what shipped before this
-    if ndict:
-        alpha = frozenset(range(ndict))
-        packed, zb = build(alpha)
-        if len(zb) < best_z:
-            best, best_packed, best_zb, best_z = alpha, packed, zb, len(zb)
-
-    # Then the most promising remaining groups, one at a time, each confirmed.
+    # Candidate groups to front-code on top, each confirmed by measurement.
     #
     # Ranked by ESTIMATED BYTES AT STAKE, not by ratio. Ranking by ratio was
     # wrong in a way worth recording: a numeric column's exception group is a
@@ -920,9 +1028,33 @@ def _choose_front(groups: List[List[str]], ndict: int) -> frozenset:
         cands.append((stake, i))
     # descending stake, ties by group index so both implementations agree
     cands.sort(key=lambda c: (-c[0], c[1]))
-    for _stake, i in cands[:TEXT_FC_CANDIDATES]:
+    trials = [i for _stake, i in cands[:TEXT_FC_CANDIDATES]]
+
+    # Nothing above depended on a compression, so the first round can run
+    # together: nothing, the alphabets, and the first candidate added to
+    # WHICHEVER of those two wins -- both versions are built, one is wasted.
+    # That speculation turns three sequential -9e passes over the pile into
+    # one wall-clock pass. The fold is the serial one, `<` and all.
+    first = [frozenset()]
+    if alpha is not None:
+        first.append(alpha)
+    spec = [frozenset(f | {trials[0]}) for f in first] if trials else []
+    built = dict(zip(first + spec, _pmap(build, first + spec)))
+
+    best = frozenset()
+    best_packed, best_zb = built[best]
+    best_z = len(best_zb)
+
+    # the alphabets as one block, which is what shipped before this
+    if alpha is not None:
+        packed, zb = built[alpha]
+        if len(zb) < best_z:
+            best, best_packed, best_zb, best_z = alpha, packed, zb, len(zb)
+
+    # Then the most promising remaining groups, one at a time, each confirmed.
+    for i in trials:
         trial = frozenset(best | {i})
-        packed, zb = build(trial)
+        packed, zb = built[trial] if trial in built else build(trial)
         if len(zb) < best_z:
             best, best_packed, best_zb, best_z = trial, packed, zb, len(zb)
     # the winner's pile and its compressed bytes are returned so the caller
@@ -1014,6 +1146,34 @@ def _from_canonical(data: bytes):
     return dtz.Table(rows[0], rows[1:])
 
 
+def _survives_canonical(data: bytes, table) -> bool:
+    """`_from_canonical(data)` equals `table`, checked a row at a time.
+
+    Same answer as building the table and comparing -- which is what this
+    did until 2026-09-28 -- without holding a second copy of it. That copy
+    was the largest single allocation in encode (~400 MB on the 28 MB
+    chicago_permits), and once the fallbacks began running alongside the
+    modelled encode it no longer waited for the plans to be freed first.
+    Parse errors propagate as they did from `_from_canonical`, except that a
+    mismatch on an earlier row now returns False first. The one caller treats
+    both as a refusal; 50,000 random tables agreed on accept/refuse.
+    """
+    import csv
+    import io
+    it = csv.reader(io.StringIO(data.decode("utf-8"), newline=""))
+    first = next(it, None)
+    if first is None:                   # _from_canonical's empty Table
+        return table.columns == [] and table.rows == []
+    if first != table.columns:
+        return False
+    n = 0
+    for row in it:
+        if n >= len(table.rows) or row != table.rows[n]:
+            return False
+        n += 1
+    return n == len(table.rows)
+
+
 # Input block size for the capped compressors below. Only affects how often
 # the output is checked against the cap, never the bytes produced: LZMA2 and
 # bzip2 are streams, and feeding one in pieces gives the identical output to a
@@ -1035,21 +1195,41 @@ def _compress_capped(data: bytes, cap: int, kind: str) -> Optional[bytes]:
     when it does NOT abort are exactly `lzma.compress`/`bz2.compress` would
     have produced.
     """
+    # `cap` may also be a function: a limit not known yet when compression
+    # starts, read again at every chunk. It only ever tightens, so an abort
+    # under it is still an abort that could not have won.
+    limit = cap if callable(cap) else (lambda: cap)
     comp = (lzma.LZMACompressor(**XZ) if kind == "xz"
             else bz2.BZ2Compressor(9))
     out, total = [], 0
     for i in range(0, len(data), _CAP_CHUNK):
         piece = comp.compress(data[i:i + _CAP_CHUNK])
         total += len(piece)
-        if total >= cap:
+        if total >= limit():
             return None
         out.append(piece)
     piece = comp.flush()
     total += len(piece)
-    if total >= cap:
+    if total >= limit():
         return None
     out.append(piece)
     return b"".join(out)
+
+
+class _Cap:
+    """A compression budget set later than the compression starts: unbounded
+    until `set`, then fixed. Lets the fallbacks run alongside the modelled
+    encode whose size they have to beat."""
+
+    def __init__(self):
+        self._v = None
+
+    def set(self, v: int) -> None:
+        self._v = v
+
+    def get(self) -> float:
+        v = self._v
+        return math.inf if v is None else v
 
 
 def _raw_candidates(table, limit: int) -> Optional[bytes]:
@@ -1064,43 +1244,96 @@ def _raw_candidates(table, limit: int) -> Optional[bytes]:
     are capped at `limit` so a hopeless candidate is abandoned part-way rather
     than finished and then thrown away.
     """
+    return _pick_raw(_raw_blobs(table, lambda: limit), limit)
+
+
+_RAW_KINDS = ((MAGIC_RAW_XZ, "xz"), (MAGIC_RAW_BZ, "bz2"))
+
+
+def _raw_blobs(table, limit) -> Optional[List[Optional[bytes]]]:
+    """The compression half of `_raw_candidates`: each fallback's bytes, or
+    None where it could not beat `limit()` (a function, because encode()
+    starts this before it knows the limit). None overall if the table does
+    not survive canonical CSV. `_pick_raw` makes the decision -- only once
+    the limit is final, since a candidate that finished before the limit was
+    set was never checked against it."""
     canon = _canonical_bytes(table)
     try:
-        # Parsed ONCE. This used to call _from_canonical twice, once for the
-        # rows and once for the columns, which was affordable while the
-        # fallback ran only on tables where no trick fired and is not now that
-        # it runs on every table.
-        back = _from_canonical(canon)
-        if back.rows != table.rows or back.columns != table.columns:
+        if not _survives_canonical(canon, table):
             return None
     except Exception:
         return None
 
+    # Both magics are 4 bytes, so one budget serves both.
+    budget = lambda: limit() - len(MAGIC_RAW_XZ)
+    if budget() <= 0:
+        return [None] * len(_RAW_KINDS)
+    # xz and bzip2 are compressed together, each against the budget alone.
+    # Serially, bzip2's cap was tightened to xz's result first; that only
+    # ever aborted a bzip2 run that _pick_raw rejects anyway.
+    return _pmap(lambda mk: _compress_capped(canon, budget, mk[1]),
+                 _RAW_KINDS)
+
+
+def _pick_raw(blobs, limit: int) -> Optional[bytes]:
+    """The serial rule: a fallback must beat `limit`, and bzip2 must also
+    beat xz."""
     best = None
-    for magic, kind in ((MAGIC_RAW_XZ, "xz"), (MAGIC_RAW_BZ, "bz2")):
-        # 4 bytes of magic ride in front, so the compressor's own budget is
-        # that much smaller than the archive it has to beat.
-        cap = (len(best) if best is not None else limit) - len(magic)
-        if cap <= 0:
+    for (magic, _kind), blob in zip(_RAW_KINDS, blobs or ()):
+        if blob is None:
             continue
-        blob = _compress_capped(canon, cap, kind)
-        if blob is not None:
-            best = magic + blob
+        cand = magic + blob
+        if len(cand) < (len(best) if best is not None else limit):
+            best = cand
     return best
 
 
 # ------------------------------------------------------------------- codec
 
-def encode(table) -> bytes:
+def encode(table, parallel: bool = True) -> bytes:
     """Smallest of the modelled encoding and the plain fallbacks.
 
-    The fallbacks are not run unconditionally -- they roughly double encode
-    time, since the entropy stage dominates. They are run only when none of
-    the three modelling tricks fired, which is precisely the case where this
-    codec has degenerated into "split into columns, then xz" and a different
-    finisher may well beat it. When any trick fired, the modelled output wins
-    by a margin no general compressor closes, and the extra work is skipped.
+    `parallel=False` runs every trial on the calling thread: the same bytes,
+    slower, at the serial memory peak (see "threads" at the top).
+
+    The fallbacks are always run, capped at the size they must beat; see the
+    comment below for why the old skip-when-a-trick-fired gate was removed.
     """
+    # The fallbacks are ALWAYS considered. They used to be skipped whenever any
+    # trick fired, on the theory that a table where one fired cannot lose to
+    # plain xz. That theory was measured against 18 tables and held; measured
+    # against 100 unselected ones it fails on 3, once by 28.1% -- the shipped
+    # archive was 2,830,752 bytes where the xz fallback nobody ran was
+    # 2,210,086. Invariant 2 says "never worse, MEASURED, not assumed", and a
+    # gate that decides which encodings are even built is exactly an assumption.
+    #
+    # It is affordable because the compressors stop the moment a candidate
+    # cannot win; see `_compress_capped`. They depend on nothing but the size
+    # they must beat, so they start first and run alongside the modelled
+    # encode, and get that size the moment it exists.
+    if not parallel and not getattr(_LOCAL, "serial", False):
+        _LOCAL.serial = True
+        try:
+            return encode(table)
+        finally:
+            _LOCAL.serial = False
+    budget = _Cap()
+    fallback = _Background(lambda: _raw_blobs(table, budget.get))
+    try:
+        blob = _encode_modelled(table)
+    except BaseException:
+        # a zero budget makes the fallback thread stop at its next chunk
+        # rather than finish a full -9e pass nobody will read
+        budget.set(0)
+        raise
+    budget.set(len(blob))
+    alt = _pick_raw(fallback.result(), len(blob))
+    return alt if alt is not None else blob
+
+
+def _encode_modelled(table) -> bytes:
+    """The modelled half of encode(): the smallest of the plans the guards
+    below consider, before the fallbacks get their turn."""
     # Numeric-with-exceptions, measured. Recovering a column that is numeric
     # apart from a few cells is worth a great deal where it applies -- 41% of
     # the Treasury yield curve -- but it also moves a column out of the
@@ -1127,9 +1360,11 @@ def encode(table) -> bytes:
         lenient = False
         blob, fired, ngroups, _ = _encode_plan(table, use_lenient=False)
     else:
+        # the two encodes are independent; the strict one runs alongside
+        strict = _Background(lambda: _encode_plan(table, use_lenient=False))
         blob, fired, ngroups, _ = _encode_plan(table, plan=plan)
         del plan
-        alt, alt_fired, alt_groups, _ = _encode_plan(table, use_lenient=False)
+        alt, alt_fired, alt_groups, _ = strict.result()
         if len(alt) < len(blob):
             blob, fired, ngroups, lenient = alt, alt_fired, alt_groups, False
 
@@ -1158,18 +1393,7 @@ def encode(table) -> bytes:
         if len(alt) < len(blob):
             blob, fired = alt, alt_fired
 
-    # The fallbacks are ALWAYS considered. They used to be skipped whenever any
-    # trick fired, on the theory that a table where one fired cannot lose to
-    # plain xz. That theory was measured against 18 tables and held; measured
-    # against 100 unselected ones it fails on 3, once by 28.1% -- the shipped
-    # archive was 2,830,752 bytes where the xz fallback nobody ran was
-    # 2,210,086. Invariant 2 says "never worse, MEASURED, not assumed", and a
-    # gate that decides which encodings are even built is exactly an assumption.
-    #
-    # It is affordable because `_raw_candidates` stops compressing the moment
-    # the candidate cannot win; see there.
-    alt = _raw_candidates(table, len(blob))
-    return alt if alt is not None else blob
+    return blob
 
 
 def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
@@ -1233,6 +1457,14 @@ def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
         side = np.concatenate([M[0], np.diff(M, axis=0)[:, 0]])
         bins.append(pack_ints(np.concatenate([side, D.ravel()])))
 
+    # Every binary payload except the length arrays is final here, and those
+    # come last, so the bulk of the binary stream can be compressed while the
+    # text pile is being decided. Feeding an LZMA2 stream in pieces gives the
+    # identical output to one call (see _CAP_CHUNK); the tail goes in below.
+    bin_comp = lzma.LZMACompressor(**XZ)
+    bin_head_data = b"".join(bins)
+    bin_head = _Background(lambda: bin_comp.compress(bin_head_data))
+
     # Front-coding the dictionary alphabets, measured. The alphabets are the
     # first len(order) string groups by construction, and they are sorted, so
     # neighbours share long prefixes. Worth -1.19% overall and -7.39% on
@@ -1262,7 +1494,10 @@ def _encode_plan(table, use_2d: bool = True, use_lenient: bool = True,
         meta["fc"] = 1
     meta_b = lzma.compress(json.dumps(meta, separators=(",", ":")).encode(),
                            **XZ)
-    bin_b = lzma.compress(b"".join(bins), **XZ)
+    head = bin_head.result()
+    del bin_head_data
+    bin_b = (head + bin_comp.compress(b"".join(bins[n_before:]))
+             + bin_comp.flush())
     blob = (MAGIC + len(meta_b).to_bytes(4, "big")
             + len(bin_b).to_bytes(4, "big") + len(txt_b).to_bytes(4, "big")
             + meta_b + bin_b + txt_b)

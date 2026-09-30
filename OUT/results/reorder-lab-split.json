@@ -1,0 +1,92 @@
+[
+ {
+  "name": "m_nndss_2mb.csv",
+  "global": 24540,
+  "global_perm": 1529,
+  "global_data": 23011,
+  "chain": 48188,
+  "chain_perm": 6547,
+  "chain_data": 41641
+ },
+ {
+  "name": "m_survey_demo.csv",
+  "global": 294028,
+  "global_perm": 79317,
+  "global_data": 214711,
+  "chain": 316626,
+  "chain_perm": 79326,
+  "chain_data": 237300
+ },
+ {
+  "name": "s_shuffled_cats.csv",
+  "global": 286354,
+  "global_perm": 79348,
+  "global_data": 207006,
+  "chain": 309563,
+  "chain_perm": 79253,
+  "chain_data": 230310
+ },
+ {
+  "name": "s_permits_1k.csv",
+  "global": 132441,
+  "global_perm": 1598,
+  "global_data": 130843,
+  "chain": 129229,
+  "chain_perm": 1593,
+  "chain_data": 127636
+ },
+ {
+  "name": "m_ecommerce.csv",
+  "global": 573915,
+  "global_perm": 53306,
+  "global_data": 520609,
+  "chain": 588012,
+  "chain_perm": 53160,
+  "chain_data": 534852
+ },
+ {
+  "name": "m_quakes.csv",
+  "global": 597879,
+  "global_perm": 29672,
+  "global_data": 568207,
+  "chain": 590127,
+  "chain_perm": 29558,
+  "chain_data": 560569
+ },
+ {
+  "name": "m_weather_hourly.csv",
+  "global": 1319533,
+  "global_perm": 193602,
+  "global_data": 1125931,
+  "chain": 1287671,
+  "chain_perm": 176987,
+  "chain_data": 1110684
+ },
+ {
+  "name": "s_treasury_yields.csv",
+  "global": 98148,
+  "global_perm": 13543,
+  "global_data": 84605,
+  "chain": 103206,
+  "chain_perm": 13595,
+  "chain_data": 89611
+ },
+ {
+  "name": "m_financial_shuffled.csv",
+  "global": 617519,
+  "global_perm": 79701,
+  "global_data": 537818,
+  "chain": 732436,
+  "chain_perm": 79612,
+  "chain_data": 652824
+ },
+ {
+  "name": "m_baby_names.csv",
+  "global": 78934,
+  "global_perm": 19584,
+  "global_data": 59350,
+  "chain": 102762,
+  "chain_perm": 29903,
+  "chain_data": 72859
+ }
+]

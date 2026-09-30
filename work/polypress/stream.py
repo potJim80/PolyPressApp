@@ -157,7 +157,9 @@ def compress(src: str, dst: str, budget_gb: float = DEFAULT_BUDGET_GB,
         for i, table in enumerate(_blocks(src, rows, encoding)):
             if not columns:
                 columns = table.columns
-            blob = fast.encode(table)
+            # serial: the block size was chosen to fit a memory budget, and
+            # the parallel trials would each add an xz -9e working set to it
+            blob = fast.encode(table, parallel=False)
             if verify:
                 back = fast.decode(blob)
                 if back.columns != table.columns or back.rows != table.rows:
