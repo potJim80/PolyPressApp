@@ -32,6 +32,9 @@ void buf_free(Buf *b)
     buf_init(b);
 }
 
+/* Make room for `extra` more bytes after b->len. Capacity starts at 4 KiB
+ * and doubles, so a long run of appends costs amortized O(1) per byte; the
+ * 2^60 ceiling stops the doubling before it can wrap size_t. */
 void buf_need(Buf *b, size_t extra)
 {
     if (b->len + extra <= b->cap) return;
