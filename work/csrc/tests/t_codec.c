@@ -43,6 +43,12 @@ static int is_magic(const Buf *b, const char *m)
     return b->len >= 4 && !memcmp(b->data, m, 4);
 }
 
+/* PPZ1, or PPZ2 -- the same container with derived columns */
+static int is_modelled(const Buf *b)
+{
+    return is_magic(b, PPZ_MAGIC) || is_magic(b, PPZ_MAGIC_DERIVED);
+}
+
 /* Everything this file promises, for one table. `quiet_threads` skips the
  * two extra encodes that promise 3 costs. Returns 1 if every check passed. */
 static int check_table(const char *name, const Table *t, int check_threads)
@@ -56,7 +62,7 @@ static int check_table(const char *name, const Table *t, int check_threads)
     int rc = ppz_encode(t, &blob);
     ok &= CHECK(rc == 0, "%s: ppz_encode failed (rc %d)", name, rc);
     if (rc) { buf_free(&blob); return 0; }
-    ok &= CHECK(is_magic(&blob, PPZ_MAGIC) || is_magic(&blob, PPZ_MAGIC_RAW_XZ)
+    ok &= CHECK(is_modelled(&blob) || is_magic(&blob, PPZ_MAGIC_RAW_XZ)
                 || is_magic(&blob, PPZ_MAGIC_RAW_BZ),
                 "%s: archive starts with an unknown magic", name);
     Table back;
@@ -81,7 +87,7 @@ static int check_table(const char *name, const Table *t, int check_threads)
     for (size_t j = 0; j < t->ncols; j++)
         for (const unsigned char *p = (const unsigned char *)t->names[j]; *p; p++)
             if (*p >= 0x80) high = 1;
-    int refused_ok = rc != 0 && high && !is_magic(&blob, PPZ_MAGIC);
+    int refused_ok = rc != 0 && high && !is_modelled(&blob);
     ok &= CHECK((rc == 0 && is_magic(&mod, PPZ_MAGIC)) || refused_ok,
                 "%s: ppz_encode_modelled failed", name);
     if (!rc) {
@@ -125,7 +131,7 @@ static int check_table(const char *name, const Table *t, int check_threads)
         }
     } else {
         /* A table the canonical CSV cannot carry must never be shipped in it. */
-        ok &= CHECK(is_magic(&blob, PPZ_MAGIC),
+        ok &= CHECK(is_modelled(&blob),
                     "%s: canonical CSV does not survive, yet the archive is %.4s",
                     name, blob.data);
     }
@@ -546,7 +552,7 @@ static void cases_one_pass(void)
     tb_finish(&b, &noise);
     Buf got;
     buf_init(&got);
-    CHECK(ppz_encode(&noise, &got) == 0 && is_magic(&got, PPZ_MAGIC),
+    CHECK(ppz_encode(&noise, &got) == 0 && is_modelled(&got),
           "noise: one pass must still write PPZ1");
     check_table("noise", &noise, 1);
     table_free(&noise);
@@ -859,6 +865,108 @@ static void case_v0_magic(void)
     table_free(&t);
 }
 
+/* ------------------------------------------------------ derived columns */
+
+static void drv_round_is(const char *v, int d, const char *want)
+{
+    char out[DRV_MAX_TOK + 2];
+    size_t n = drv_round(v, strlen(v), d, out);
+    if (!want) { CHECK(n == 0, "round(%s, %d) should be refused, got %.*s", v, d, (int)n, out); return; }
+    CHECK(n == strlen(want) && !memcmp(out, want, n),
+          "round(%s, %d) = %.*s, want %s", v, d, (int)n, out, want);
+}
+
+/* Encode, expect PPZ2 (or not), round trip. */
+static void derived_case(const char *name, TB *b, int want_derived)
+{
+    Table t;
+    tb_finish(b, &t);
+    check_table(name, &t, 1);
+    Buf blob;
+    buf_init(&blob);
+    if (CHECK(ppz_encode(&t, &blob) == 0, "%s: encode", name))
+        CHECK(is_magic(&blob, want_derived ? PPZ_MAGIC_DERIVED : PPZ_MAGIC),
+              "%s: wrote %.4s, wanted %s", name, blob.data,
+              want_derived ? PPZ_MAGIC_DERIVED : PPZ_MAGIC);
+    buf_free(&blob);
+    table_free(&t);
+}
+
+static void cases_derived(void)
+{
+    h_section("derived columns: numbers, rounding half to even");
+    size_t n;
+    CHECK(drv_token("POINT (-87.6 41.88)", 19, 7) == 5, "token -87.6");
+    CHECK(drv_token("a-b", 3, 1) == 0, "a lone minus is not a number");
+    CHECK((n = drv_token("1.2.3", 5, 0)) == 3, "1.2.3 starts with 1.2 (got %zu)", n);
+    CHECK(drv_token("7.", 2, 0) == 1, "a trailing dot is not a decimal");
+    CHECK(drv_is_number("-0.50", 5) && !drv_is_number("", 0) && !drv_is_number("1e5", 3), "is_number");
+    CHECK(drv_decimals("41.881", 6) == 3 && drv_decimals("12", 2) == 0, "decimals");
+    drv_round_is("2.345", 2, "2.34");       /* tie, 4 is even: down */
+    drv_round_is("2.355", 2, "2.36");       /* tie, 5 is odd: up */
+    drv_round_is("2.3451", 2, "2.35");      /* past the tie */
+    drv_round_is("2.3449", 2, "2.34");
+    drv_round_is("9.5", 0, "10");
+    drv_round_is("8.5", 0, "8");
+    drv_round_is("-9.99", 1, "-10.0");
+    drv_round_is("99.96", 1, "100.0");
+    drv_round_is("-0.04", 1, "-0.0");       /* the sign stays */
+    drv_round_is("41.8819", 0, "42");
+    drv_round_is("12", 0, NULL);            /* nothing to round */
+    drv_round_is("1.5", 1, NULL);           /* not more decimals than asked */
+    drv_round_is("1.5x", 0, NULL);
+
+    h_section("derived columns: round trips");
+    TB b;
+    /* the motivating shape: geometry republished as text, exact and rounded */
+    tb_start(&b, 5, (const char *const[]){ "id", "lat", "lon", "location", "year_date" });
+    for (int i = 0; i < 2000; i++) {
+        double la = 41.6 + (i * 7919 % 4001) / 10000.0 + (i % 7) * 1e-7;
+        double lo = -87.9 + (i * 104729 % 3001) / 10000.0 + (i % 5) * 1e-8;
+        tb_cellf(&b, "%d", i);
+        tb_cellf(&b, "%.7f", la);
+        tb_cellf(&b, "%.8f", lo);
+        if (i % 50 == 0) tb_cellz(&b, "");
+        else if (i % 3 == 0) tb_cellf(&b, "POINT (%.8f %.7f)", lo, la);
+        else tb_cellf(&b, "(%.4f, %.3f)", la, lo);
+        tb_cellf(&b, "%d-%02d-01", 2000 + i % 20, 1 + i % 12);
+    }
+    derived_case("geometry from lat/lon", &b, 1);
+
+    /* a would-be derived column that already holds the marker bytes */
+    tb_start(&b, 2, (const char *const[]){ "n", "s" });
+    for (int i = 0; i < 500; i++) {
+        tb_cellf(&b, "%d", i);
+        if (i == 250) tb_cell(&b, "\x01" "0:\x02", 4);
+        else tb_cellf(&b, "n=%d", i);
+    }
+    derived_case("marker bytes in the data", &b, 0);
+
+    /* numbers longer than DRV_MAX_TOK are never referenced */
+    tb_start(&b, 2, (const char *const[]){ "big", "copy" });
+    for (int i = 0; i < 300; i++) {
+        char d[100];
+        for (int k = 0; k < 80; k++) d[k] = (char)('0' + (i + k) % 10);
+        d[80] = 0;
+        tb_cellz(&b, d);
+        tb_cellf(&b, "x %s y", d);
+    }
+    derived_case("80-digit numbers", &b, 0);
+
+    /* a source that matches only some rows, roundings that tie, negatives,
+     * and a derived cell whose numbers come from two different sources */
+    tb_start(&b, 4, (const char *const[]){ "a", "b", "both", "noise" });
+    for (int i = 0; i < 1500; i++) {
+        tb_cellf(&b, "%d.%03d5", i % 97 - 40, i % 1000);
+        tb_cellf(&b, "%d", i * 3);
+        if (i % 4 == 0) tb_cellf(&b, "%d and %d.%03d5 and 7", i * 3, i % 97 - 40, i % 1000);
+        else if (i % 4 == 1) tb_cellf(&b, "%d / %d.%03d", i * 3, i % 97 - 40, i % 1000);
+        else tb_cellf(&b, "%d only", i * 3);
+        tb_cellf(&b, "%d", (i * 31337) % 1009);
+    }
+    derived_case("partial, rounded, two sources", &b, 1);
+}
+
 /* ------------------------------------------------------ capped compressors */
 
 /* The capped forms are streamed so another thread can stop them early.
@@ -1093,6 +1201,7 @@ int main(int argc, char **argv)
     cases_more();
     case_invalid_utf8_names();
     case_v0_magic();
+    cases_derived();
     cases_dict_limit();
     cases_capped();
     fuzz(count, seed);

@@ -658,3 +658,72 @@ int64_t js_i64(const Js *j, int64_t fallback)
     if (j->kind == JS_BOOL) return j->boolean;
     return fallback;
 }
+
+/* ------------------------------------------------------ derived columns */
+
+static int drv_digit(char c) { return c >= '0' && c <= '9'; }
+
+size_t drv_token(const char *s, size_t n, size_t i)
+{
+    size_t j = i;
+    if (j < n && s[j] == '-' && j + 1 < n && drv_digit(s[j + 1])) j++;
+    if (j >= n || !drv_digit(s[j])) return 0;
+    while (j < n && drv_digit(s[j])) j++;
+    if (j + 1 < n && s[j] == '.' && drv_digit(s[j + 1])) {
+        j++;
+        while (j < n && drv_digit(s[j])) j++;
+    }
+    return j - i;
+}
+
+int drv_is_number(const char *s, size_t n)
+{
+    return n && drv_token(s, n, 0) == n;
+}
+
+int drv_decimals(const char *s, size_t n)
+{
+    const char *dot = memchr(s, '.', n);
+    return dot ? (int)(n - (size_t)(dot - s) - 1) : 0;
+}
+
+size_t drv_round(const char *v, size_t n, int d, char *out)
+{
+    if (d < 0 || n > DRV_MAX_TOK || !drv_is_number(v, n)) return 0;
+    int neg = v[0] == '-';
+    const char *p = v + neg;
+    size_t m = n - (size_t)neg;
+    const char *dot = memchr(p, '.', m);
+    if (!dot) return 0;
+    size_t ni = (size_t)(dot - p), nf = m - ni - 1;
+    if ((size_t)d >= nf) return 0;
+
+    /* the kept digits, then the first dropped one decides */
+    char dig[DRV_MAX_TOK + 1];
+    size_t L = 0;
+    for (size_t i = 0; i < ni; i++) dig[L++] = p[i];
+    for (int i = 0; i < d; i++) dig[L++] = dot[1 + i];
+    char next = dot[1 + d];
+    int rest = 0;
+    for (size_t i = (size_t)d + 1; i < nf; i++) if (dot[1 + i] != '0') { rest = 1; break; }
+    int up = next > '5' || (next == '5' && (rest || ((dig[L - 1] - '0') & 1)));
+    int carry = 0;
+    if (up) {
+        size_t i = L;
+        carry = 1;
+        while (carry && i > 0) {
+            i--;
+            if (dig[i] == '9') dig[i] = '0';
+            else { dig[i]++; carry = 0; }
+        }
+    }
+    size_t o = 0;
+    if (neg) out[o++] = '-';
+    if (carry) out[o++] = '1';
+    for (size_t i = 0; i < ni; i++) out[o++] = dig[i];
+    if (d) {
+        out[o++] = '.';
+        for (int i = 0; i < d; i++) out[o++] = dig[ni + (size_t)i];
+    }
+    return o;
+}

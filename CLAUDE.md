@@ -45,6 +45,12 @@ at here independently; claim withdrawn — see the prior-art note in README.md.
    C encoder is byte-identical to the Python one"; the port is why the
    deterministic-choice rules below exist (quantised entropy scores, index
    tie-breaks, frozen canonical CSV), and they still bind.
+   **Since 2026-10-01 there are two modelled magics:** `PPZ1`, and `PPZ2`
+   = the same container plus a `"derive"` key (derived columns, format in
+   `ppz.h`). The decoder refuses `"derive"` in a PPZ1 and a PPZ2 without
+   it, so a pre-2026-10-01 build refuses PPZ2 outright instead of returning
+   the `\x01k:d\x02` references as data. A table where nothing is derived
+   still gets PPZ1 and exactly the old bytes (31 of 39 suite tables).
 2. **~~Never worse.~~ RETIRED 2026-09-29 by Mahdi: one pass.** "Just have a
    single process ... one algorithm to reorder, one compression algorithm."
    Measured first on the 39-table suite: the trial encodes (strict plan,

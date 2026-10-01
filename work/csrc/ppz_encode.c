@@ -1313,7 +1313,8 @@ static int names_are_utf8(const Table *t)
 
 static int encode_modelled(const Table *t, Buf *out, long *fired,
                            int use_2d, size_t *ngroups_out,
-                           int use_lenient, size_t *nlax_out)
+                           int use_lenient, size_t *nlax_out,
+                           const Buf *derive_meta)
 {
     if (!names_are_utf8(t)) return -1;
     if (fired) *fired = 0;
@@ -1651,6 +1652,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     /* fast.py sets meta["fc"] on an already-built dict, so it lands last and
      * the metadata is compared byte for byte */
     if (use_fc) buf_put(&meta, ",\"fc\":1", 7);
+    if (derive_meta) buf_put(&meta, derive_meta->data, derive_meta->len);
     buf_putc(&meta, '}');
 
     /* Did any of the three ideas actually do something? A parent-sorted
@@ -1676,7 +1678,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     /* bz was compressed in the background; tz is the winning pile */
 
     buf_free(out);
-    buf_put(out, PPZ_MAGIC, 4);
+    buf_put(out, derive_meta ? PPZ_MAGIC_DERIVED : PPZ_MAGIC, 4);
     for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((mz.len >> s) & 0xFF));
     for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((bz.len >> s) & 0xFF));
     for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((tz.len >> s) & 0xFF));
@@ -1698,6 +1700,261 @@ done:
     return rc;
 }
 
+/* -------------------------------------------------------- derived columns */
+
+/* Numbers in text that another column already holds become references (the
+ * format is in ppz.h). Measured in the improvements lab, 2026-09-28, before
+ * a line of this was written: -20% chicago_crimes, -13% nyc_311, -12%
+ * seattle_fire911, -9.0% over 14 tables, and the encode got faster because
+ * the codec is handed less text. It found location = POINT(lon lat) rebuilt
+ * from longitude + latitude (exact, or rounded), fee columns copying other
+ * fee columns, a date sharing its year with `year`.
+ *
+ * The choice is made on a sample and never trial-encoded (one pass): column
+ * j is a candidate for column t when j explains a number in t on at least
+ * half the sampled rows where t has one. A source is never itself derived,
+ * so the decoder always expands from finished values. */
+
+#define DRV_SAMPLE     500
+#define DRV_MAX_COLS   2048      /* the hit matrix is cols^2 x 2 bytes */
+
+typedef struct { Str key; uint32_t col; size_t off; } DrvKey;
+
+static int drvkey_cmp(const void *a, const void *b)
+{
+    const DrvKey *x = a, *y = b;
+    if (x->key.n != y->key.n) return x->key.n < y->key.n ? -1 : 1;
+    int c = memcmp(x->key.p, y->key.p, x->key.n);
+    if (c) return c;
+    return x->col < y->col ? -1 : x->col > y->col;
+}
+
+static int u32_cmp(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* The reference for one number in row `row`, or 0. Exact copies first, then
+ * roundings; the first candidate that reproduces the number wins. */
+static size_t drv_ref_for(const Table *t, size_t row, const uint32_t *cands,
+                          size_t nc, const char *tok, size_t tn, char *ref)
+{
+    for (size_t k = 0; k < nc; k++) {
+        Str v = table_at(t, row, cands[k]);
+        if (v.n == tn && !memcmp(v.p, tok, tn))
+            return (size_t)snprintf(ref, 16, "\x01%zu:\x02", k);
+    }
+    int d = drv_decimals(tok, tn);
+    char r[DRV_MAX_TOK + 2];
+    for (size_t k = 0; k < nc; k++) {
+        Str v = table_at(t, row, cands[k]);
+        if (v.n > DRV_MAX_TOK || drv_decimals(v.p, v.n) <= d) continue;
+        size_t rn = drv_round(v.p, v.n, d, r);
+        if (rn == tn && !memcmp(r, tok, tn))
+            return (size_t)snprintf(ref, 16, "\x01%zu:%d\x02", k, d);
+    }
+    return 0;
+}
+
+/* Choose the derived columns and write the rewritten table into `out`, which
+ * borrows every untouched cell from `t` (so `t` must outlive it) and the
+ * "derive" metadata into `meta`. Returns the number of derived columns. */
+static size_t derive_plan(const Table *t, Table *out, Buf *meta)
+{
+    size_t nc = t->ncols, nr = t->nrows;
+    if (nr == 0 || nc < 2 || nc > DRV_MAX_COLS) return 0;
+
+    /* a column already holding the marker bytes cannot carry references */
+    unsigned char *skip = calloc(nc, 1);
+    size_t *seen = calloc(nc, sizeof(size_t));
+    uint16_t *hits = calloc(nc * nc, sizeof(uint16_t));
+    if (!skip || !seen || !hits) { free(skip); free(seen); free(hits); return 0; }
+    for (size_t i = 0; i < nr; i++)
+        for (size_t j = 0; j < nc; j++) {
+            if (skip[j]) continue;
+            Str c = table_at(t, i, j);
+            if (memchr(c.p, '\x01', c.n) || memchr(c.p, '\x02', c.n)) skip[j] = 1;
+        }
+
+    /* For each sampled row: every number another cell could supply -- the
+     * cell itself, and each of its roundings -- sorted, so each number in a
+     * cell is one binary search. */
+    size_t step = nr / DRV_SAMPLE ? nr / DRV_SAMPLE : 1;
+    DrvKey *keys = NULL;
+    size_t kcap = 0;
+    Buf rbuf;
+    buf_init(&rbuf);
+    uint32_t *used = malloc(64 * sizeof(uint32_t));
+    size_t ucap = 64;
+    for (size_t i = 0; i < nr && used; i += step) {
+        /* rounded strings go into rbuf, which may move as it grows, so
+         * their keys hold an offset until the row is done */
+        size_t nk = 0;
+        rbuf.len = 0;
+        for (size_t j = 0; j < nc; j++) {
+            Str c = table_at(t, i, j);
+            if (c.n > DRV_MAX_TOK || !drv_is_number(c.p, c.n)) continue;
+            int k = drv_decimals(c.p, c.n);
+            if (nk + (size_t)k + 1 > kcap) {
+                size_t nc2 = (nk + (size_t)k + 1) * 2;
+                DrvKey *k2 = realloc(keys, nc2 * sizeof(DrvKey));
+                if (!k2) { nk = 0; break; }
+                keys = k2;
+                kcap = nc2;
+            }
+            keys[nk++] = (DrvKey){ c, (uint32_t)j, 0 };
+            for (int d = 0; d < k; d++) {
+                char r[DRV_MAX_TOK + 2];
+                size_t rn = drv_round(c.p, c.n, d, r);
+                keys[nk++] = (DrvKey){ { NULL, rn }, (uint32_t)j, rbuf.len };
+                buf_put(&rbuf, r, rn);
+            }
+        }
+        for (size_t q = 0; q < nk; q++)
+            if (!keys[q].key.p) keys[q].key.p = (const char *)rbuf.data + keys[q].off;
+        if (nk) qsort(keys, nk, sizeof(DrvKey), drvkey_cmp);
+
+        for (size_t tc = 0; tc < nc; tc++) {
+            if (skip[tc]) continue;
+            Str c = table_at(t, i, tc);
+            size_t nu = 0;
+            int any = 0;
+            for (size_t p = 0; p < c.n; ) {
+                size_t tn = drv_token(c.p, c.n, p);
+                if (!tn) { p++; continue; }
+                any = 1;
+                if (tn <= DRV_MAX_TOK && nk) {
+                    DrvKey probe = { { c.p + p, tn }, 0, 0 };
+                    size_t lo = 0, hi = nk;       /* first key >= (tok, col 0) */
+                    while (lo < hi) {
+                        size_t mid = (lo + hi) / 2;
+                        if (drvkey_cmp(&keys[mid], &probe) < 0) lo = mid + 1;
+                        else hi = mid;
+                    }
+                    for (size_t q = lo; q < nk && keys[q].key.n == tn
+                         && !memcmp(keys[q].key.p, c.p + p, tn); q++) {
+                        if (keys[q].col == tc) continue;
+                        if (nu == ucap) {
+                            ucap *= 2;
+                            uint32_t *nu2 = realloc(used, ucap * sizeof(uint32_t));
+                            if (!nu2) { free(used); used = NULL; break; }
+                            used = nu2;
+                        }
+                        used[nu++] = keys[q].col;
+                    }
+                    if (!used) break;
+                }
+                p += tn;
+            }
+            if (!used) break;
+            if (!any) continue;
+            seen[tc]++;
+            qsort(used, nu, sizeof(uint32_t), u32_cmp);
+            for (size_t q = 0; q < nu; q++)
+                if (q == 0 || used[q] != used[q - 1]) hits[tc * nc + used[q]]++;
+        }
+    }
+    free(keys);
+    buf_free(&rbuf);
+    int ok = used != NULL;
+    free(used);
+
+    /* choose, left to right */
+    uint32_t (*cands)[DRV_MAX_CANDS] = calloc(nc, sizeof(*cands));
+    size_t *ncand = calloc(nc, sizeof(size_t));
+    unsigned char *banned = calloc(nc, 1);
+    size_t nd = 0;
+    if (!cands || !ncand || !banned) ok = 0;
+    for (size_t tc = 0; ok && tc < nc; tc++) {
+        if (banned[tc] || skip[tc] || !seen[tc]) continue;
+        for (size_t j = 0; j < nc && ncand[tc] < DRV_MAX_CANDS; j++) {
+            if (j == tc || banned[j] || ncand[j]) continue;
+            if (2 * (size_t)hits[tc * nc + j] >= seen[tc])
+                cands[tc][ncand[tc]++] = (uint32_t)j;
+        }
+        if (!ncand[tc]) continue;
+        nd++;
+        for (size_t k = 0; k < ncand[tc]; k++) banned[cands[tc][k]] = 1;
+    }
+    free(skip); free(seen); free(hits); free(banned);
+    if (!ok || !nd) { free(cands); free(ncand); return 0; }
+
+    /* rewrite the derived columns; every other cell is borrowed */
+    table_init(out);
+    out->ncols = nc;
+    out->nrows = nr;
+    out->names = calloc(nc, sizeof(char *));
+    out->cells = malloc(nr * nc * sizeof(Str));
+    size_t *roff = malloc(nr * nc * sizeof(size_t));
+    if (!out->names || !out->cells || !roff) goto fail;
+    for (size_t j = 0; j < nc; j++)
+        if (!(out->names[j] = strdup(t->names[j]))) goto fail;
+    memcpy(out->cells, t->cells, nr * nc * sizeof(Str));
+    for (size_t i = 0; i < nr * nc; i++) roff[i] = SIZE_MAX;
+    Buf cell;
+    buf_init(&cell);
+    for (size_t i = 0; i < nr; i++) {
+        for (size_t tc = 0; tc < nc; tc++) {
+            if (!ncand[tc]) continue;
+            Str c = table_at(t, i, tc);
+            cell.len = 0;
+            size_t from = 0;
+            int changed = 0;
+            for (size_t p = 0; p < c.n; ) {
+                size_t tn = drv_token(c.p, c.n, p);
+                if (!tn) { p++; continue; }
+                char ref[16];
+                size_t rl = tn <= DRV_MAX_TOK
+                    ? drv_ref_for(t, i, cands[tc], ncand[tc], c.p + p, tn, ref) : 0;
+                if (rl) {
+                    buf_put(&cell, c.p + from, p - from);
+                    buf_put(&cell, ref, rl);
+                    from = p + tn;
+                    changed = 1;
+                }
+                p += tn;
+            }
+            if (!changed) continue;
+            buf_put(&cell, c.p + from, c.n - from);
+            roff[i * nc + tc] = out->arena.len;
+            buf_put(&out->arena, cell.data, cell.len);
+            out->cells[i * nc + tc].n = cell.len;
+        }
+    }
+    buf_free(&cell);
+    for (size_t i = 0; i < nr * nc; i++)
+        if (roff[i] != SIZE_MAX)
+            out->cells[i].p = (const char *)out->arena.data + roff[i];
+    free(roff);
+
+    buf_put(meta, ",\"derive\":[", 11);
+    int first = 1;
+    for (size_t tc = 0; tc < nc; tc++) {
+        if (!ncand[tc]) continue;
+        if (!first) buf_putc(meta, ',');
+        first = 0;
+        buf_putc(meta, '[');
+        json_int(meta, (long long)tc);
+        buf_put(meta, ",[", 2);
+        for (size_t k = 0; k < ncand[tc]; k++) {
+            if (k) buf_putc(meta, ',');
+            json_int(meta, (long long)cands[tc][k]);
+        }
+        buf_put(meta, "]]", 2);
+    }
+    buf_putc(meta, ']');
+    free(cands); free(ncand);
+    return nd;
+
+fail:
+    free(roff);
+    if (!out->names) out->ncols = 0;
+    table_free(out);
+    free(cands); free(ncand);
+    return 0;
+}
+
 /* ------------------------------------------------------------ the encoder */
 
 /* Do the tables hold the same strings? */
@@ -1717,7 +1974,7 @@ static int tables_equal(const Table *a, const Table *b)
 
 int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
 {
-    return encode_modelled(t, out, fired, 1, NULL, 1, NULL);
+    return encode_modelled(t, out, fired, 1, NULL, 1, NULL, NULL);
 }
 
 /* Does this table have lenient columns at all, and could any of them win?
@@ -1755,6 +2012,14 @@ static void lenient_verdict(const Table *t, int *any_lax, int *promising)
  * alphabets front-coded, text parents chosen by probe. Still smaller than
  * plain xz -9e on every suite table but one, where it ties.
  *
+ * Derived columns (2026-10-01) run first, on a sample, as one more fixed
+ * rule: when they fire the archive is PPZ2, otherwise the bytes are exactly
+ * what they were before. Measured on the suite before shipping: -5.1% in
+ * total, -19% chicago_crimes, -16% nyc_collisions, -12% nyc_311 and
+ * seattle_fire911, 31 of 39 tables byte-identical, encode time down 5%.
+ * The one loss is xs_noaa_gsoy_ord, +78 bytes, where *_ATTRIBUTES flag
+ * columns match each other by coincidence.
+ *
  * The plain containers (PPZX/PPZB) are still READ -- older archives use
  * them -- and PPZX is still written in one case: column names that are not
  * UTF-8, which the JSON metadata cannot carry (library use only; the readers
@@ -1779,12 +2044,22 @@ int ppz_encode(const Table *t, Buf *out)
         return ok ? 0 : -1;
     }
     double tr = ppz_now();
+    Table dt;
+    Buf dmeta;
+    buf_init(&dmeta);
+    size_t nd = derive_plan(t, &dt, &dmeta);
+    const Table *src = nd ? &dt : t;
+    ppz_trace("derived columns", tr);
+    tr = ppz_now();
     int any_lax = 0, promising = 0;
-    lenient_verdict(t, &any_lax, &promising);
+    lenient_verdict(src, &any_lax, &promising);
     ppz_trace("lenient screen", tr);
     tr = ppz_now();
     long fired = 0;
-    int rc = encode_modelled(t, out, &fired, 1, NULL, (!any_lax) || promising, NULL);
+    int rc = encode_modelled(src, out, &fired, 1, NULL, (!any_lax) || promising,
+                             NULL, nd ? &dmeta : NULL);
     ppz_trace("== encode", tr);
+    if (nd) table_free(&dt);
+    buf_free(&dmeta);
     return rc;
 }

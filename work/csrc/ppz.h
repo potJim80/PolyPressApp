@@ -23,6 +23,8 @@
 #define PPZ_MAGIC_RAW_XZ "PPZX" /* whole table, plain xz */
 #define PPZ_MAGIC_RAW_BZ "PPZB" /* whole table, plain bzip2 */
 
+#define PPZ_MAGIC_DERIVED "PPZ2" /* PPZ1 layout + derived columns (2026-10-01) */
+
 /* ------------------------------------------------------------------ bytes */
 
 typedef struct {
@@ -223,6 +225,30 @@ void   ppz_parallel(PpzTask fn, void *args, size_t argsize, size_t n);
 /* fn(arg) on its own thread now (inline at join time when serial). */
 PpzBg *ppz_bg_start(PpzTask fn, void *arg);
 void   ppz_bg_join(PpzBg *b);
+
+/* -------------------------------------------------------- derived columns */
+
+/* Numbers inside a text cell that another column of the same row already
+ * holds -- `location = "POINT (lon lat)"` beside `longitude` and `latitude`,
+ * a date beside its `year` -- are stored as references to that column:
+ *
+ *     \x01<k>:\x02       an exact copy of candidate column k
+ *     \x01<k>:<d>\x02    candidate k rounded to d decimals, half to even
+ *
+ * A number is `-?[0-9]+(\.[0-9]+)?`, read left to right; one longer than
+ * DRV_MAX_TOK bytes is never referenced, which also bounds how far a hostile
+ * archive can make a cell grow. Archives using this are PPZ2 and carry
+ * "derive": [[column, [candidates...]], ...] in their metadata; a decoder
+ * that predates it refuses the magic instead of returning the references. */
+#define DRV_MAX_TOK   64
+#define DRV_MAX_CANDS 4
+
+size_t drv_token(const char *s, size_t n, size_t i);     /* length at i, or 0 */
+int    drv_is_number(const char *s, size_t n);           /* exactly one token */
+int    drv_decimals(const char *s, size_t n);            /* digits after '.' */
+/* v (a token with a '.' and more than d decimals, at most DRV_MAX_TOK long)
+ * rounded to d decimals into out (DRV_MAX_TOK + 2 bytes). Length, or 0. */
+size_t drv_round(const char *v, size_t n, int d, char *out);
 
 /* --------------------------------------------------------------- decoding */
 

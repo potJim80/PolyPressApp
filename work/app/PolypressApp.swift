@@ -34,7 +34,7 @@ let PAGE = RES.appendingPathComponent("page/index.html")
 // -- which is what the progress bar shows. Below it a file takes seconds.
 var STREAM_ABOVE: Int64 = 64 << 20          // var: the self-test lowers it
 
-let ARCHIVE_MAGICS: Set<String> = ["PPZ1", "FAST", "PPZX", "PPZB", "PPZS"]
+let ARCHIVE_MAGICS: Set<String> = ["PPZ1", "PPZ2", "FAST", "PPZX", "PPZB", "PPZS"]
 let TABLE_FORMATS = ["csv", "tsv", "json", "jsonl"]
 
 // ─── Running things ──────────────────────────────────────────────────────────
@@ -595,6 +595,26 @@ func selftest() -> Int32 {
         let pr = go(Job(src: pc.out, kind: .restore, format: "csv"))
         check("parquet/in-and-out", pr.state == .done && canon(pr.out) == want, pr.message + pc.message)
     }
+
+    // derived columns (PPZ2): location rebuilt from lat and lon
+    let geo = sc.path("geo.csv")
+    var gcsv = "id,lat,lon,location\n"
+    for i in 0..<600 {
+        let la = String(format: "%.6f", 41.6 + Double(i * 7919 % 4001) / 10000.0)
+        let lo = String(format: "%.6f", -87.9 + Double(i * 104729 % 3001) / 10000.0)
+        gcsv += "\(i),\(la),\(lo),POINT (\(lo) \(la))\n"
+    }
+    try? gcsv.write(toFile: geo, atomically: true, encoding: .utf8)
+    let gc = go(Job(src: geo, kind: .compress))
+    let gmagic = FileHandle(forReadingAtPath: gc.out).map { h -> String in
+        defer { h.closeFile() }
+        return String(decoding: h.readData(ofLength: 4), as: UTF8.self)
+    } ?? ""
+    let ghidden = sc.path("geo-archive.bin")            // no .ppz: found by magic alone
+    try? FileManager.default.copyItem(atPath: gc.out, toPath: ghidden)
+    check("derived/archive", gc.state == .done && gmagic == "PPZ2" && isArchive(ghidden), gmagic)
+    let gr = go(Job(src: gc.out, kind: .restore))
+    check("derived/cells", gr.state == .done && canon(gr.out) == canon(geo), gr.message)
 
     let dup = sc.path("dup.csv")
     try? "a,a\n1,2\n".write(toFile: dup, atomically: true, encoding: .utf8)

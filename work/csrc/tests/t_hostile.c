@@ -235,6 +235,8 @@ static void mutate_all(const char *kind, const Buf *good)
 
 /* A PPZ1 archive from its three parts: the metadata text and the two
  * payloads, raw LZMA2 each, behind four 4-byte big-endian lengths. */
+static const char *g_magic = PPZ_MAGIC;     /* PPZ2 for the derived-column lies */
+
 static void rebuild(const char *meta, size_t mlen, const Buf *bins, const Buf *txt, Buf *out)
 {
     Buf mz, bz, tz;
@@ -243,7 +245,7 @@ static void rebuild(const char *meta, size_t mlen, const Buf *bins, const Buf *t
     ppz_lzma_compress(bins->data, bins->len, &bz);
     ppz_lzma_compress(txt->data, txt->len, &tz);
     buf_init(out);
-    buf_put(out, PPZ_MAGIC, 4);
+    buf_put(out, g_magic, 4);
     size_t lens[3] = { mz.len, bz.len, tz.len };
     for (int k = 0; k < 3; k++)
         for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((lens[k] >> s) & 0xFF));
@@ -448,6 +450,149 @@ static void lying_headers(void)
     buf_free(&blob);
 }
 
+/* ------------------------------------------------------ derived columns */
+
+/* id, name, lat, lon, location = "POINT (lon lat)": location is derived from
+ * lat and lon, and name is text, so a lie can point a reference at it. */
+static void derived_table(Table *t)
+{
+    TB b;
+    tb_start(&b, 5, (const char *const[]){ "id", "name", "lat", "lon", "location" });
+    for (int i = 0; i < 400; i++) {
+        double la = 41.6 + (i * 7919 % 4001) / 10000.0, lo = -87.9 + (i * 104729 % 3001) / 10000.0;
+        tb_cellf(&b, "%d", i);
+        tb_cellf(&b, "name %d", i % 13);
+        tb_cellf(&b, "%.6f", la);
+        tb_cellf(&b, "%.6f", lo);
+        tb_cellf(&b, "POINT (%.6f %.4f)", lo, la);
+    }
+    tb_finish(&b, t);
+}
+
+/* Must be refused: survive it in a child first, then decode here. */
+static int refused(const char *name, const Buf *arc)
+{
+    if (!survive("PPZ2", name, arc->data, arc->len)) return 0;
+    Table t;
+    int rc = ppz_decode(arc->data, arc->len, &t);
+    if (rc == 0) table_free(&t);
+    return CHECK(rc != 0, "PPZ2 %s: decoded instead of being refused", name);
+}
+
+static int derive_lie(const char *name, const char *magic, const Buf *meta,
+                      const char *from, const char *to, const Buf *bins, const Buf *txt)
+{
+    Buf m2, arc;
+    if (!CHECK(edit(meta, from, to, &m2), "lie %s: the metadata has no %s", name, from)) return 0;
+    g_magic = magic;
+    rebuild((const char *)m2.data, m2.len, bins, txt, &arc);
+    g_magic = PPZ_MAGIC;
+    int ok = refused(name, &arc);
+    buf_free(&m2); buf_free(&arc);
+    return ok;
+}
+
+/* columns a, b: b is derived from a; texts are the two cells */
+static int derive_crafted(const char *name, const char *a, const char *bcell, int want_ok,
+                          const char *want_b)
+{
+    char meta[512];
+    snprintf(meta, sizeof(meta),
+             "{\"columns\":[\"a\",\"b\"],\"nrows\":1,\"cols\":[{\"kind\":\"text\"},{\"kind\":\"text\"}],"
+             "\"groups\":[],\"order\":[],\"bins\":[],\"smeta\":[{\"n\":1,\"b\":%zu,\"nl\":true},"
+             "{\"n\":1,\"b\":%zu,\"nl\":true}],\"nlenbins\":0,\"derive\":[[1,[0]]]}",
+             strlen(a), strlen(bcell));
+    Buf b, t, arc;
+    buf_init(&b); buf_init(&t);
+    buf_put(&t, a, strlen(a));
+    buf_put(&t, bcell, strlen(bcell));
+    g_magic = PPZ_MAGIC_DERIVED;
+    rebuild(meta, strlen(meta), &b, &t, &arc);
+    g_magic = PPZ_MAGIC;
+    int ok;
+    if (want_ok) {
+        Table out;
+        ok = CHECK(ppz_decode(arc.data, arc.len, &out) == 0, "PPZ2 %s: refused", name);
+        if (ok) {
+            Str c = table_at(&out, 0, 1);
+            ok = CHECK(c.n == strlen(want_b) && !memcmp(c.p, want_b, c.n),
+                       "PPZ2 %s: got %.*s, want %s", name, (int)c.n, c.p, want_b);
+            table_free(&out);
+        }
+    } else {
+        ok = refused(name, &arc);
+    }
+    buf_free(&b); buf_free(&t); buf_free(&arc);
+    return ok;
+}
+
+static void derived_lies(void)
+{
+    Table t;
+    derived_table(&t);
+    Buf good;
+    buf_init(&good);
+    CHECK(ppz_encode(&t, &good) == 0, "encode the derived sample");
+    if (!CHECK(good.len >= 4 && !memcmp(good.data, PPZ_MAGIC_DERIVED, 4),
+               "the derived sample was not written as PPZ2")) {
+        buf_free(&good); table_free(&t); return;
+    }
+    mutate_all("PPZ2", &good);
+    truncations("PPZ2", &good, &t);
+
+    h_section("lying headers: derived columns");
+    Buf meta, bins, txt;
+    if (!CHECK(split(&good, &meta, &bins, &txt) == 0, "PPZ2 archive does not split")) {
+        buf_free(&good); table_free(&t); return;
+    }
+    const char *D = "\"derive\":[[4,[2,3]]]";
+    CHECK(strstr((char *)meta.data, D) != NULL, "derived sample metadata has no %s: %.*s",
+          D, (int)meta.len, meta.data);
+    int bad = 0;
+    struct { const char *name, *magic, *to; } L[] = {
+        { "derive key in a PPZ1",    PPZ_MAGIC,         D },
+        { "PPZ2 without derive",     PPZ_MAGIC_DERIVED, "\"x\":[[4,[2,3]]]" },
+        { "derived from itself",     PPZ_MAGIC_DERIVED, "\"derive\":[[4,[4,3]]]" },
+        { "source out of range",     PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,9]]]" },
+        { "source negative",         PPZ_MAGIC_DERIVED, "\"derive\":[[4,[-1,3]]]" },
+        { "column out of range",     PPZ_MAGIC_DERIVED, "\"derive\":[[40,[2,3]]]" },
+        { "column listed twice",     PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,3]],[4,[2]]]" },
+        { "source is derived",       PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,3]],[3,[0]]]" },
+        { "five sources",            PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,3,0,1,0]]]" },
+        { "no sources",              PPZ_MAGIC_DERIVED, "\"derive\":[[4,[]]]" },
+        { "empty list",              PPZ_MAGIC_DERIVED, "\"derive\":[]" },
+        { "not a list",              PPZ_MAGIC_DERIVED, "\"derive\":{\"4\":[2,3]}" },
+        { "reference past sources",  PPZ_MAGIC_DERIVED, "\"derive\":[[4,[3]]]" },
+        { "source is text",          PPZ_MAGIC_DERIVED, "\"derive\":[[4,[1,3]]]" },
+        { "fractional column",       PPZ_MAGIC_DERIVED, "\"derive\":[[4.5,[2,3]]]" },
+    };
+    for (size_t k = 0; k < N_OF(L); k++)
+        bad += !derive_lie(L[k].name, L[k].magic, &meta, D, L[k].to, &bins, &txt);
+
+    /* references written by hand */
+    bad += !derive_crafted("a good exact reference", "5", "x\x01" "0:\x02y", 1, "x5y");
+    bad += !derive_crafted("a good rounded reference", "2.355", "\x01" "0:2\x02", 1, "2.36");
+    bad += !derive_crafted("unterminated reference", "5", "x\x01" "0:", 0, NULL);
+    bad += !derive_crafted("reference to candidate 5", "5", "\x01" "5:\x02", 0, NULL);
+    bad += !derive_crafted("reference with no colon", "5", "\x01" "0\x02", 0, NULL);
+    bad += !derive_crafted("rounding to 999 places", "2.5", "\x01" "0:999\x02", 0, NULL);
+    bad += !derive_crafted("rounding a whole number", "5", "\x01" "0:0\x02", 0, NULL);
+    bad += !derive_crafted("rounding to as many places", "2.5", "\x01" "0:1\x02", 0, NULL);
+    bad += !derive_crafted("stray end marker", "5", "a\x02", 0, NULL);
+    bad += !derive_crafted("source is not a number", "five", "\x01" "0:\x02", 0, NULL);
+    {
+        char big[200];
+        memset(big, '7', 100);
+        big[100] = 0;
+        bad += !derive_crafted("source longer than DRV_MAX_TOK", big, "\x01" "0:\x02", 0, NULL);
+    }
+    printf("   derived-column lies: %d did not survive\n", bad);
+
+    buf_free(&meta); buf_free(&bins); buf_free(&txt);
+    buf_free(&good);
+    table_free(&t);
+}
+
 /* A stream index that lies: sizes past the file, a deep header, and so on. */
 static void stream_lies(const Buf *good)
 {
@@ -533,6 +678,7 @@ int main(void)
         }
     }
     lying_headers();
+    derived_lies();
 
     buf_free(&canon);
     buf_free(&ppz1);

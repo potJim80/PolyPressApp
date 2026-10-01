@@ -594,6 +594,7 @@ static int cmd_info(int argc, char **argv)
     const char *kind = NULL;
     if (blob.len >= 4) {
         if (!memcmp(blob.data, PPZ_MAGIC, 4))             kind = "modelled";
+        else if (!memcmp(blob.data, PPZ_MAGIC_DERIVED, 4)) kind = "modelled, with derived columns";
         else if (!memcmp(blob.data, PPZ_MAGIC_V0, 4))     kind = "modelled (written by an older version)";
         else if (!memcmp(blob.data, PPZ_MAGIC_RAW_XZ, 4)) kind = "plain xz -- no modelling helped on this table";
         else if (!memcmp(blob.data, PPZ_MAGIC_RAW_BZ, 4)) kind = "plain bzip2 -- no modelling helped on this table";
@@ -611,7 +612,8 @@ static int cmd_info(int argc, char **argv)
     const char *kn[4] = { "dict", "num", "text", "grp" };
     size_t reordered = 0;
     Js *meta = NULL;
-    if (!memcmp(blob.data, PPZ_MAGIC, 4) || !memcmp(blob.data, PPZ_MAGIC_V0, 4)) {
+    if (!memcmp(blob.data, PPZ_MAGIC, 4) || !memcmp(blob.data, PPZ_MAGIC_V0, 4)
+        || !memcmp(blob.data, PPZ_MAGIC_DERIVED, 4)) {
         size_t ml = ((size_t)blob.data[4] << 24) | ((size_t)blob.data[5] << 16) |
                     ((size_t)blob.data[6] << 8) | blob.data[7];
         Buf mb;
@@ -629,6 +631,9 @@ static int cmd_info(int argc, char **argv)
         }
     }
     const Js *groups = js_get(meta, "groups");
+    /* [[column, [sources]], ...], already validated by the decode above */
+    const Js *derive = js_get(meta, "derive");
+    size_t nderive = derive && derive->kind == JS_ARR ? derive->count : 0;
     char r1[32], h1[32];
 
     if (a.json) {
@@ -659,7 +664,21 @@ static int cmd_info(int argc, char **argv)
             }
             buf_putc(&b, ']');
         }
-        buf_put(&b, "], \"names\": [", 13);
+        buf_put(&b, "], \"derived\": {", 15);
+        for (size_t e = 0; e < nderive; e++) {
+            const Js *it = &derive->items[e];
+            if (e) buf_put(&b, ", ", 2);
+            long dc = js_int(&it->items[0], 0);
+            ppz_json_str(&b, t.names[dc], strlen(t.names[dc]));
+            buf_put(&b, ": [", 3);
+            for (size_t k = 0; k < it->items[1].count; k++) {
+                long sc = js_int(&it->items[1].items[k], 0);
+                if (k) buf_put(&b, ", ", 2);
+                ppz_json_str(&b, t.names[sc], strlen(t.names[sc]));
+            }
+            buf_putc(&b, ']');
+        }
+        buf_put(&b, "}, \"names\": [", 13);
         for (size_t j = 0; j < t.ncols; j++) {
             if (j) buf_put(&b, ", ", 2);
             ppz_json_str(&b, t.names[j], strlen(t.names[j]));
@@ -692,6 +711,14 @@ static int cmd_info(int argc, char **argv)
                 printf("\n");
             }
             printf("reordered   %zu columns sorted by a parent\n", reordered);
+            for (size_t e = 0; e < nderive; e++) {
+                const Js *it = &derive->items[e];
+                long dc = js_int(&it->items[0], 0);
+                printf("%s%s <- ", e ? "            " : "derived     ", t.names[dc]);
+                for (size_t k = 0; k < it->items[1].count; k++)
+                    printf("%s%s", k ? ", " : "", t.names[js_int(&it->items[1].items[k], 0)]);
+                printf("\n");
+            }
         }
     }
     js_free(meta);
