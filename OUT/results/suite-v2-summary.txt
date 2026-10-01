@@ -1,0 +1,180 @@
+==========================================================================
+Polypress benchmark suite (suite-v2)
+==========================================================================
+39 datasets measured, 266,531,585 bytes of CSV, 1,704,751 rows, 5962 columns in total
+round-trip: 39 of 39 datasets decoded back to the exact input
+peak RSS across the whole sweep: 1134 MB
+
+1. Polypress vs the best competitor on each table
+-------------------------------------------------
+wins 30 of 39 (77%)
+margin over the best other tool: median 1.17x, best 4.22x, worst 0.91x
+whole corpus: 21,691,824 B vs 26,736,431 B, 1.23x smaller in aggregate
+compression ratio vs raw CSV: median 11.00x, best 225.78x, worst 1.30x
+
+  strongest 12:
+  dataset                                            vs best  vs csv  best other
+  s_anticorrelated.csv                                 4.22x  36.90x  7z lzma2 -mx9
+  l_nndss_full.csv                                     2.26x 217.93x  orc+zstd
+  l_nndss_8mb.csv                                      2.22x 225.78x  orc+zstd
+  m_nndss_2mb.csv                                      2.14x 166.91x  orc+zstd
+  l_seattle_fire911.csv                                2.10x  24.37x  xz -9e
+  m_weather_hourly.csv                                 2.05x  11.28x  7z ppmd o12
+  l_iot_sensor.csv                                     2.01x  17.32x  parquet+brotli
+  s_treasury_yields.csv                                1.85x  13.42x  7z lzma2 -mx9
+  xs_nndss_500.csv                                     1.71x  34.95x  7z ppmd o12
+  xs_yields_400.csv                                    1.69x  10.04x  7z lzma2 -mx9
+  l_chicago_crimes.csv                                 1.53x  15.40x  xz -9e
+  m_weather_wide.csv                                   1.53x   8.21x  7z ppmd o6
+
+  weakest 12 (losses first):
+  dataset                                            vs best  vs csv  best other
+  s_shuffled_cats.csv                                  1.02x   5.25x  7z ppmd o6
+  xs_survey_200.csv                                    1.01x  11.00x  7z ppmd o6
+  s_mixed_types.csv                                    1.00x   6.62x  orc+zstd
+  s_permits_1k.csv                                     0.98x   7.62x  7z ppmd o16
+  m_wide_random.csv                                    0.97x   2.39x  7z ppmd o12
+  l_weblog_big.csv                                     0.97x  15.95x  7z ppmd o6
+  m_uuid_keys.csv                                      0.97x   2.24x  orc+zstd
+  m_base64_blob.csv                                    0.96x   1.30x  orc+zstd
+  s_high_precision.csv                                 0.96x   2.27x  7z ppmd o12
+  s_weblog.csv                                         0.95x  13.76x  7z ppmd o16
+  m_random_text.csv                                    0.92x   1.33x  orc+zstd
+  m_financial_shuffled.csv                             0.91x   4.42x  7z ppmd o12
+
+  every loss, in full (9 of 39):
+  m_financial_shuffled.csv                           lost to 7z ppmd o12      by 10.2%
+  m_random_text.csv                                  lost to orc+zstd         by 9.0%
+  s_weblog.csv                                       lost to 7z ppmd o16      by 5.3%
+  s_high_precision.csv                               lost to 7z ppmd o12      by 4.2%
+  m_base64_blob.csv                                  lost to orc+zstd         by 4.0%
+  m_uuid_keys.csv                                    lost to orc+zstd         by 3.1%
+  l_weblog_big.csv                                   lost to 7z ppmd o6       by 3.0%
+  m_wide_random.csv                                  lost to 7z ppmd o12      by 2.9%
+  s_permits_1k.csv                                   lost to 7z ppmd o16      by 2.1%
+
+2. Head to head, one competitor at a time
+-----------------------------------------
+  competitor                  n   ppz wins     median      worst
+  7z lzma2 -mx9              39      39/39      1.51x      1.00x
+  7z ppmd o12                39      33/39      1.20x      0.91x
+  7z ppmd o16                39      33/39      1.23x      0.91x
+  7z ppmd o6                 39      34/39      1.25x      0.96x
+  brotli -q11                39      37/39      1.41x      0.98x
+  bzip2 -9                   39      37/39      1.42x      0.97x
+  feather+lz4                37      37/37      5.93x      1.36x
+  feather+zstd               37      37/37      3.14x      1.01x
+  gzip -9                    39      38/39      2.25x      0.99x
+  lz4 -9                     39      39/39      2.69x      1.30x
+  orc+snappy                 36      36/36      3.28x      1.05x
+  orc+zlib                   36      33/36      1.99x      0.94x
+  orc+zstd                   36      32/36      1.94x      0.92x
+  parquet+brotli             37      36/37      1.88x      0.99x
+  parquet+gzip               37      37/37      2.12x      1.02x
+  parquet+snappy             37      37/37      2.68x      1.05x
+  parquet+zstd               37      36/37      2.02x      0.99x
+  xz -9e                     39      38/39      1.44x      1.00x
+  zip -9                     39      38/39      2.25x      0.99x
+  zstd -19                   39      37/39      1.52x      0.98x
+  zstd -22                   39      37/39      1.46x      0.98x
+  zstd -3                    39      37/39      2.24x      0.98x
+
+3. Like for like: the same finisher on both sides
+-------------------------------------------------
+Polypress finishes with xz. pyarrow answers 'Unsupported
+compression: xz', so Parquet cannot. These rows strip that
+advantage out by re-finishing the same modelled streams.
+  polypress+zstd     vs parquet+zstd        37/37 wins   median   1.92x  worst   1.01x
+  polypress+zstd     vs orc+zstd            31/36 wins   median   1.80x  worst   0.89x
+  polypress+zstd     vs feather+zstd        37/37 wins   median   2.95x  worst   1.03x
+  polypress+zstd     vs zstd -22            36/39 wins   median   1.43x  worst   0.95x
+  polypress+brotli   vs parquet+brotli      37/37 wins   median   1.79x  worst   1.01x
+  polypress+brotli   vs brotli -q11         38/39 wins   median   1.44x  worst   1.00x
+
+4. Did the columnar formats reproduce the data exactly?
+-------------------------------------------------------
+Parquet read with type inference gave back the exact printed text
+on 19 datasets, changed it on 18, and could not be checked on 2.
+Where it changed the text, part of any Parquet size win is
+discarded formatting rather than compression -- '1.50' becoming
+1.5 is a smaller file for a reason that is not the codec.
+  changed: xs_yields_400.csv, xs_noaa_gsoy_ord.csv, xs_quakes_300.csv, s_mixed_types.csv, s_treasury_yields.csv, s_weblog.csv, s_high_precision.csv, s_permits_1k.csv, m_random_floats.csv, m_quakes.csv, m_weather_wide.csv, m_weather_hourly.csv, l_weblog_big.csv, l_iot_sensor.csv, l_seattle_fire911.csv, l_chicago_permits.csv, l_nyc_311.csv, l_wa_ev_population.csv
+
+5. Speed, indicative only
+-------------------------
+One timing pass per codec, taken while the sweep had the machine
+to itself but with no attempt to quiet it. Sizes are exact and
+reproducible; these numbers are not. Read them for order of
+magnitude and nothing finer.
+
+And they are NOT measured on the same basis, which matters more
+than the noise does. The general-purpose tools are handed the raw
+CSV bytes, because that is what compressing a CSV actually is.
+Parquet, ORC, Feather and Polypress are handed an already-parsed
+table, so none of them is charged for reading the CSV -- the cost
+every one of them would really pay. Read the columnar rows and the
+polypress row against each other; read either against gzip only as
+a rough guide.
+  codec                  enc MB/s     dec MB/s
+  7z lzma2 -mx9               5.1        129.4
+  7z ppmd o12                19.9         18.8
+  7z ppmd o16                18.2         16.6
+  7z ppmd o6                 36.6         34.3
+  brotli -q11                 1.0        204.7
+  bzip2 -9                   21.0         71.2
+  feather+lz4               806.9       2688.0
+  feather+zstd              524.7       1030.4
+  gzip -9                    25.4        534.4
+  lz4 -9                     40.6        309.8
+  orc+snappy                366.2       1183.9
+  orc+zlib                  133.5        484.8
+  orc+zstd                  303.8        848.2
+  parquet+brotli              1.7        367.3
+  parquet+gzip               66.9        535.8
+  parquet+snappy            306.3         81.5
+  parquet+zstd               20.0        811.5
+  polypress                   8.5         76.5
+  xz -9e                      4.3        102.5
+  zip -9                     24.4        187.0
+  zstd -19                    4.2        362.6
+  zstd -22                    3.2        345.3
+  zstd -3                   121.0        329.3
+
+6. By tier and by form
+----------------------
+size tiers
+  group                     n     wins med vs best agg vs best med vs csv agg vs csv
+  xs                        6      6/6       1.13x       1.16x      9.36x     6.61x
+  s                         8      5/8       1.01x       1.07x     10.52x     6.30x
+  m                        15    10/15       1.15x       1.08x      5.81x     4.20x
+  l                        10     9/10       1.47x       1.41x     21.85x    21.42x
+
+forms (a file carries several, so these overlap)
+  group                     n     wins med vs best agg vs best med vs csv agg vs csv
+  categorical              19    16/19       1.20x       1.29x     19.32x    20.12x
+  geo                       9      8/9       1.30x       1.37x     15.40x    18.30x
+  hostile                  10     5/10       0.99x       0.98x      2.50x     2.12x
+  ids                       7      4/7       1.18x       1.38x     15.40x    15.91x
+  ladder                    4      4/4       2.18x       2.23x    192.42x   213.10x
+  matrix                    4      4/4       1.77x       1.81x     10.66x    10.02x
+  narrow                    7      4/7       1.00x       1.27x      6.62x     7.92x
+  numeric                  15    12/15       1.16x       1.21x      6.26x     5.84x
+  redundant                 2      2/2       1.25x       1.29x     12.79x    16.08x
+  scientific                4      4/4       1.07x       1.10x      5.98x     5.99x
+  shuffled                  2      1/2       0.96x       0.93x      4.84x     4.63x
+  sorted                    2      2/2       1.15x       1.15x      5.65x     5.66x
+  sparse                   11    10/11       1.20x       1.25x     17.32x    20.87x
+  survey                    2      2/2       1.10x       1.19x     18.30x    25.42x
+  text                     10     5/10       1.01x       1.19x     14.86x    12.59x
+  timestamps               13    10/13       1.53x       1.49x     13.42x    15.51x
+  unicode                   1      1/1       1.19x       1.19x     20.74x    20.74x
+  wide                      5      3/5       1.04x       1.01x      7.62x     7.00x
+
+the size ladder -- ONE table at several sizes, not several results
+  file                      csv bytes    vs csv   vs best  best other
+  xs_nndss_500.csv             69,899    34.95x     1.71x  7z ppmd o12
+  m_nndss_2mb.csv           1,999,914   166.91x     2.14x  orc+zstd
+  l_nndss_8mb.csv           7,999,964   225.78x     2.22x  orc+zstd
+  l_nndss_full.csv         20,762,998   217.93x     2.26x  orc+zstd
+
+wrote ../OUT/results/suite-v2-results.csv

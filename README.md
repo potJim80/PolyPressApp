@@ -207,31 +207,39 @@ helped.
 
 ```bash
 cd work
-./benchmarks/run_suite.sh    # build, sweep, report -- ~30 min
+./benchmarks/run_suite.sh    # build, sweep, report -- ~20 min
 ```
 
-| | suite v1, 2026-08-28 |
-|---|---|
-| **Round-trips exactly** | **39 of 39** |
-| **Smaller than the best of 22 competitors** | **30 of 39 (77%)** |
-| Margin over the best other tool | median **1.16x**, best 4.22x, worst 0.91x |
-| Whole suite, aggregate | 22,306,557 B vs 26,736,431 B — **1.20x smaller** |
-| Compression vs raw CSV | median **11.09x**, best 225.78x, worst 1.32x |
+| | suite v2, 2026-10-01 | suite v1, 2026-08-28 |
+|---|---|---|
+| **Round-trips exactly** | **39 of 39** | 39 of 39 |
+| **Smaller than the best of 22 competitors** | **30 of 39 (77%)** | 30 of 39 |
+| Margin over the best other tool | median **1.17x**, best 4.22x, worst 0.91x | 1.16x, 4.22x, 0.91x |
+| Whole suite, aggregate | 21,691,824 B vs 26,736,431 B — **1.23x smaller** | 22,306,557 B — 1.20x |
+| Compression vs raw CSV | median **11.00x**, best 225.78x, worst 1.30x | 11.09x, 225.78x, 1.32x |
+| Polypress encode time, whole suite, one thread | **35 s** | 152 s |
+
+v1 was the Python encoder with its trial encodes and the never-worse-than-xz
+check; v2 is the one-pass C program (2026-09-29) plus derived columns
+(2026-10-01). One pass costs about 2.5% in size, derived columns take back
+5.1%, and the encode is 4.3x faster. The geo tables gained most (median 1.13x
+→ 1.30x over the best competitor); matrix lost a little (1.85x → 1.77x) to
+one pass.
 
 The breakdown is the point, not that line. **Never quote the aggregate without
 it:**
 
 | form | n | wins | median vs best | median vs CSV |
 |---|---|---|---|---|
-| matrix | 4 | **4/4** | **1.85x** | 11.04x |
-| timestamps | 13 | 10/13 | 1.39x | 13.76x |
+| matrix | 4 | **4/4** | **1.77x** | 10.66x |
+| timestamps | 13 | 10/13 | 1.53x | 13.42x |
+| geo | 9 | 8/9 | 1.30x | 15.40x |
 | sparse | 11 | 10/11 | 1.20x | 17.32x |
-| categorical | 19 | 16/19 | 1.20x | 16.51x |
+| categorical | 19 | 16/19 | 1.20x | 19.32x |
 | numeric | 15 | 12/15 | 1.16x | 6.26x |
-| geo | 9 | 8/9 | 1.13x | 13.93x |
-| **text** | 10 | **5/10** | **1.00x** | 14.86x |
-| **wide** | 5 | **3/5** | **1.02x** | 7.51x |
-| **hostile** | 10 | **5/10** | **1.00x** | 2.51x |
+| **text** | 10 | **5/10** | **1.01x** | 14.86x |
+| **wide** | 5 | **3/5** | **1.04x** | 7.62x |
+| **hostile** | 10 | **5/10** | **0.99x** | 2.50x |
 
 A file carries several tags, so the rows overlap. And the four `nndss` rungs
 are **one table at four sizes** — a scaling axis, not four wins; the report
@@ -308,8 +316,9 @@ stack" was measured by swapping the coder for the *whole* archive. It holds for
 the modelled numeric streams and fails for the residual text pile, which is
 50–80% of the archive on precisely the tables we lose.
 
-Full record: `../OUT/results/suite-v1-summary.txt` (all nine losses, the
-per-competitor table, speeds), `../OUT/results/suite-v1-results.csv`,
+Full record: `../OUT/results/suite-v2-summary.txt` (all nine losses, the
+per-competitor table, speeds), `../OUT/results/suite-v2-results.csv`
+(v1: `suite-v1-*`),
 `../OUT/results/competitor-ppmd.txt`. The measurement rules are in
 `benchmarks/PROTOCOL.md`, which is the authority for any number quoted here.
 

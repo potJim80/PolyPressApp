@@ -134,7 +134,7 @@ def refinish(blob: bytes, comp) -> int:
         return 4 + len(comp(lzma.decompress(blob[4:], **XZ)))
     if head == b"PPZB":
         return 4 + len(comp(bz2.decompress(blob[4:])))
-    if head not in (b"PPZ1", b"FAST"):
+    if head not in (b"PPZ1", b"PPZ2", b"FAST"):
         raise ValueError("not a polypress archive")
     ml = int.from_bytes(blob[4:8], "big")
     bl = int.from_bytes(blob[8:12], "big")
