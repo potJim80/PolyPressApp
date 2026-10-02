@@ -284,6 +284,14 @@ setup is not the cost; a probe's setup is ~0.2 ms). xz depth 512 -> 128:
 preset 9 without EXTREME: +0.13% size, -13% time. xz time is the optimal
 parser's pricing, not the match search; none of these was adopted.
 
+Column-aware xz, first measurement (2026-10-01, suite raw streams with column
+boundaries): one xz stream per column instead of one per archive is WORSE --
+numbers +0.85%, text +1.47%; even with the best lc/lp/pb picked per column,
+numbers -0.27%, text +0.78%. Matches and statistics shared across columns
+are worth more than separating them. Column-awareness only has room left
+inside the coder (separate literal statistics, one shared match window),
+which needs our own coder; unmeasured.
+
 ## The measured/unmeasured trap — read this before optimising
 
 Three separate "obviously good" changes were built, measured, and reverted:

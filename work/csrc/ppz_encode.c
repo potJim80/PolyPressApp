@@ -617,7 +617,6 @@ typedef struct {
     int      group_idx;
     size_t  *ex_pos;    /* rows this numeric column could not represent */
     size_t   nex;       /* the strings themselves are read back from the table */
-    int      ex_prom;   /* could the lenient form possibly win? nominator only */
 } ColPlan;
 
 static void plan_free(ColPlan *p, size_t n)
@@ -631,7 +630,7 @@ static void plan_free(ColPlan *p, size_t n)
     free(p);
 }
 
-static ColPlan *classify(const Table *t, int lenient)
+static ColPlan *classify(const Table *t)
 {
     size_t nc = t->ncols, nr = t->nrows;
     ColPlan *plan = calloc(nc ? nc : 1, sizeof(ColPlan));
@@ -648,7 +647,7 @@ static ColPlan *classify(const Table *t, int lenient)
             plan[j].dec = dec;
             continue;
         }
-        if (lenient) {
+        {
             size_t *expos = NULL, nex = 0;
             int64_t *lax = numeric_column_lenient(t, j, &dec, &expos, &nex);
             if (lax) {
@@ -657,8 +656,14 @@ static ColPlan *classify(const Table *t, int lenient)
                 plan[j].dec = dec;
                 plan[j].ex_pos = expos;
                 plan[j].nex = nex;
-                plan[j].ex_prom = lenient_promising(t, j, lax, nr, expos, nex);
-                continue;
+                /* Kept as numbers only when that could win for THIS column;
+                 * otherwise it falls through to dictionary or text. Until
+                 * 2026-10-01 the screen was one verdict for the whole table,
+                 * and one promising column dragged every lenient column in:
+                 * a CDC vaccination table came out 3.77 MB instead of 2.73. */
+                if (lenient_promising(t, j, lax, nr, expos, nex)) continue;
+                free(lax); free(expos);
+                plan[j].ints = NULL; plan[j].ex_pos = NULL; plan[j].nex = 0;
             }
         }
         /* dictionary if the distinct count is small enough */
@@ -1922,26 +1927,6 @@ fail:
 
 /* ------------------------------------------------------------ the encoder */
 
-/* Does this table have lenient columns at all, and could any of them win?
- * A column that is numeric apart from a few cells (blanks, "-0.0") can be
- * stored as numbers plus exceptions -- worth 41% of the Treasury yield curve
- * -- or left as a dictionary/text column. This cheap screen decides; it is
- * one-sided (it over-estimates the alternative), so it declines only cases
- * that could not have won. It reads the lenient plan, which the encoder then
- * uses as is when the answer is yes -- until 2026-10-01 the plan was thrown
- * away here and built again from scratch. */
-static void lenient_verdict(const ColPlan *plan, size_t nc, int *any_lax, int *promising)
-{
-    *any_lax = 0;
-    *promising = 0;
-    for (size_t j = 0; j < nc; j++) {
-        if (plan[j].nex) {
-            *any_lax = 1;
-            if (plan[j].ex_prom) *promising = 1;
-        }
-    }
-}
-
 /* One pass. Mahdi's rule, 2026-09-29: "one algorithm to reorder, one
  * compression algorithm" -- no encoding the table two ways and keeping the
  * smaller, and no checking the result against plain xz afterwards.
@@ -1952,7 +1937,8 @@ static void lenient_verdict(const ColPlan *plan, size_t nc, int *any_lax, int *p
  * CSV to guarantee "never larger than plain xz". Together: 2.3x the time
  * (3x on one core, where the CSV check alone was 69%) for 2.5% smaller
  * output. The fixed rules below were each the best single choice measured:
- * lenient columns when the screen says they can win, 2D groups on, the
+ * lenient columns where the screen says they can win (per column), 2D
+ * groups on, the
  * alphabets front-coded, text parents chosen by probe. Still smaller than
  * plain xz -9e on every suite table but one, where it ties.
  *
@@ -1976,16 +1962,8 @@ int ppz_encode(const Table *t, Buf *out)
     const Table *src = nd ? &dt : t;
     ppz_trace("derived columns", tr);
     tr = ppz_now();
-    /* Lenient columns (numbers apart from a few odd cells) are kept as
-     * numbers only when the screen says one could win; otherwise the table
-     * is classified strictly. */
-    int any_lax = 0, promising = 0;
-    ColPlan *plan = classify(src, 1);
-    if (plan) {
-        lenient_verdict(plan, src->ncols, &any_lax, &promising);
-        if (any_lax && !promising) { plan_free(plan, src->ncols); plan = classify(src, 0); }
-    }
-    ppz_trace("classify + lenient screen", tr);
+    ColPlan *plan = classify(src);
+    ppz_trace("classify", tr);
     tr = ppz_now();
     int rc = plan ? encode_modelled(src, out, plan, nd ? &dmeta : NULL) : -1;
     ppz_trace("== encode", tr);
