@@ -1349,7 +1349,7 @@ static void pile_task(void *arg)
     Buf txt;
     buf_init(&txt);
     build_pile(j->sg, j->sgn, j->nsg, j->has_nl, j->front, &txt, j->sm);
-    j->ok = !ppz_lzma_compress(txt.data, txt.len, &j->z);
+    j->ok = !ppz_lzma_compress_as(txt.data, txt.len, &j->z, PPZ_XZ_TEXT);
     buf_free(&txt);
 }
 
@@ -1358,7 +1358,7 @@ typedef struct { const Buf *in; Buf *out; int ok; } BinJob;
 static void bins_task(void *arg)
 {
     BinJob *j = arg;
-    j->ok = !ppz_lzma_compress(j->in->data, j->in->len, j->out);
+    j->ok = !ppz_lzma_compress_as(j->in->data, j->in->len, j->out, PPZ_XZ_INTS);
 }
 
 static void build_pile(Str **sg, const size_t *sgn, size_t nsg,

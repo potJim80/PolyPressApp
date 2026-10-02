@@ -187,8 +187,26 @@ void table_write_canonical(const Table *t, Buf *out)
 
 int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out)
 {
+    return ppz_lzma_compress_as(in, n, out, PPZ_XZ_PLAIN);
+}
+
+/* LZMA's three layout settings per stream: literal context bits (lc),
+ * literal and match position bits (lp, pb). The decoder needs none of
+ * them -- LZMA2 carries them in its chunk headers -- so they are free to
+ * choose and every archive stays readable by every build. Measured
+ * 2026-10-01 over the 39 suite tables' raw streams (xz -9e, total bytes):
+ *   numbers  lc3 lp0 pb2 (xz default) 11,482,660 -> lc0 lp2 pb2 11,228,268 (-2.2%)
+ *   text     lc3 lp0 pb2              10,189,881 -> lc4 lp0 pb1 10,177,320 (-0.1%)
+ * The packed numbers are fixed-width, so position (lp/pb) predicts better
+ * than the previous byte (lc). Best per table instead would add only 0.6%
+ * on the numbers and needs a trial encode; splitting dictionary ids from
+ * packed integers into two streams, 0.4%. Neither was worth it. */
+int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind)
+{
     lzma_options_lzma opt;
     if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
+    if (kind == PPZ_XZ_INTS) { opt.lc = 0; opt.lp = 2; opt.pb = 2; }
+    else if (kind == PPZ_XZ_TEXT) { opt.lc = 4; opt.lp = 0; opt.pb = 1; }
     lzma_filter filters[2] = {
         { LZMA_FILTER_LZMA2, &opt },
         { LZMA_VLI_UNKNOWN, NULL },

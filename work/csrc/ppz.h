@@ -153,8 +153,11 @@ void ppz_stream_info_free(StreamInfo *info);
 
 /* ------------------------------------------------------------------- lzma */
 
-/* Raw LZMA2 at preset 9|EXTREME, the one compressor every stream uses. */
-int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);
+/* Raw LZMA2 at preset 9|EXTREME, the one compressor every stream uses,
+ * with layout settings tuned to what the stream holds (see ppz_util.c). */
+typedef enum { PPZ_XZ_PLAIN, PPZ_XZ_INTS, PPZ_XZ_TEXT } PpzXz;
+int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);   /* PLAIN */
+int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind);
 
 /* Compressed length at preset 1, used only to choose between two orderings of
  * the same column. Nothing it produces is stored; it exists because the real
