@@ -573,6 +573,61 @@ static void derived_lies(void)
     table_free(&t);
 }
 
+/* A numeric column sorted by a parent: the parent must be a dictionary
+ * column that exists, decoded first. */
+static void nump_lies(void)
+{
+    h_section("lying headers: numeric parents");
+    Table t;
+    TB b;
+    tb_start(&b, 3, (const char *const[]){ "day", "place", "count" });
+    for (int day = 0; day < 40; day++)
+        for (int pl = 0; pl < 50; pl++) {
+            tb_cellf(&b, "d%02d", day);
+            tb_cellf(&b, "p%02d", pl);
+            tb_cellf(&b, "%d", 1000 * (pl + 1) + day * (pl % 5 + 1));
+        }
+    tb_finish(&b, &t);
+    Buf good;
+    buf_init(&good);
+    ppz_encode(&t, &good);
+    Buf meta, bins, txt;
+    if (!CHECK(split(&good, &meta, &bins, &txt) == 0, "nump archive does not split")) {
+        buf_free(&good); table_free(&t); return;
+    }
+    const char *at = memmem(meta.data, meta.len, "\"parent\":", 9);
+    const char *kind = memmem(meta.data, meta.len, "\"kind\":\"nump\"", 13);
+    if (!CHECK(kind && at, "the sample has no numeric parent: %.*s", (int)meta.len, meta.data)) {
+        buf_free(&meta); buf_free(&bins); buf_free(&txt); buf_free(&good); table_free(&t); return;
+    }
+    mutate_all("PPZ2", &good);
+    truncations("PPZ2", &good, &t);
+    /* the last "parent" key is the nump column's own */
+    const char *last = NULL;
+    for (const char *p = (const char *)meta.data; (p = memmem(p, meta.len - (size_t)(p - (char *)meta.data), "\"parent\":", 9)); p++)
+        last = p;
+    char from[32];
+    snprintf(from, sizeof(from), "%.11s", last);
+    int bad = 0;
+    struct { const char *name, *to; } L[] = {
+        { "parent out of range", "\"parent\":9," },
+        { "parent negative",     "\"parent\":-1," },
+        { "parent is itself",    "\"parent\":2," },
+        { "parent is a string",  "\"parent\":\"1\"," },
+    };
+    for (size_t k = 0; k < N_OF(L); k++) bad += !lie(L[k].name, &meta, from, L[k].to, &bins, &txt);
+    Buf m2;
+    if (edit(&meta, ",\"parent\":", ",\"x\":", &m2)) { /* first parent key, wherever it is */
+        Buf arc;
+        rebuild((const char *)m2.data, m2.len, &bins, &txt, &arc);
+        bad += !survive("PPZ2", "a parent key renamed", arc.data, arc.len);
+        buf_free(&arc); buf_free(&m2);
+    }
+    printf("   numeric-parent lies: %d did not survive\n", bad);
+    buf_free(&meta); buf_free(&bins); buf_free(&txt); buf_free(&good);
+    table_free(&t);
+}
+
 /* A stream index that lies: sizes past the file, a deep header, and so on. */
 static void stream_lies(const Buf *good)
 {
@@ -641,6 +696,7 @@ int main(void)
     }
     lying_headers();
     derived_lies();
+    nump_lies();
 
     buf_free(&one);
     table_free(&t);

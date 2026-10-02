@@ -528,81 +528,6 @@ static int str_cmp(const void *pa, const void *pb);
 static int str_eq(Str a, Str b);
 static void pack_ints(const int64_t *a, size_t n, Buf *out);
 
-/* Could storing this column as numbers possibly beat leaving it alone?
- *
- * One-sided by construction. The alternative is deliberately OVER-estimated --
- * it charges for the dictionary's alphabet and ignores the reorder parent that
- * would make the column cheaper still -- so `numeric >= estimate` implies
- * `numeric >= real`, and declining on that basis cannot discard a win. */
-static int lenient_promising(const Table *t, size_t col, const int64_t *a,
-                             size_t n, const size_t *expos, size_t nex)
-{
-    int k = diff_order(a, n);
-    size_t dn = 0;
-    int64_t *d = k ? diff_n(a, n, k, &dn) : NULL;
-    Buf pb;
-    buf_init(&pb);
-    pack_ints(k ? d : a, k ? dn : n, &pb);
-    size_t num = ppz_lzma_probe_len(pb.data, pb.len);
-    buf_free(&pb);
-    free(d);
-
-    int64_t *gaps = malloc((nex ? nex : 1) * sizeof(int64_t));
-    if (!gaps) return 1;                 /* cannot screen -> let the guard run */
-    size_t prev = 0;
-    for (size_t i = 0; i < nex; i++) {
-        gaps[i] = (int64_t)expos[i] - (int64_t)prev;
-        prev = expos[i];
-    }
-    buf_init(&pb);
-    pack_ints(gaps, nex, &pb);
-    num += ppz_lzma_probe_len(pb.data, pb.len);
-    buf_free(&pb);
-    free(gaps);
-
-    /* the alternative: the same distinct-count test classify() applies */
-    size_t limit = n > 2 ? n : 2;
-    size_t cap = limit / 2 < DICT_MAX ? limit / 2 : DICT_MAX;
-    Str *tmp = NULL;
-    int64_t *dids = NULL;
-    size_t u = 0;
-    int dict = build_dict(t->cells + col, t->ncols, n, cap, &tmp, &u, &dids);
-    if (dict < 0) return 1;              /* cannot screen -> let the guard run */
-    size_t alt;
-    if (dict) {
-        int w = u <= 256 ? 1 : (u <= 65536 ? 2 : 4);
-        Buf idb;
-        buf_init(&idb);
-        for (size_t i = 0; i < n; i++) {
-            uint64_t v = (uint64_t)dids[i];
-            for (int b = 0; b < w; b++)
-                buf_putc(&idb, (char)((v >> (8 * b)) & 0xFF));
-        }
-        alt = ppz_lzma_probe_len(idb.data, idb.len);
-        buf_free(&idb);
-        Buf ab;
-        buf_init(&ab);
-        for (size_t i = 0; i < u; i++) {
-            if (i) buf_putc(&ab, '\n');
-            buf_put(&ab, tmp[i].p, tmp[i].n);
-        }
-        alt += ppz_lzma_probe_len(ab.data, ab.len);
-        buf_free(&ab);
-    } else {
-        Buf cb;
-        buf_init(&cb);
-        for (size_t i = 0; i < n; i++) {
-            if (i) buf_putc(&cb, '\n');
-            Str s = table_at(t, i, col);
-            buf_put(&cb, s.p, s.n);
-        }
-        alt = ppz_lzma_probe_len(cb.data, cb.len);
-        buf_free(&cb);
-    }
-    free(tmp);
-    free(dids);
-    return num < alt;
-}
 
 typedef struct {
     Kind     kind;
@@ -630,11 +555,123 @@ static void plan_free(ColPlan *p, size_t n)
     free(p);
 }
 
+#define NUMPAR_SAMPLE 20000           /* rows a nomination looks at */
+static size_t num_probe(const int64_t *a, size_t n, const size_t *perm);
+static uint64_t num_bits(int64_t *a, size_t n, int64_t *tmp);
+static size_t *argsort_ids(const int64_t *v, size_t n, size_t k);
+
+/* Could storing this column as numbers possibly beat leaving it alone?
+ *
+ * One-sided by construction. The alternative is deliberately OVER-estimated --
+ * it charges for the dictionary's alphabet and ignores the reorder parent that
+ * would make the column cheaper still -- so `numeric >= estimate` implies
+ * `numeric >= real`, and declining on that basis cannot discard a win. */
+
+/* `p` is the column's own plan from the first pass -- its dictionary or
+ * text form, the alternative -- and `plan` the rest of the table, whose
+ * dictionary columns the numbers could be sorted by. */
+static int lenient_promising(const Table *t, size_t col, const int64_t *a,
+                             size_t n, const size_t *expos, size_t nex,
+                             const ColPlan *plan, size_t nc)
+{
+    /* the numbers: in file order, or sorted by the dictionary column whose
+     * order makes their differences cheapest (estimated on a sample, then
+     * probed) -- whichever is smaller */
+    size_t num = num_probe(a, n, NULL);
+    size_t step = n / NUMPAR_SAMPLE + 1, sn = (n + step - 1) / step;
+    int64_t *v = malloc((sn ? sn : 1) * sizeof(int64_t));
+    int64_t *tmp = malloc((sn ? sn : 1) * sizeof(int64_t));
+    int64_t *sid = malloc((sn ? sn : 1) * sizeof(int64_t));
+    if (v && tmp && sid) {
+        for (size_t i = 0; i < sn; i++) v[i] = a[i * step];
+        uint64_t best = num_bits(v, sn, tmp);
+        long bd = -1;
+        for (size_t d = 0; d < nc; d++) {
+            if (d == col || plan[d].kind != K_DICT || plan[d].nalpha < 2) continue;
+            for (size_t i = 0; i < sn; i++) sid[i] = plan[d].ids[i * step];
+            size_t *perm = argsort_ids(sid, sn, plan[d].nalpha);
+            if (!perm) continue;
+            for (size_t i = 0; i < sn; i++) v[i] = a[perm[i] * step];
+            free(perm);
+            uint64_t c = num_bits(v, sn, tmp);
+            if (c < best) { best = c; bd = (long)d; }
+        }
+        if (bd >= 0) {
+            size_t *perm = argsort_ids(plan[bd].ids, n, plan[bd].nalpha);
+            size_t s2 = perm ? num_probe(a, n, perm) : (size_t)-1;
+            if (s2 < num) num = s2;
+            free(perm);
+        }
+    }
+    free(v); free(tmp); free(sid);
+
+    int64_t *gaps = malloc((nex ? nex : 1) * sizeof(int64_t));
+    if (!gaps) return 1;
+    size_t prev = 0;
+    for (size_t i = 0; i < nex; i++) {
+        gaps[i] = (int64_t)expos[i] - (int64_t)prev;
+        prev = expos[i];
+    }
+    Buf pb;
+    buf_init(&pb);
+    pack_ints(gaps, nex, &pb);
+    num += ppz_lzma_probe_len(pb.data, pb.len);
+    buf_free(&pb);
+    free(gaps);
+
+    /* the alternative, from the first pass: dictionary ids and alphabet in
+     * file order, or the cells as text */
+    const ColPlan *p = &plan[col];
+    size_t alt;
+    if (p->kind == K_DICT) {
+        int w = p->nalpha <= 256 ? 1 : (p->nalpha <= 65536 ? 2 : 4);
+        Buf idb;
+        buf_init(&idb);
+        for (size_t i = 0; i < n; i++) {
+            uint64_t x = (uint64_t)p->ids[i];
+            for (int b = 0; b < w; b++) buf_putc(&idb, (char)((x >> (8 * b)) & 0xFF));
+        }
+        alt = ppz_lzma_probe_len(idb.data, idb.len);
+        buf_free(&idb);
+        Buf ab;
+        buf_init(&ab);
+        for (size_t i = 0; i < p->nalpha; i++) {
+            if (i) buf_putc(&ab, '\n');
+            buf_put(&ab, p->alpha[i].p, p->alpha[i].n);
+        }
+        alt += ppz_lzma_probe_len(ab.data, ab.len);
+        buf_free(&ab);
+    } else {
+        Buf cb;
+        buf_init(&cb);
+        for (size_t i = 0; i < n; i++) {
+            if (i) buf_putc(&cb, '\n');
+            Str c = table_at(t, i, col);
+            buf_put(&cb, c.p, c.n);
+        }
+        alt = ppz_lzma_probe_len(cb.data, cb.len);
+        buf_free(&cb);
+    }
+    return num < alt;
+}
+
+/* Two passes. The first gives every column its strict form -- numeric,
+ * dictionary or text -- and keeps the lenient numbers of nearly-numeric
+ * columns aside. The second decides, per column, whether those numbers win:
+ * it runs once every dictionary column is known, because sorting by one of
+ * them is part of what numbers can do. */
 static ColPlan *classify(const Table *t)
 {
     size_t nc = t->ncols, nr = t->nrows;
     ColPlan *plan = calloc(nc ? nc : 1, sizeof(ColPlan));
-    if (!plan) return NULL;
+    int64_t **lax = calloc(nc ? nc : 1, sizeof(int64_t *));
+    size_t **lexp = calloc(nc ? nc : 1, sizeof(size_t *));
+    size_t *lnex = calloc(nc ? nc : 1, sizeof(size_t));
+    int *ldec = calloc(nc ? nc : 1, sizeof(int));
+    if (!plan || !lax || !lexp || !lnex || !ldec) {
+        free(plan); free(lax); free(lexp); free(lnex); free(ldec);
+        return NULL;
+    }
 
     for (size_t j = 0; j < nc; j++) {
         plan[j].parent = -1;
@@ -647,25 +684,7 @@ static ColPlan *classify(const Table *t)
             plan[j].dec = dec;
             continue;
         }
-        {
-            size_t *expos = NULL, nex = 0;
-            int64_t *lax = numeric_column_lenient(t, j, &dec, &expos, &nex);
-            if (lax) {
-                plan[j].kind = K_NUM;
-                plan[j].ints = lax;
-                plan[j].dec = dec;
-                plan[j].ex_pos = expos;
-                plan[j].nex = nex;
-                /* Kept as numbers only when that could win for THIS column;
-                 * otherwise it falls through to dictionary or text. Until
-                 * 2026-10-01 the screen was one verdict for the whole table,
-                 * and one promising column dragged every lenient column in:
-                 * a CDC vaccination table came out 3.77 MB instead of 2.73. */
-                if (lenient_promising(t, j, lax, nr, expos, nex)) continue;
-                free(lax); free(expos);
-                plan[j].ints = NULL; plan[j].ex_pos = NULL; plan[j].nex = 0;
-            }
-        }
+        lax[j] = numeric_column_lenient(t, j, &ldec[j], &lexp[j], &lnex[j]);
         /* dictionary if the distinct count is small enough */
         size_t limit = nr > 2 ? nr : 2;
         size_t cap = limit / 2 < DICT_MAX ? limit / 2 : DICT_MAX;
@@ -673,7 +692,7 @@ static ColPlan *classify(const Table *t)
         int64_t *ids = NULL;
         size_t u = 0;
         int dict = build_dict(t->cells + j, nc, nr, cap, &alpha, &u, &ids);
-        if (dict < 0) { plan_free(plan, nc); return NULL; }
+        if (dict < 0) { plan_free(plan, nc); plan = NULL; break; }
         if (dict) {
             plan[j].kind = K_DICT;
             plan[j].alpha = alpha;
@@ -683,6 +702,28 @@ static ColPlan *classify(const Table *t)
             plan[j].kind = K_TEXT;
         }
     }
+
+    /* Nearly-numeric columns are numbers only when that could win for THIS
+     * column. Until 2026-10-01 it was one verdict for the whole table, and
+     * one promising column dragged every lenient column in (a CDC
+     * vaccination table, 3.77 MB instead of 2.73); and the numbers were
+     * judged in file order only, so a county-by-date table never saw its
+     * counts sorted by county. */
+    for (size_t j = 0; plan && j < nc; j++) {
+        if (!lax[j]) continue;
+        if (lenient_promising(t, j, lax[j], nr, lexp[j], lnex[j], plan, nc)) {
+            free(plan[j].alpha); free(plan[j].ids);
+            plan[j].alpha = NULL; plan[j].ids = NULL; plan[j].nalpha = 0;
+            plan[j].kind = K_NUM;
+            plan[j].ints = lax[j];
+            plan[j].dec = ldec[j];
+            plan[j].ex_pos = lexp[j];
+            plan[j].nex = lnex[j];
+            lax[j] = NULL; lexp[j] = NULL;
+        }
+    }
+    for (size_t j = 0; j < nc; j++) { free(lax[j]); free(lexp[j]); }
+    free(lax); free(lexp); free(lnex); free(ldec);
     return plan;
 }
 
@@ -702,7 +743,7 @@ static int le_times8(int64_t a, int64_t b)
 }
 
 static Group *find_2d_groups(ColPlan *plan, size_t nc, size_t nrows,
-                             size_t *ngroups)
+                             const long *nparent, size_t *ngroups)
 {
     *ngroups = 0;
     if (nrows < MIN_ROWS_FOR_2D) return NULL;
@@ -724,7 +765,11 @@ static Group *find_2d_groups(ColPlan *plan, size_t nc, size_t nrows,
         } while (0)
 
     for (size_t p = 0; p < nc; p++) {
-        if (plan[p].kind != K_NUM || nrows == 0) { FLUSH(); continue; }
+        /* a column that compresses better sorted by a parent stays out:
+         * a group is stored in file order */
+        if (plan[p].kind != K_NUM || nrows == 0 || (nparent && nparent[p] >= 0)) {
+            FLUSH(); continue;
+        }
         if (rn == 0) { run[rn++] = p; continue; }
         ColPlan *prev = &plan[run[rn - 1]];
         int64_t hi_a = 0, hi_b = 0;
@@ -1159,6 +1204,120 @@ done:
     free(dict_pos); free(text_pos);
 }
 
+/* ------------------------------------------------------ numeric reordering */
+
+/* Numeric columns can be stored sorted by a dictionary column too. Panel
+ * data -- many places, each measured over time -- is the case it is for:
+ * sorted by county, a county's counts sit next to each other and their
+ * differences shrink. Measured 2026-10-01 on the CDC vaccination table
+ * (3,300 counties x dates, 67 numeric columns): the numeric payload went
+ * from 4.14 MB in file order to 1.18 MB sorted by county.
+ *
+ * Nomination is an estimate with no compression at all: the bits the
+ * column's differences (order 0-2) would need in each order. The nominee is
+ * then measured -- preset-1 probe of the packed column, sorted against file
+ * order -- and kept only if strictly smaller. Wide tables nominate on a
+ * sample of rows. Runs before the 2D groups form; a column given a parent
+ * here is kept out of them. */
+
+#define NUMPAR_BUDGET 300000000ULL     /* rows x candidate pairs, before sampling */
+
+static uint64_t bit_cost(const int64_t *a, size_t n)
+{
+    uint64_t bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t u = zigzag(a[i]);
+        bits += u ? 64 - (uint64_t)__builtin_clzll(u) : 0;
+    }
+    return bits + n;
+}
+
+/* the cheaper of differencing orders 0..2, in estimated bits */
+static uint64_t num_bits(int64_t *a, size_t n, int64_t *tmp)
+{
+    uint64_t best = bit_cost(a, n);
+    memcpy(tmp, a, n * sizeof(int64_t));
+    size_t len = n;
+    for (int k = 1; k <= 2 && len > 1; k++) {
+        for (size_t i = 0; i + 1 < len; i++)
+            tmp[i] = (int64_t)((uint64_t)tmp[i + 1] - (uint64_t)tmp[i]);
+        len--;
+        uint64_t c = bit_cost(tmp, len) + 64 * (uint64_t)k;
+        if (c < best) best = c;
+    }
+    return best;
+}
+
+/* the column packed as the payload would pack it, sorted by `perm` or not */
+static size_t num_probe(const int64_t *a, size_t n, const size_t *perm)
+{
+    int64_t *v = malloc((n ? n : 1) * sizeof(int64_t));
+    if (!v) return (size_t)-1;
+    for (size_t i = 0; i < n; i++) v[i] = a[perm ? perm[i] : i];
+    int k = diff_order(v, n);
+    size_t dn = 0;
+    int64_t *d = k ? diff_n(v, n, k, &dn) : NULL;
+    Buf b;
+    buf_init(&b);
+    pack_ints(k ? d : v, k ? dn : n, &b);
+    size_t got = ppz_lzma_probe_len(b.data, b.len);
+    buf_free(&b);
+    free(d); free(v);
+    return got;
+}
+
+static void pick_num_parents(const ColPlan *plan, size_t nc, size_t nr, long *nparent)
+{
+    for (size_t i = 0; i < nc; i++) nparent[i] = -1;
+    if (nr < MIN_ROWS_FOR_PARENTS) return;
+    size_t nd = 0, nn = 0;
+    for (size_t p = 0; p < nc; p++) {
+        if (plan[p].kind == K_DICT && plan[p].nalpha > 1) nd++;
+        else if (plan[p].kind == K_NUM && !plan[p].in_group) nn++;
+    }
+    if (!nd || !nn) return;
+
+    /* nominate on every `step`-th row when the full search is too big */
+    size_t step = 1;
+    while ((uint64_t)nd * nn * (nr / step) > NUMPAR_BUDGET) step++;
+    size_t sn = (nr + step - 1) / step;
+    uint64_t *base = calloc(nc, sizeof(uint64_t)), *best = calloc(nc, sizeof(uint64_t));
+    int64_t *v = malloc((sn ? sn : 1) * sizeof(int64_t));
+    int64_t *tmp = malloc((sn ? sn : 1) * sizeof(int64_t));
+    int64_t *sid = malloc((sn ? sn : 1) * sizeof(int64_t));
+    if (!base || !best || !v || !tmp || !sid) goto out;
+    for (size_t p = 0; p < nc; p++) {
+        if (plan[p].kind != K_NUM || plan[p].in_group) continue;
+        for (size_t i = 0; i < sn; i++) v[i] = plan[p].ints[i * step];
+        base[p] = best[p] = num_bits(v, sn, tmp);
+    }
+    for (size_t d = 0; d < nc; d++) {
+        if (plan[d].kind != K_DICT || plan[d].nalpha < 2) continue;
+        for (size_t i = 0; i < sn; i++) sid[i] = plan[d].ids[i * step];
+        size_t *perm = argsort_ids(sid, sn, plan[d].nalpha);
+        if (!perm) continue;
+        for (size_t p = 0; p < nc; p++) {
+            if (plan[p].kind != K_NUM || plan[p].in_group) continue;
+            for (size_t i = 0; i < sn; i++) v[i] = plan[p].ints[perm[i] * step];
+            uint64_t c = num_bits(v, sn, tmp);
+            if (c < best[p]) { best[p] = c; nparent[p] = (long)d; }
+        }
+        free(perm);
+    }
+    /* measured, on every row: the nominee must actually compress smaller */
+    for (size_t p = 0; p < nc; p++) {
+        if (nparent[p] < 0) continue;
+        const ColPlan *par = &plan[nparent[p]];
+        size_t *perm = argsort_ids(par->ids, nr, par->nalpha);
+        size_t with = perm ? num_probe(plan[p].ints, nr, perm) : (size_t)-1;
+        size_t without = num_probe(plan[p].ints, nr, NULL);
+        free(perm);
+        if (with >= without) nparent[p] = -1;
+    }
+out:
+    free(base); free(best); free(v); free(tmp); free(sid);
+}
+
 /* --------------------------------------------------------------------- json */
 
 /* ASCII-only JSON strings: anything outside 0x20..0x7e, plus
@@ -1338,8 +1497,14 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
 {
     size_t nc = t->ncols, nr = t->nrows;
     double tr = ppz_now();
+    /* Numeric parents first: a column that is better sorted by a parent
+     * stays out of the 2D groups, which keep file order. Measured on the CDC
+     * vaccination table: 2.50 MB with the groups taking those columns, 1.69
+     * MB without (plain xz: 2.27). */
+    long *nparent = malloc((nc ? nc : 1) * sizeof(long));
+    if (nparent) pick_num_parents(plan, nc, nr, nparent);
     size_t ngroups = 0;
-    Group *groups = find_2d_groups(plan, nc, nr, &ngroups);
+    Group *groups = find_2d_groups(plan, nc, nr, nparent, &ngroups);
     Parents P = pick_parents(plan, nc, nr);
     ppz_trace("2d groups + dictionary parents", tr); tr = ppz_now();
     if (!P.parent) { plan_free(plan, nc); return -1; }
@@ -1417,6 +1582,22 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
             sgn[nsg] = nr;
             nsg++;
         } else if (c->kind == K_NUM && !c->in_group) {
+            /* sorted by its numeric parent, if it has one: the values are
+             * permuted in place, so the warm-start values in the metadata
+             * are the sorted ones too */
+            if (nparent && nparent[pos] >= 0) {
+                size_t *kv = argsort_ids(plan[nparent[pos]].ids, nr, plan[nparent[pos]].nalpha);
+                int64_t *v = malloc((nr ? nr : 1) * sizeof(int64_t));
+                if (kv && v) {
+                    for (size_t i = 0; i < nr; i++) v[i] = c->ints[kv[i]];
+                    free(c->ints);
+                    c->ints = v;
+                } else {
+                    free(v);
+                    nparent[pos] = -1;
+                }
+                free(kv);
+            }
             int k = diff_order(c->ints, nr);
             c->k = k;
             size_t dn = 0;
@@ -1590,7 +1771,12 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
             }
             buf_putc(&meta, '}');
         } else {
-            buf_put(&meta, "{\"kind\":\"num\",\"dec\":", 20);
+            /* "nump": a numeric column stored sorted by a dictionary
+             * parent. A new kind rather than a new key, so a build that
+             * predates it refuses the archive instead of misreading it */
+            long np = nparent ? nparent[pos] : -1;
+            buf_put(&meta, np >= 0 ? "{\"kind\":\"nump\",\"dec\":" : "{\"kind\":\"num\",\"dec\":",
+                    np >= 0 ? 21 : 20);
             json_int(&meta, c->dec);
             buf_put(&meta, ",\"k\":", 5);
             json_int(&meta, c->k);
@@ -1600,6 +1786,10 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
                 json_int(&meta, (long long)c->ints[i]);
             }
             buf_putc(&meta, ']');
+            if (np >= 0) {
+                buf_put(&meta, ",\"parent\":", 10);
+                json_int(&meta, (long long)np);
+            }
             if (c->nex) {
                 buf_put(&meta, ",\"nex\":", 7);
                 json_int(&meta, (long long)c->nex);
@@ -1662,7 +1852,7 @@ done:
     buf_free(&meta); buf_free(&txt); buf_free(&bins);
     free(smeta); free(binsz); free(sg); free(sgn);
     for (size_t j = 0; j < nc; j++) { free(text_cells[j]); free(ex_cells[j]); }
-    free(text_cells); free(ex_cells); free(tparent);
+    free(text_cells); free(ex_cells); free(tparent); free(nparent);
     for (size_t g = 0; g < ngroups; g++) free(groups[g].pos);
     free(groups);
     free(P.parent); free(P.order);

@@ -856,6 +856,39 @@ static void cases_derived(void)
     derived_case("partial, rounded, two sources", &b, 1);
 }
 
+/* ------------------------------------------------------ numeric parents */
+
+/* A panel: places x days, counts that drift slowly within a place. Sorted by
+ * place the counts are smooth; in file order (by day) they jump. */
+static void cases_numeric_parents(void)
+{
+    h_section("numeric columns sorted by a dictionary parent");
+    TB b;
+    tb_start(&b, 4, (const char *const[]){ "day", "place", "count", "share" });
+    for (int day = 0; day < 60; day++)
+        for (int pl = 0; pl < 200; pl++) {
+            tb_cellf(&b, "2024-%02d-%02d", 1 + day / 28, 1 + day % 28);
+            tb_cellf(&b, "place %03d", pl);
+            if ((day * 7 + pl) % 97 == 0) tb_cellz(&b, "");          /* a few blanks */
+            else tb_cellf(&b, "%d", 1000 * (pl % 50 + 1) + day * (pl % 7 + 1));
+            tb_cellf(&b, "%.1f", 10.0 + pl % 40 + day * 0.1);
+        }
+    Table t;
+    tb_finish(&b, &t);
+    check_table("panel", &t, 1);
+    Buf blob, m;
+    buf_init(&blob); buf_init(&m);
+    if (CHECK(ppz_encode(&t, &blob) == 0, "panel: encode")) {
+        size_t ml = ((size_t)blob.data[4] << 24) | ((size_t)blob.data[5] << 16)
+                  | ((size_t)blob.data[6] << 8) | blob.data[7];
+        CHECK(!ppz_lzma_decompress(blob.data + 16, ml, &m)
+              && memmem(m.data, m.len, "\"kind\":\"nump\"", 13),
+              "panel: no numeric column was sorted by a parent");
+    }
+    buf_free(&blob); buf_free(&m);
+    table_free(&t);
+}
+
 /* ------------------------------------------------------ capped compressors */
 
 /* The capped forms are streamed so another thread can stop them early.
@@ -1075,6 +1108,7 @@ int main(int argc, char **argv)
     case_invalid_utf8_names();
     case_old_magics();
     cases_derived();
+    cases_numeric_parents();
     cases_dict_limit();
     cases_capped();
     fuzz(count, seed);

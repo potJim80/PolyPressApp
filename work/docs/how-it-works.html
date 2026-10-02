@@ -1,0 +1,269 @@
+<title>How PolyPress Works</title>
+<style>
+/* layout: one reading column; a step rail on wide screens, inline step numbers on phones */
+:root {
+  --bg: #f6f6f3; --panel: #ecece7; --fg: #1c1e20; --muted: #676b70; --rule: #d9d9d2;
+  --accent: #2e5f8f; --mark: #e6eef6; --num: #a8521a; --txt: #2f7a43;
+  --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #171819; --panel: #1f2123; --fg: #dfe1e3; --muted: #92979c; --rule: #2e3134;
+  --accent: #82b2de; --mark: #1f2c38; --num: #e2a06c; --txt: #8ccb98; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #171819; --panel: #1f2123; --fg: #dfe1e3; --muted: #92979c; --rule: #2e3134;
+  --accent: #82b2de; --mark: #1f2c38; --num: #e2a06c; --txt: #8ccb98; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }
+.page { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px;
+  display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 40px; }
+nav { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 20px); align-self: start; font-size: 13px; }
+nav ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+nav a { display: grid; grid-template-columns: 22px 1fr; gap: 6px; padding: 4px 6px; border-radius: 4px; color: var(--muted); text-decoration: none; }
+nav a:hover, nav a:focus-visible { background: var(--panel); color: var(--fg); outline: none; }
+nav a span { font-variant-numeric: tabular-nums; }
+main { min-width: 0; }
+h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; text-wrap: balance; }
+.lede { color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
+section { border-top: 1px solid var(--rule); padding-block: 26px; scroll-margin-top: 16px; }
+h2 { font-size: 17px; font-weight: 600; margin: 0 0 10px; display: flex; gap: 10px; align-items: baseline; text-wrap: balance; }
+h2 .n { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; min-width: 22px; }
+p, li { max-width: 66ch; }
+p { margin: 0 0 12px; }
+ul { margin: 0 0 12px; padding-left: 20px; }
+li { margin: 3px 0; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+.why { border-left: 2px solid var(--rule); padding-left: 12px; color: var(--muted); font-size: 14px; margin: 14px 0 0; max-width: 66ch; }
+.why b { color: var(--fg); font-weight: 600; }
+.scroll { overflow-x: auto; margin: 12px 0; }
+table { border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+th, td { padding: 4px 10px; border-bottom: 1px solid var(--rule); text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-family: var(--sans); font-size: 12px; }
+td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.hl { background: var(--mark); }
+.k-num { color: var(--num); } .k-txt { color: var(--txt); } .k-dict { color: var(--accent); }
+.chip { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 10px; background: var(--panel); color: var(--muted); font-family: var(--sans); }
+.flow { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 30px; font-size: 13px; }
+.flow a { padding: 5px 10px; border: 1px solid var(--rule); border-radius: 4px; color: var(--fg); text-decoration: none; background: var(--bg); }
+.flow a:hover, .flow a:focus-visible { border-color: var(--accent); outline: none; }
+.flow .arrow { color: var(--muted); align-self: center; }
+pre.box { background: var(--panel); border-radius: 4px; padding: 12px 14px; font: 12.5px/1.55 var(--mono); overflow-x: auto; margin: 12px 0; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.two > div { min-width: 0; }
+.cap { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
+.note { font-size: 13px; color: var(--muted); }
+@media (max-width: 760px) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 0; padding-inline: 16px; }
+  nav { display: none; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="page">
+<nav aria-label="Steps">
+  <ol>
+    <li><a href="#read"><span>1</span>Read the table</a></li>
+    <li><a href="#derive"><span>2</span>Derived columns</a></li>
+    <li><a href="#classify"><span>3</span>Sort columns by kind</a></li>
+    <li><a href="#numbers"><span>4</span>Predict the numbers</a></li>
+    <li><a href="#parents"><span>5</span>Reorder by a parent</a></li>
+    <li><a href="#pack"><span>6</span>Pack into bytes</a></li>
+    <li><a href="#xz"><span>7</span>Three xz streams</a></li>
+    <li><a href="#check"><span>8</span>Check, then write</a></li>
+    <li><a href="#big"><span>9</span>Big files</a></li>
+    <li><a href="#restore"><span>10</span>Restoring</a></li>
+    <li><a href="#numbers-now"><span></span>Where it stands</a></li>
+  </ol>
+</nav>
+
+<main>
+<h1>How PolyPress works</h1>
+<p class="lede">PolyPress compresses data tables (CSV, TSV, JSON, Parquet) without losing a single character. It doesn't compress the table as one block of text. It works out what each column is, rearranges the data so the patterns line up, and only then hands it to xz. This page follows one small table through every step, as the code stands on 1 October 2026.</p>
+
+<div class="flow" aria-label="The steps in order">
+  <a href="#read">Read</a><span class="arrow">→</span>
+  <a href="#derive">Derived columns</a><span class="arrow">→</span>
+  <a href="#classify">Kinds</a><span class="arrow">→</span>
+  <a href="#numbers">Numbers</a><span class="arrow">→</span>
+  <a href="#parents">Reorder</a><span class="arrow">→</span>
+  <a href="#pack">Pack</a><span class="arrow">→</span>
+  <a href="#xz">xz</a><span class="arrow">→</span>
+  <a href="#check">Check</a>
+</div>
+
+<p>The example: six crime reports, cut down from the Chicago crimes table PolyPress is tested on. Real tables have thousands to millions of rows; the steps are the same.</p>
+<div class="scroll"><table>
+  <tr><th>id</th><th>district</th><th>primary_type</th><th>arrest</th><th>latitude</th><th>longitude</th><th>location</th></tr>
+  <tr><td>1001</td><td>011</td><td>THEFT</td><td>false</td><td>41.881203</td><td>-87.627811</td><td>POINT (-87.627811 41.881203)</td></tr>
+  <tr><td>1002</td><td>011</td><td>BATTERY</td><td>true</td><td>41.881190</td><td>-87.627902</td><td>POINT (-87.627902 41.88119)</td></tr>
+  <tr><td>1003</td><td>004</td><td>THEFT</td><td>false</td><td>41.751004</td><td>-87.585320</td><td>POINT (-87.58532 41.751004)</td></tr>
+  <tr><td>1004</td><td>011</td><td>THEFT</td><td>false</td><td>41.881377</td><td>-87.627650</td><td>POINT (-87.62765 41.881377)</td></tr>
+  <tr><td>1006</td><td>004</td><td>NARCOTICS</td><td>true</td><td></td><td></td><td></td></tr>
+  <tr><td>1007</td><td>011</td><td>BATTERY</td><td>false</td><td>41.880911</td><td>-87.628104</td><td>POINT (-87.628104 41.880911)</td></tr>
+</table></div>
+
+<section id="read">
+<h2><span class="n">1</span>Read the table</h2>
+<p>The reader takes CSV, TSV, other delimited text, JSON and JSON Lines directly; Parquet goes through a small Python helper first. Every cell is kept as the exact bytes it was written with, so <code>011</code> stays <code>011</code> and <code>41.88119</code> doesn't become <code>41.881190</code>.</p>
+<ul>
+  <li>Text must be valid UTF-8 (or the encoding you name with <code>--encoding</code>). A bad byte is refused, never guessed at.</li>
+  <li>A row wider than the header is refused unless the extra cells are empty.</li>
+  <li>Excel, Stata, SPSS, SQLite and already-compressed files are recognised at the door and refused with a plain message.</li>
+</ul>
+<p class="why"><b>Why so strict:</b> a check that runs after the damage can't see the damage. An early version read every file leniently, turned bad bytes into "?" before the table existed, and then "verified" the corrupted table against itself.</p>
+</section>
+
+<section id="derive">
+<h2><span class="n">2</span>Derived columns</h2>
+<p>Some columns repeat numbers that another column already holds. <code>location</code> above is just <code>longitude</code> and <code>latitude</code> pasted into a template. PolyPress finds numbers like these and swaps each one for a short reference to the column it came from:</p>
+<pre class="box">POINT (-87.627811 41.881203)   →   POINT (⟨source 1⟩ ⟨source 0⟩)
+POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded to 5 places⟩)</pre>
+<p>Now every cell in the column looks the same, and a column that repeats one value is almost free to store.</p>
+<ul>
+  <li>The search runs on a sample of 500 rows. A column becomes a source if it explains a number in at least half the sampled rows, with up to 4 sources per column.</li>
+  <li>A reference is either an exact copy or a rounding (half to even) to fewer decimals. Numbers longer than 64 characters are never referenced.</li>
+  <li>Sources are never derived themselves, so restoring always expands from finished values.</li>
+</ul>
+<p class="why"><b>Measured:</b> chicago_crimes −19%, nyc_collisions −16%, nyc_311 and seattle_fire911 −12% each, and 5.1% across the 39 test tables. Tables with nothing to derive come out byte-for-byte as before. It also makes compression slightly faster, because there's less text left to handle.</p>
+</section>
+
+<section id="classify">
+<h2><span class="n">3</span>Sort the columns by kind</h2>
+<p>Every column becomes one of three kinds:</p>
+<div class="scroll"><table>
+  <tr><th>kind</th><th>rule</th><th>in the example</th></tr>
+  <tr><td class="k-num">numeric</td><td>every cell is a plain number that prints back exactly</td><td>id, latitude, longitude</td></tr>
+  <tr><td class="k-dict">dictionary</td><td>few distinct values: at most half the rows, and at most 65,536</td><td>district, primary_type, arrest, location</td></tr>
+  <tr><td class="k-txt">text</td><td>everything else</td><td>(none here)</td></tr>
+</table></div>
+<p><b>Numbers</b> are stored as whole numbers scaled by their decimals. <code>41.881203</code> with 6 decimals becomes <code>41881203</code>. The column must print back to its exact original text, or it isn't numeric.</p>
+<p><b>Nearly-numeric columns.</b> <code>latitude</code> has a blank cell, so strictly it isn't numeric. In a real table that's one blank among thousands of rows. If at most 5% of cells are odd (blanks, <code>-0.0</code>, a stray extra decimal), the odd cells are stored separately by position and as text. Their slots are filled with the neighbouring value, so the column keeps its full length. A quick trial compression decides this <b>for each column</b>: stay numeric only if that could beat the dictionary or text form.</p>
+<p><b>Dictionaries.</b> For each column, the distinct values are found with a hash table, sorted, and each cell is replaced by its position in that sorted list. <code>primary_type</code> becomes <code>BATTERY=0, NARCOTICS=1, THEFT=2</code> and the column becomes <code>2 0 2 2 1 0</code>.</p>
+<p class="why"><b>Measured:</b> four blank cells in 72,048 once cost 41% on the Treasury yield curve, because one bad cell turned a whole column into text. That's why nearly-numeric columns exist. The per-column decision is from today. It used to be one decision for the whole table, and on a CDC vaccination table that made the archive 3.77 MB instead of 2.73 MB.</p>
+</section>
+
+<section id="numbers">
+<h2><span class="n">4</span>Predict the numbers</h2>
+<p>Numbers compress best when the stored value is small. PolyPress stores what's left after a prediction, not the number itself.</p>
+<div class="two">
+<div>
+<p><b>Down a column: differences.</b> <code>id</code> is <code>1001 1002 1003 1004 1006 1007</code>. Its differences are <code>1001, 1 1 1 2 1</code>: one starting value, then tiny numbers. PolyPress tries differences of order 0 to 4 (differences of differences) and keeps the order whose packed size is smallest.</p>
+</div>
+<div>
+<p><b>Across columns: 2D groups.</b> Three or more neighbouring numeric columns with the same decimals and sizes within 8× of each other form a group, like a grid of sensor readings or interest rates. Each cell is predicted from the cell above, the cell to its left, and the one diagonally between. Only the double difference is stored.</p>
+</div>
+</div>
+<p class="why"><b>Measured:</b> 2D groups give 1.66× to 2.14× on yield curves and sensor grids, the shape this step was built for. Survey data has codes, not quantities, so this step correctly stays out of the way there.</p>
+</section>
+
+<section id="parents">
+<h2><span class="n">5</span>Reorder by a parent</h2>
+<p>This is the central idea. If you know a row's <code>district</code>, you can often guess its other values. So a dictionary column is stored <b>sorted by a "parent" column</b>, and its values then fall into long runs:</p>
+<div class="two">
+<div>
+<p class="cap">primary_type in file order</p>
+<div class="scroll"><table><tr><th>district</th><th>primary_type</th></tr>
+<tr><td>011</td><td>THEFT</td></tr><tr><td>011</td><td>BATTERY</td></tr><tr><td>004</td><td>THEFT</td></tr>
+<tr><td>011</td><td>THEFT</td></tr><tr><td>004</td><td>NARCOTICS</td></tr><tr><td>011</td><td>BATTERY</td></tr></table></div>
+</div>
+<div>
+<p class="cap">stored sorted by district</p>
+<div class="scroll"><table><tr><th>district</th><th>primary_type</th></tr>
+<tr class="hl"><td>004</td><td>THEFT</td></tr><tr class="hl"><td>004</td><td>NARCOTICS</td></tr>
+<tr><td>011</td><td>THEFT</td></tr><tr><td>011</td><td>BATTERY</td></tr><tr><td>011</td><td>THEFT</td></tr><tr><td>011</td><td>BATTERY</td></tr></table></div>
+</div>
+</div>
+<p>Nothing extra is stored for the new order. The parent is restored first, so the restorer can redo the same sort and put every row back. The sort is stable: ties keep their original order.</p>
+<ul>
+  <li><b>Choosing parents.</b> On a sample of up to 40,000 rows, PolyPress measures how much each column tells you about each other column (conditional entropy). It builds a tree: the most predictable column is the root, and each other column hangs under the parent that helps it most.</li>
+  <li><b>Then it checks.</b> A quick trial compression of the column in its new order against its original order. If reordering doesn't actually make it smaller, the parent is dropped. The score only nominates; the trial decides.</li>
+  <li><b>Text columns</b> can have a parent too. Up to 5 candidates are nominated, each one is tried, and the smallest result wins.</li>
+  <li>The sorts are counting sorts on the dictionary positions: one pass over the rows, no comparisons.</li>
+</ul>
+<p class="why"><b>Measured:</b> trusting the score without the check once made a real table 66% larger. Adding the check took 19.7% off the CDC disease-surveillance table, the one PolyPress was already best at. The same idea was published by AT&amp;T in 2012 (US 8,312,026, now expired); PolyPress arrived at it independently.</p>
+</section>
+
+<section id="pack">
+<h2><span class="n">6</span>Pack into bytes</h2>
+<p>Everything goes into two byte streams: one for numbers and one for text.</p>
+<div class="two">
+<div>
+<p class="k-num"><b>Numbers stream</b></p>
+<ul>
+  <li>Dictionary positions at a fixed width: 1 byte when there are up to 256 values, 2 bytes up to 65,536.</li>
+  <li>Other numbers in "zigzag" form, so −1, 1, −2 become 1, 2, 3. Each number takes 1 byte; anything 255 or larger gets a marker byte plus 4 or 8 bytes at the end.</li>
+  <li>The positions of the odd cells from step 3, stored as gaps.</li>
+</ul>
+</div>
+<div>
+<p class="k-txt"><b>Text stream</b></p>
+<ul>
+  <li>The dictionary values, sorted, so neighbours share their start. Each one is stored as "how many characters match the previous value" plus the rest (front-coding): <code>BATTERY</code> stays whole, and <code>BATTERY_X</code> after it is just 7 + <code>_X</code>.</li>
+  <li>Text columns, one cell per line, in their parent order.</li>
+  <li>The odd cells from nearly-numeric columns.</li>
+</ul>
+</div>
+</div>
+<p>A small description, the metadata, records each column's kind, decimals, parent, and how many bytes belong to which column. It's written as JSON.</p>
+</section>
+
+<section id="xz">
+<h2><span class="n">7</span>Three xz streams</h2>
+<p>The metadata, the numbers and the text are each compressed once with xz at its strongest setting (<code>-9e</code>). xz has layout settings, and each stream gets its own:</p>
+<div class="scroll"><table>
+  <tr><th>stream</th><th>settings</th><th>why</th><th class="r">effect</th></tr>
+  <tr><td>numbers</td><td>lc0 lp2 pb2</td><td>fixed-width values: position predicts better than the previous byte</td><td class="r">−2.2%</td></tr>
+  <tr><td>text</td><td>lc4 pb1</td><td>more weight on the previous character</td><td class="r">−0.1%</td></tr>
+  <tr><td>metadata</td><td>default</td><td>small</td><td class="r"></td></tr>
+</table></div>
+<p>The numbers and text are compressed at the same time on two threads. The archive is: <code class="mono">PPZ2</code>, then the three compressed lengths, then the three streams.</p>
+<p class="why"><b>Measured, and rejected:</b> a separate xz stream per column was worse (+0.85% numbers, +1.5% text). Patterns shared between columns are worth more than keeping them apart. Choosing settings per table would add 0.6% but needs a trial compression every time. xz's "extreme" mode stays: turning it off saves 13% of the time but makes files 0.13% bigger.</p>
+</section>
+
+<section id="check">
+<h2><span class="n">8</span>Check, then write</h2>
+<p>Before anything is written, the archive is decoded again and every cell is compared with the original. The file is written under a temporary name and renamed into place only if the check passes. If you stop it halfway, nothing is left behind.</p>
+<p>Every choice above is made once, in a single pass. There are no "try three ways and keep the smallest" steps; the only trials are the quick, cheap ones inside steps 3 and 5. You chose that on 29 September: 2.3× faster for files about 2.5% bigger, and today's improvements have since won that size back.</p>
+<p class="why"><b>Determinism:</b> the same table always gives the same bytes, on any Mac and with any number of threads. Scores are rounded to a fixed grid before they're compared, and ties go to the leftmost column. The tests check that one thread and four threads write identical files.</p>
+</section>
+
+<section id="big">
+<h2><span class="n">9</span>Big files</h2>
+<p>A file too big to hold in memory is cut into blocks of rows, and each block is compressed exactly as above. With the default 1 GB limit, NEMSIS (53 million rows) became 1,475 blocks of 36,065 rows each.</p>
+<ul>
+  <li><b>Compress while reading:</b> one thread reads the next block while four workers compress, and the blocks are written in order. Nothing waits for a round to finish.</li>
+  <li>An index at the end of the file lists every block's size and the column names.</li>
+  <li>Progress is reported as it goes, which is what the app's progress bar shows.</li>
+</ul>
+<p class="why"><b>Measured on NEMSIS (6.8 GB of CSV):</b> 19.5 minutes → 2 minutes 3 seconds this week, with the archive unchanged byte for byte. The gain came from code, not more memory or cores: a bug fix (blocks were running one at a time), compressing while reading, and half the sorting work removed.</p>
+</section>
+
+<section id="restore">
+<h2><span class="n">10</span>Restoring</h2>
+<p>Restoring runs everything backwards:</p>
+<ul>
+  <li>Unpack the three streams.</li>
+  <li>Rebuild each parent before its children, and redo each parent's sort to put the rows back.</li>
+  <li>Add the differences back up.</li>
+  <li>Put the odd cells back.</li>
+  <li>Expand the derived references.</li>
+</ul>
+<p>The output can be any format: CSV, TSV, JSON, JSON Lines or Parquet.</p>
+<p>The restorer assumes the archive might be damaged or made by someone else. Every count, size and position in it is checked against the bytes actually present before it's used. The tests feed it hundreds of truncated, bit-flipped and deliberately lying archives; each one must be refused or decode cleanly, never crash.</p>
+<p class="why"><b>Speed:</b> all 100 benchmark tables restore in about 5 seconds. Restoring needs no trial compressions and no choices.</p>
+</section>
+
+<section id="numbers-now">
+<h2><span class="n"></span>Where it stands</h2>
+<div class="scroll"><table>
+  <tr><th>test</th><th>result</th></tr>
+  <tr><td>100 open-data tables, vs 22 other tools</td><td>smallest on 66/100; 9.5% smaller than the best rival per table, in total; beats xz -9e on 98/100</td></tr>
+  <tr><td>same, 10–30 MB tables only</td><td>smallest on 34/44 (before today's fix); typical margin 14.7%</td></tr>
+  <tr><td>vs PolyPress in July, same inputs</td><td>1.75% smaller and 6× faster</td></tr>
+  <tr><td>speed vs xz -9e</td><td>about 2.5× faster to compress (10.7 vs 4.0 MB/s), and smaller</td></tr>
+  <tr><td>vs Parquet (any setting)</td><td>40–63% smaller, on every table it can read</td></tr>
+  <tr><td>where it loses</td><td>small and narrow tables, to 7-Zip PPMd</td></tr>
+</table></div>
+<p class="note">The program is 6,391 lines of C with liblzma, about 10,000 tests, and a Swift Mac app on top. Numbers are from 1 October 2026 and include the per-column fix in step 3.</p>
+</section>
+</main>
+</div>

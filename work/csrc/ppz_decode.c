@@ -619,7 +619,8 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
          * newer encoder. Silently skipping it would leave that column empty
          * and hand back a table that looks fine and is wrong -- the worst
          * possible outcome for a decoder. Refuse the file instead. */
-        if (strcmp(jk->str, "text") && strcmp(jk->str, "num") &&
+        int nump = !strcmp(jk->str, "nump");     /* numeric, sorted by a parent */
+        if (strcmp(jk->str, "text") && strcmp(jk->str, "num") && !nump &&
             strcmp(jk->str, "dict") && strcmp(jk->str, "grp")) {
             fprintf(stderr, "polypress: archive uses column kind '%s', which "
                             "this build does not know -- refusing rather than "
@@ -651,7 +652,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                 cells = fixed;
             }
             cols[pos].cells = cells;
-        } else if (!strcmp(jk->str, "num")) {
+        } else if (!strcmp(jk->str, "num") || nump) {
             size_t ks, decs;
             /* diff_order only ever emits 0..4, and fmt_fixed_one indexes a
              * 19-entry POW10 table. Anything outside those was not written by
@@ -675,6 +676,20 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
                 if (!d) goto fail_ids;
             }
             if (an != nrows && nrows) { free(d); goto fail_ids; }
+            if (nump) {
+                /* stored in the parent's sorted order: put each value back
+                 * on its own row, exactly as for a text column */
+                const Js *jp = js_get(sp, "parent");
+                size_t par;
+                if (!jp || count_of(jp, ncols ? ncols - 1 : 0, 0, &par)
+                    || !ids_by_pos[par]) { free(d); goto fail_ids; }
+                size_t *perm = stable_argsort(ids_by_pos[par], nrows);
+                int64_t *fixed = malloc((nrows ? nrows : 1) * sizeof(int64_t));
+                if (!perm || !fixed) { free(perm); free(fixed); free(d); goto fail_ids; }
+                for (size_t i = 0; i < nrows; i++) fixed[perm[i]] = d[i];
+                free(perm); free(d);
+                d = fixed;
+            }
             Str *cells = malloc((nrows ? nrows : 1) * sizeof(Str));
             if (!cells) { free(d); goto fail_ids; }
             Buf *store = &cols[pos].store;
