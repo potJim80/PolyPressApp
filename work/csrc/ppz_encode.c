@@ -165,18 +165,6 @@ static int diff_order(const int64_t *a, size_t n)
     return best;
 }
 
-/* ------------------------------------------------------------ stable argsort */
-
-typedef struct { int64_t v; size_t i; } KVI;
-
-static int kvi_cmp(const void *a, const void *b)
-{
-    const KVI *x = a, *y = b;
-    if (x->v < y->v) return -1;
-    if (x->v > y->v) return 1;
-    return x->i < y->i ? -1 : (x->i > y->i ? 1 : 0);
-}
-
 /* ------------------------------------------------------------------ strings */
 
 static int str_cmp(const void *pa, const void *pb)
@@ -195,17 +183,154 @@ static int str_eq(Str a, Str b)
     return a.n == b.n && (a.n == 0 || !memcmp(a.p, b.p, a.n));
 }
 
-static long str_bsearch(const Str *sorted, size_t n, Str key)
+/* --------------------------------------------------- sorting without qsort */
+
+/* Until 2026-10-01 every sort here was qsort with a comparison function, and
+ * sorting was 43% of the encoder's busy time on NEMSIS blocks. The values
+ * being sorted are almost always small non-negative integers -- dictionary
+ * ids -- so the sorts below are counting and radix sorts. Each produces
+ * exactly the order the qsort did (the stable argsort included), so no
+ * archive byte moved. */
+
+/* perm[j] = the row that comes j-th in (v, row) order, v in 0..k-1: the
+ * stable argsort (qsort on value, then row) gave, in O(n + k). */
+static size_t *argsort_ids(const int64_t *v, size_t n, size_t k)
 {
-    size_t lo = 0, hi = n;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        int c = str_cmp(&sorted[mid], &key);
-        if (c == 0) return (long)mid;
-        if (c < 0) lo = mid + 1;
-        else hi = mid;
+    size_t *perm = malloc((n ? n : 1) * sizeof(size_t));
+    size_t *start = calloc(k + 1, sizeof(size_t));
+    if (!perm || !start) { free(perm); free(start); return NULL; }
+    for (size_t i = 0; i < n; i++) start[(size_t)v[i] + 1]++;
+    for (size_t b = 0; b < k; b++) start[b + 1] += start[b];
+    for (size_t i = 0; i < n; i++) perm[start[(size_t)v[i]]++] = i;
+    free(start);
+    return perm;
+}
+
+/* Sort non-negative integers ascending: counting when the range is small,
+ * else LSD radix on 11-bit digits, only as many passes as the largest value
+ * needs. Returns 0, or -1 (out of memory or a negative value: caller falls
+ * back). */
+static int sort_nonneg(int64_t *a, size_t n)
+{
+    if (n < 2) return 0;
+    uint64_t mx = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] < 0) return -1;
+        if ((uint64_t)a[i] > mx) mx = (uint64_t)a[i];
     }
-    return -1;
+    if (mx < 2 * (uint64_t)n + 4096) {
+        size_t *cnt = calloc((size_t)mx + 1, sizeof(size_t));
+        if (!cnt) return -1;
+        for (size_t i = 0; i < n; i++) cnt[a[i]]++;
+        size_t o = 0;
+        for (uint64_t v = 0; v <= mx; v++)
+            for (size_t c = cnt[v]; c; c--) a[o++] = (int64_t)v;
+        free(cnt);
+        return 0;
+    }
+    int64_t *tmp = malloc(n * sizeof(int64_t));
+    if (!tmp) return -1;
+    int64_t *src = a, *dst = tmp;
+    for (int shift = 0; shift < 64 && (mx >> shift); shift += 11) {
+        size_t cnt[2049] = { 0 };
+        for (size_t i = 0; i < n; i++) cnt[(((uint64_t)src[i] >> shift) & 2047) + 1]++;
+        for (int b = 0; b < 2048; b++) cnt[b + 1] += cnt[b];
+        for (size_t i = 0; i < n; i++) dst[cnt[((uint64_t)src[i] >> shift) & 2047]++] = src[i];
+        int64_t *s = src; src = dst; dst = s;
+    }
+    if (src != a) memcpy(a, src, n * sizeof(int64_t));
+    free(tmp);
+    return 0;
+}
+
+/* ------------------------------------------------- dictionaries by hashing */
+
+static uint64_t str_hash(const char *p, size_t n)
+{
+    uint64_t h = 0x9E3779B97F4A7C15ULL ^ n;
+    while (n >= 8) {
+        uint64_t w;
+        memcpy(&w, p, 8);
+        h = (h ^ w) * 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 31;
+        p += 8; n -= 8;
+    }
+    uint64_t w = 0;
+    memcpy(&w, p, n);
+    h = (h ^ w) * 0x94D049BB133111EBULL;
+    return h ^ (h >> 29);
+}
+
+typedef struct { Str s; uint32_t e; } StrE;
+
+static int stre_cmp(const void *a, const void *b)
+{
+    return str_cmp(&((const StrE *)a)->s, &((const StrE *)b)->s);
+}
+
+/* The distinct values among n cells (cell i at base[i * stride]) in sorted
+ * order, and each cell's index in that order -- what sorting all n cells and
+ * binary-searching each one used to give. Hashing finds the distinct values
+ * in one pass; only they are sorted. Stops as soon as more than `cap`
+ * distinct values appear (returns 0), because every caller only needs a
+ * dictionary small enough to use. Returns 1 when built, -1 when out of
+ * memory. *alpha and *ids are the caller's to free; ids may be NULL. */
+static int build_dict(const Str *base, size_t stride, size_t n, size_t cap,
+                      Str **alpha_out, size_t *u_out, int64_t **ids_out)
+{
+    *alpha_out = NULL;
+    *u_out = 0;
+    if (ids_out) *ids_out = NULL;
+    size_t most = cap < n ? cap + 1 : n;           /* entries ever stored */
+    size_t tsz = 16;
+    while (tsz < 2 * most + 2) tsz <<= 1;
+    uint32_t *slot = calloc(tsz, sizeof(uint32_t)); /* entry + 1, 0 empty */
+    Str *ent = malloc((most ? most : 1) * sizeof(Str));
+    uint32_t *eid = ids_out ? malloc((n ? n : 1) * sizeof(uint32_t)) : NULL;
+    if (!slot || !ent || (ids_out && !eid)) {
+        free(slot); free(ent); free(eid);
+        return -1;
+    }
+    size_t u = 0;
+    for (size_t i = 0; i < n; i++) {
+        Str c = base[i * stride];
+        size_t h = (size_t)str_hash(c.p, c.n) & (tsz - 1);
+        for (;;) {
+            uint32_t s = slot[h];
+            if (!s) {
+                if (u == cap) { free(slot); free(ent); free(eid); *u_out = cap + 1; return 0; }
+                ent[u] = c;
+                slot[h] = (uint32_t)(u + 1);
+                if (eid) eid[i] = (uint32_t)u;
+                u++;
+                break;
+            }
+            if (str_eq(ent[s - 1], c)) {
+                if (eid) eid[i] = s - 1;
+                break;
+            }
+            h = (h + 1) & (tsz - 1);
+        }
+    }
+    free(slot);
+    StrE *se = malloc((u ? u : 1) * sizeof(StrE));
+    Str *alpha = malloc((u ? u : 1) * sizeof(Str));
+    uint32_t *rank = malloc((u ? u : 1) * sizeof(uint32_t));
+    int64_t *ids = ids_out ? malloc((n ? n : 1) * sizeof(int64_t)) : NULL;
+    if (!se || !alpha || !rank || (ids_out && !ids)) {
+        free(se); free(alpha); free(rank); free(ids); free(ent); free(eid);
+        return -1;
+    }
+    for (size_t e = 0; e < u; e++) { se[e].s = ent[e]; se[e].e = (uint32_t)e; }
+    qsort(se, u, sizeof(StrE), stre_cmp);
+    for (size_t r = 0; r < u; r++) { alpha[r] = se[r].s; rank[se[r].e] = (uint32_t)r; }
+    if (ids)
+        for (size_t i = 0; i < n; i++) ids[i] = rank[eid[i]];
+    free(se); free(rank); free(ent); free(eid);
+    *alpha_out = alpha;
+    *u_out = u;
+    if (ids_out) *ids_out = ids;
+    return 1;
 }
 
 /* ------------------------------------------------------------------- numeric */
@@ -449,7 +574,6 @@ static int diff_order(const int64_t *a, size_t n);
 static int64_t *diff_n(const int64_t *a, size_t n, int k, size_t *out_n);
 static int str_cmp(const void *pa, const void *pb);
 static int str_eq(Str a, Str b);
-static long str_bsearch(const Str *sorted, size_t n, Str key);
 static void pack_ints(const int64_t *a, size_t n, Buf *out);
 
 /* Could storing this column as numbers possibly beat leaving it alone?
@@ -491,23 +615,20 @@ static int lenient_promising(const Table *t, size_t col, const int64_t *a,
     free(gaps);
 
     /* the alternative: the same distinct-count test classify() applies */
-    Str *tmp = malloc((n ? n : 1) * sizeof(Str));
-    if (!tmp) return 1;
-    for (size_t i = 0; i < n; i++) tmp[i] = table_at(t, i, col);
-    qsort(tmp, n, sizeof(Str), str_cmp);
-    size_t u = 0;
-    for (size_t i = 0; i < n; i++)
-        if (i == 0 || !str_eq(tmp[i], tmp[u - 1])) tmp[u++] = tmp[i];
-
     size_t limit = n > 2 ? n : 2;
+    size_t cap = limit / 2 < DICT_MAX ? limit / 2 : DICT_MAX;
+    Str *tmp = NULL;
+    int64_t *dids = NULL;
+    size_t u = 0;
+    int dict = build_dict(t->cells + col, t->ncols, n, cap, &tmp, &u, &dids);
+    if (dict < 0) return 1;              /* cannot screen -> let the guard run */
     size_t alt;
-    if (u <= DICT_MAX && u * 2 <= limit) {
+    if (dict) {
         int w = u <= 256 ? 1 : (u <= 65536 ? 2 : 4);
         Buf idb;
         buf_init(&idb);
         for (size_t i = 0; i < n; i++) {
-            long id = str_bsearch(tmp, u, table_at(t, i, col));
-            uint64_t v = (uint64_t)(id < 0 ? 0 : id);
+            uint64_t v = (uint64_t)dids[i];
             for (int b = 0; b < w; b++)
                 buf_putc(&idb, (char)((v >> (8 * b)) & 0xFF));
         }
@@ -533,6 +654,7 @@ static int lenient_promising(const Table *t, size_t col, const int64_t *a,
         buf_free(&cb);
     }
     free(tmp);
+    free(dids);
     return num < alt;
 }
 
@@ -594,22 +716,14 @@ static ColPlan *classify(const Table *t, int lenient)
             }
         }
         /* dictionary if the distinct count is small enough */
-        Str *tmp = malloc((nr ? nr : 1) * sizeof(Str));
-        if (!tmp) { plan_free(plan, nc); return NULL; }
-        for (size_t i = 0; i < nr; i++) tmp[i] = table_at(t, i, j);
-        qsort(tmp, nr, sizeof(Str), str_cmp);
-        size_t u = 0;
-        for (size_t i = 0; i < nr; i++)
-            if (i == 0 || !str_eq(tmp[i], tmp[u - 1])) tmp[u++] = tmp[i];
-
         size_t limit = nr > 2 ? nr : 2;
-        if (u <= DICT_MAX && u * 2 <= limit) {
-            Str *alpha = malloc((u ? u : 1) * sizeof(Str));
-            memcpy(alpha, tmp, u * sizeof(Str));
-            int64_t *ids = malloc((nr ? nr : 1) * sizeof(int64_t));
-            if (!alpha || !ids) { free(tmp); plan_free(plan, nc); return NULL; }
-            for (size_t i = 0; i < nr; i++)
-                ids[i] = str_bsearch(alpha, u, table_at(t, i, j));
+        size_t cap = limit / 2 < DICT_MAX ? limit / 2 : DICT_MAX;
+        Str *alpha = NULL;
+        int64_t *ids = NULL;
+        size_t u = 0;
+        int dict = build_dict(t->cells + j, nc, nr, cap, &alpha, &u, &ids);
+        if (dict < 0) { plan_free(plan, nc); return NULL; }
+        if (dict) {
             plan[j].kind = K_DICT;
             plan[j].alpha = alpha;
             plan[j].nalpha = u;
@@ -617,7 +731,6 @@ static ColPlan *classify(const Table *t, int lenient)
         } else {
             plan[j].kind = K_TEXT;
         }
-        free(tmp);
     }
     return plan;
 }
@@ -745,7 +858,7 @@ static int64_t *value_counts(const int64_t *v, size_t n, size_t *out_n)
     int64_t *s = malloc((n ? n : 1) * sizeof(int64_t));
     if (!s) return NULL;
     memcpy(s, v, n * sizeof(int64_t));
-    qsort(s, n, sizeof(int64_t), i64_cmp);
+    if (sort_nonneg(s, n)) qsort(s, n, sizeof(int64_t), i64_cmp);
     int64_t *c = malloc((n ? n : 1) * sizeof(int64_t));
     if (!c) { free(s); return NULL; }
     size_t k = 0;
@@ -926,17 +1039,14 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
         if (a < 0) continue;
         size_t alen = plan[b].nalpha;
         int wb = alen <= 256 ? 1 : (alen <= 65536 ? 2 : 4);
-        KVI *kv = malloc((nrows ? nrows : 1) * sizeof(KVI));
-        int64_t *pv = plan[a].ids;
+        size_t *kv = argsort_ids(plan[a].ids, nrows, plan[a].nalpha);
         if (!kv) continue;
-        for (size_t i = 0; i < nrows; i++) { kv[i].v = pv[i]; kv[i].i = i; }
-        qsort(kv, nrows, sizeof(KVI), kvi_cmp);
         uint8_t *flat = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
         uint8_t *perm = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
         if (!flat || !perm) { free(kv); free(flat); free(perm); continue; }
         for (size_t i = 0; i < nrows; i++) {
             uint32_t v0 = (uint32_t)plan[b].ids[i];
-            uint32_t v1 = (uint32_t)plan[b].ids[kv[i].i];
+            uint32_t v1 = (uint32_t)plan[b].ids[kv[i]];
             memcpy(flat + i * (size_t)wb, &v0, (size_t)wb);
             memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
         }
@@ -1014,14 +1124,8 @@ static void probe_task(void *arg)
     Probe *pr = arg;
     size_t nrows = pr->nrows;
     if (pr->dp < 0) { pr->cost = probe_order(pr->t, pr->tp, NULL, nrows); return; }
-    KVI *kv = malloc((nrows ? nrows : 1) * sizeof(KVI));
-    size_t *perm = malloc((nrows ? nrows : 1) * sizeof(size_t));
-    if (!kv || !perm) { free(kv); free(perm); pr->cost = (size_t)-1; return; }
-    const int64_t *pv = pr->plan[pr->dp].ids;
-    for (size_t i = 0; i < nrows; i++) { kv[i].v = pv[i]; kv[i].i = i; }
-    qsort(kv, nrows, sizeof(KVI), kvi_cmp);
-    for (size_t i = 0; i < nrows; i++) perm[i] = kv[i].i;
-    free(kv);
+    size_t *perm = argsort_ids(pr->plan[pr->dp].ids, nrows, pr->plan[pr->dp].nalpha);
+    if (!perm) { pr->cost = (size_t)-1; return; }
     pr->cost = probe_order(pr->t, pr->tp, perm, nrows);
     free(perm);
 }
@@ -1072,18 +1176,11 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
         size_t tp = text_pos[ti];
 
         /* factorise the sampled text column -- used only for scoring */
-        Str *tmp = malloc((sn ? sn : 1) * sizeof(Str));
-        if (!tmp) break;
-        size_t k = 0;
-        for (size_t r = 0; r < nrows; r += step) tmp[k++] = table_at(t, r, tp);
-        Str *srt = malloc((sn ? sn : 1) * sizeof(Str));
-        memcpy(srt, tmp, sn * sizeof(Str));
-        qsort(srt, sn, sizeof(Str), str_cmp);
+        Str *srt = NULL;
+        int64_t *ids = NULL;
         size_t u = 0;
-        for (size_t i = 0; i < sn; i++)
-            if (i == 0 || !str_eq(srt[i], srt[u - 1])) srt[u++] = srt[i];
-        int64_t *ids = malloc((sn ? sn : 1) * sizeof(int64_t));
-        for (size_t i = 0; i < sn; i++) ids[i] = str_bsearch(srt, u, tmp[i]);
+        if (build_dict(t->cells + tp, t->ncols * step, sn, SIZE_MAX, &srt, &u, &ids) != 1)
+            break;
         size_t tdist = 0;
         double base_t = entropy_of(ids, sn, &tdist);
 
@@ -1095,7 +1192,7 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
                 dsample[di], ids, sn, (int64_t)u, dbase[di], ddist[di]));
             if (g > min_gain_t) { cands[ncand].g = g; cands[ncand].dp = di; ncand++; }
         }
-        free(tmp); free(srt); free(ids);
+        free(srt); free(ids);
         if (!ncand) { free(cands); continue; }
         qsort(cands, ncand, sizeof(Cand), cand_cmp);
 
@@ -1314,15 +1411,17 @@ static int names_are_utf8(const Table *t)
 static int encode_modelled(const Table *t, Buf *out, long *fired,
                            int use_2d, size_t *ngroups_out,
                            int use_lenient, size_t *nlax_out,
-                           const Buf *derive_meta)
+                           const Buf *derive_meta, ColPlan *pre)
 {
-    if (!names_are_utf8(t)) return -1;
+    if (!names_are_utf8(t)) { if (pre) plan_free(pre, t->ncols); return -1; }
     if (fired) *fired = 0;
     if (ngroups_out) *ngroups_out = 0;
     if (nlax_out) *nlax_out = 0;
     size_t nc = t->ncols, nr = t->nrows;
     double tr = ppz_now();
-    ColPlan *plan = classify(t, use_lenient);
+    /* `pre` is a plan the caller already built with these settings (it is
+     * ours now); classifying is a third of the work, so it is done once */
+    ColPlan *plan = pre ? pre : classify(t, use_lenient);
     ppz_trace(use_lenient ? "classify (lenient)" : "classify (strict)", tr); tr = ppz_now();
     if (!plan) return -1;
     if (nlax_out) {
@@ -1360,18 +1459,15 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
         int64_t *tmp = NULL;
         long par = P.parent[pos];
         if (par >= 0) {
-            /* stable argsort of the parent's ids, then ids = ids[perm].
-             * Stability is folded into the comparison as a tiebreak on the
-             * original index, so qsort -- which is not stable -- still
-             * reproduces numpy's argsort(kind="stable") exactly. */
-            KVI *kv = malloc((nr ? nr : 1) * sizeof(KVI));
-            int64_t *pv = plan[par].ids;
-            for (size_t i = 0; i < nr; i++) { kv[i].v = pv[i]; kv[i].i = i; }
-            qsort(kv, nr, sizeof(KVI), kvi_cmp);
+            /* stable argsort of the parent's ids, then ids = ids[perm] */
+            size_t *kv = argsort_ids(plan[par].ids, nr, plan[par].nalpha);
             tmp = malloc((nr ? nr : 1) * sizeof(int64_t));
-            for (size_t i = 0; i < nr; i++) tmp[i] = ids[kv[i].i];
+            /* out of memory: the rows stay unpermuted, the archive comes out
+             * wrong, and verification refuses it -- never a silent loss */
+            for (size_t i = 0; kv && tmp && i < nr; i++) tmp[i] = ids[kv[i]];
+            if (!kv || !tmp) { free(tmp); tmp = NULL; }
             free(kv);
-            ids = tmp;
+            if (tmp) ids = tmp;
         }
         int wb = c->nalpha <= 256 ? 1 : (c->nalpha <= 65536 ? 2 : 4);
         size_t at = bins.len;
@@ -1403,12 +1499,10 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
             if (tparent[pos] >= 0) {
                 /* same trick, same freeness: the decoder rebuilds the parent
                  * first and recomputes this stable argsort */
-                KVI *kv = malloc((nr ? nr : 1) * sizeof(KVI));
-                int64_t *pv = plan[tparent[pos]].ids;
-                for (size_t i = 0; i < nr; i++) { kv[i].v = pv[i]; kv[i].i = i; }
-                qsort(kv, nr, sizeof(KVI), kvi_cmp);
-                for (size_t i = 0; i < nr; i++)
-                    cells[i] = table_at(t, kv[i].i, pos);
+                size_t *kv = argsort_ids(plan[tparent[pos]].ids, nr,
+                                         plan[tparent[pos]].nalpha);
+                for (size_t i = 0; i < nr; i++)       /* !kv: see above */
+                    cells[i] = table_at(t, kv ? kv[i] : i, pos);
                 free(kv);
             } else {
                 for (size_t i = 0; i < nr; i++) cells[i] = table_at(t, i, pos);
@@ -1974,7 +2068,7 @@ static int tables_equal(const Table *a, const Table *b)
 
 int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
 {
-    return encode_modelled(t, out, fired, 1, NULL, 1, NULL, NULL);
+    return encode_modelled(t, out, fired, 1, NULL, 1, NULL, NULL, NULL);
 }
 
 /* Does this table have lenient columns at all, and could any of them win?
@@ -1982,20 +2076,19 @@ int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
  * stored as numbers plus exceptions -- worth 41% of the Treasury yield curve
  * -- or left as a dictionary/text column. This cheap screen decides; it is
  * one-sided (it over-estimates the alternative), so it declines only cases
- * that could not have won. */
-static void lenient_verdict(const Table *t, int *any_lax, int *promising)
+ * that could not have won. It reads the lenient plan, which the encoder then
+ * uses as is when the answer is yes -- until 2026-10-01 the plan was thrown
+ * away here and built again from scratch. */
+static void lenient_verdict(const ColPlan *plan, size_t nc, int *any_lax, int *promising)
 {
     *any_lax = 0;
     *promising = 0;
-    ColPlan *plan = classify(t, 1);
-    if (!plan) return;
-    for (size_t j = 0; j < t->ncols; j++) {
+    for (size_t j = 0; j < nc; j++) {
         if (plan[j].nex) {
             *any_lax = 1;
             if (plan[j].ex_prom) *promising = 1;
         }
     }
-    plan_free(plan, t->ncols);
 }
 
 /* One pass. Mahdi's rule, 2026-09-29: "one algorithm to reorder, one
@@ -2052,12 +2145,16 @@ int ppz_encode(const Table *t, Buf *out)
     ppz_trace("derived columns", tr);
     tr = ppz_now();
     int any_lax = 0, promising = 0;
-    lenient_verdict(src, &any_lax, &promising);
-    ppz_trace("lenient screen", tr);
+    ColPlan *plan = classify(src, 1);
+    if (!plan) { if (nd) table_free(&dt); buf_free(&dmeta); return -1; }
+    lenient_verdict(plan, src->ncols, &any_lax, &promising);
+    int use_lenient = (!any_lax) || promising;
+    if (!use_lenient) { plan_free(plan, src->ncols); plan = NULL; }
+    ppz_trace("classify + lenient screen", tr);
     tr = ppz_now();
     long fired = 0;
-    int rc = encode_modelled(src, out, &fired, 1, NULL, (!any_lax) || promising,
-                             NULL, nd ? &dmeta : NULL);
+    int rc = encode_modelled(src, out, &fired, 1, NULL, use_lenient,
+                             NULL, nd ? &dmeta : NULL, plan);
     ppz_trace("== encode", tr);
     if (nd) table_free(&dt);
     buf_free(&dmeta);

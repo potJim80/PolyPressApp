@@ -104,11 +104,32 @@ static int kv_cmp(const void *a, const void *b)
     return x->i < y->i ? -1 : (x->i > y->i ? 1 : 0);
 }
 
+/* The values are a parent column's dictionary ids, already checked to be
+ * inside its alphabet (0..alpha_n-1, an array that exists), so a counting
+ * sort is both exact and bounded: same order as the qsort with the index
+ * tiebreak above, in O(n + alphabet) instead of O(n log n). The qsort stays
+ * for anything else. */
 static size_t *stable_argsort(const int64_t *v, size_t n)
 {
-    KV *kv = malloc(n * sizeof(KV));
-    size_t *out = malloc(n * sizeof(size_t));
-    if (!kv || !out) { free(kv); free(out); return NULL; }
+    size_t *out = malloc((n ? n : 1) * sizeof(size_t));
+    if (!out) return NULL;
+    int64_t mx = -1, mn = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (v[i] > mx) mx = v[i];
+        if (v[i] < mn) mn = v[i];
+    }
+    if (mn >= 0 && (uint64_t)mx <= (uint64_t)n + 65536) {
+        size_t k = (size_t)(mx + 1);
+        size_t *start = calloc(k + 1, sizeof(size_t));
+        if (!start) { free(out); return NULL; }
+        for (size_t i = 0; i < n; i++) start[(size_t)v[i] + 1]++;
+        for (size_t b = 0; b < k; b++) start[b + 1] += start[b];
+        for (size_t i = 0; i < n; i++) out[start[(size_t)v[i]]++] = i;
+        free(start);
+        return out;
+    }
+    KV *kv = malloc((n ? n : 1) * sizeof(KV));
+    if (!kv) { free(out); return NULL; }
     for (size_t i = 0; i < n; i++) { kv[i].v = v[i]; kv[i].i = i; }
     qsort(kv, n, sizeof(KV), kv_cmp);
     for (size_t i = 0; i < n; i++) out[i] = kv[i].i;
