@@ -25,16 +25,16 @@ if [ "${SANITIZE:-0}" = "1" ]; then
     CFLAGS="-O1 -g -std=gnu99 -pthread -fsanitize=address,undefined -fno-omit-frame-pointer"
 fi
 INC=""
-LIB="-llzma -lbz2"
+LIB="-llzma"
 # the same lzma.h discovery as csrc/build.sh
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists liblzma 2>/dev/null; then
     INC="$(pkg-config --cflags liblzma)"
-    LIB="$(pkg-config --libs liblzma) -lbz2"
+    LIB="$(pkg-config --libs liblzma)"
 else
     for d in /opt/homebrew /usr/local /opt/local; do
         if [ -f "$d/include/lzma.h" ]; then
             INC="-I$d/include"
-            LIB="-L$d/lib -llzma -lbz2"
+            LIB="-L$d/lib -llzma"
             break
         fi
     done

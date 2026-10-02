@@ -40,7 +40,6 @@ is a real win.
 from __future__ import annotations
 
 import argparse
-import bz2
 import io
 import json
 import lzma
@@ -129,12 +128,7 @@ def refinish(blob: bytes, comp) -> int:
     header bytes are counted unchanged -- they are the same few bytes either
     way, and pretending otherwise would flatter the result.
     """
-    head = blob[:4]
-    if head == b"PPZX":
-        return 4 + len(comp(lzma.decompress(blob[4:], **XZ)))
-    if head == b"PPZB":
-        return 4 + len(comp(bz2.decompress(blob[4:])))
-    if head not in (b"PPZ1", b"PPZ2", b"FAST"):
+    if blob[:4] != b"PPZ2":
         raise ValueError("not a polypress archive")
     ml = int.from_bytes(blob[4:8], "big")
     bl = int.from_bytes(blob[8:12], "big")

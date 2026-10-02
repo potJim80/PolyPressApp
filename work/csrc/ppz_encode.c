@@ -1,25 +1,14 @@
-/* Encoding a Polypress archive, in C. Byte-identical to fast.py's encode().
+/* Encoding a Polypress archive.
  *
- * "Byte-identical" is the contract, not "equivalent", so this file is full of
- * places where the obvious C is not what is written. Three worth knowing
- * about before reading:
+ * Three ideas, chosen per column: predict down a column (differences),
+ * predict across commensurable numeric columns (2D groups), and reorder rows
+ * so a column collapses into runs (parents). Two rules keep the output
+ * deterministic -- the same table always gives the same bytes, on any
+ * machine and any number of threads:
  *
- *   Summation order. The parent search compares entropies, and entropy is a
- *   sum of floats. np.sum is pairwise, not left-to-right, and the two give
- *   different last bits. A different last bit can flip a `>` comparison and
- *   therefore pick a different parent and therefore change every byte after
- *   it. pairwise_sum() below reproduces numpy's algorithm exactly, block size
- *   and all.
- *
- *   Tie-breaking. Equal gains are broken by lowest column index, matching the
- *   list iteration in pick_parents. (fast.py used a set there until this port
- *   forced the question; a set's order is a hash-table artefact, so the
- *   archive bytes depended on it. It is a list now, in both languages.)
- *
- *   JSON. The metadata is compared byte for byte, so this emits exactly what
- *   json.dumps(meta, separators=(",",":")) emits: no spaces, keys in
- *   insertion order, and ensure_ascii escaping of everything outside
- *   0x20..0x7e as \uXXXX with surrogate pairs above the BMP.
+ *   Entropy scores are quantised to a ~1e-6 grid and compared as integers
+ *   (score_of), so a choice never hangs on a float's last bit.
+ *   Ties fall to the lowest column index.
  */
 
 #include "ppz.h"
@@ -41,39 +30,6 @@
 #define MIN_ROWS_FOR_2D 3
 #define INT_LIMIT   (((int64_t)1) << 62)
 
-/* ------------------------------------------------------- numpy pairwise sum */
-
-/* numpy's pairwise summation, from loops.c.src. Reproduced because the
- * entropy comparisons in the parent search are sensitive to the last bit. */
-#define PW_BLOCKSIZE 128
-
-static double pairwise_sum(const double *a, size_t n)
-{
-    if (n < 8) {
-        double res = 0.0;
-        for (size_t i = 0; i < n; i++) res += a[i];
-        return res;
-    }
-    if (n <= PW_BLOCKSIZE) {
-        double r[8];
-        size_t i;
-        for (i = 0; i < 8; i++) r[i] = a[i];
-        for (i = 8; i < n - (n % 8); i += 8) {
-            r[0] += a[i + 0]; r[1] += a[i + 1];
-            r[2] += a[i + 2]; r[3] += a[i + 3];
-            r[4] += a[i + 4]; r[5] += a[i + 5];
-            r[6] += a[i + 6]; r[7] += a[i + 7];
-        }
-        double res = ((r[0] + r[1]) + (r[2] + r[3]))
-                   + ((r[4] + r[5]) + (r[6] + r[7]));
-        for (; i < n; i++) res += a[i];
-        return res;
-    }
-    size_t n2 = n / 2;
-    n2 -= n2 % 8;
-    return pairwise_sum(a, n2) + pairwise_sum(a + n2, n - n2);
-}
-
 /* ------------------------------------------------------------------ varints */
 
 static uint64_t zigzag(int64_t v)
@@ -81,7 +37,7 @@ static uint64_t zigzag(int64_t v)
     return ((uint64_t)v << 1) ^ (uint64_t)(v >> 63);
 }
 
-/* Mirror of fast.packed_len: one byte per value, plus a 4- or 8-byte tail
+/* Bytes pack_ints would write: one byte per value, plus a 4- or 8-byte tail
  * entry for each escape. The width is 8 only if some escaped value needs it. */
 static size_t packed_len(const int64_t *a, size_t n)
 {
@@ -173,8 +129,7 @@ static int str_cmp(const void *pa, const void *pb)
     size_t n = a->n < b->n ? a->n : b->n;
     int r = n ? memcmp(a->p, b->p, n) : 0;
     if (r) return r;
-    /* Python compares str by codepoint; UTF-8 byte order preserves codepoint
-     * order, and a prefix sorts before the longer string. */
+    /* UTF-8 byte order is codepoint order; a prefix sorts first */
     return a->n < b->n ? -1 : (a->n > b->n ? 1 : 0);
 }
 
@@ -335,8 +290,8 @@ static int build_dict(const Str *base, size_t stride, size_t n, size_t cap,
 
 /* ------------------------------------------------------------------- numeric */
 
-/* Same rules as tcz.c scan_decimals: optional sign, digits, optional
- * fraction; the whole field must be consumed. */
+/* Optional sign, digits, optional fraction; the whole field must be
+ * consumed. */
 static int scan_decimals_cell(Str s, int *dec_out)
 {
     size_t p = 0;
@@ -368,9 +323,7 @@ static int parse_fixed_cell(Str s, int dec, int64_t *out)
     int64_t v = 0;
     /* Check before multiplying, not after. `v >= INT_LIMIT` following
      * `v = v*10 + d` never fires when the multiply already overflowed --
-     * signed overflow is undefined and wraps negative in practice. Same fix
-     * as tcz.c; the two must agree or the accelerated and unaccelerated
-     * Python paths disagree about which columns are numeric. */
+     * signed overflow is undefined and wraps negative in practice. */
     #define ACC_DIGIT(d)                                                     \
         do {                                                                 \
             int dgt_ = (d);                                                  \
@@ -464,8 +417,7 @@ static int64_t *numeric_column(const Table *t, size_t col, int *dec_out)
     return out;
 }
 
-/* A column that is numeric apart from a few cells that are not. Mirrors
- * fast._numeric_lenient exactly.
+/* A column that is numeric apart from a few cells that are not.
  *
  * The numeric test is all or nothing, and that is expensive. The Treasury
  * yield curve contains four blank cells in 72,048 and those four drop all
@@ -480,7 +432,7 @@ static int64_t *numeric_column(const Table *t, size_t col, int *dec_out)
  * The decimal count is the most common one, ties to the smaller, so the
  * choice cannot depend on iteration order. Cells with more than 18 decimals
  * are counted as exception candidates rather than binned, which keeps this
- * histogram a fixed array and keeps Python in step. */
+ * histogram a fixed array. */
 #define EX_MAX_DEC 18
 #define EX_FRAC_NUM 5
 #define EX_FRAC_DEN 100
@@ -577,12 +529,6 @@ static int str_eq(Str a, Str b);
 static void pack_ints(const int64_t *a, size_t n, Buf *out);
 
 /* Could storing this column as numbers possibly beat leaving it alone?
- * Mirrors fast._lenient_promising exactly -- it decides whether the whole-file
- * guard runs, so a disagreement here is a different archive.
- *
- * The guard costs a second full encode, and that second encode IS the cost:
- * the lenient scan is 0.04-0.09s where the extra encode is 0.9-1.4s. Four
- * large datasets used to encode twice, find nothing, and keep the first result.
  *
  * One-sided by construction. The alternative is deliberately OVER-estimated --
  * it charges for the dictionary's alphabet and ignores the reorder parent that
@@ -743,11 +689,8 @@ typedef struct { size_t *pos; size_t n; } Group;
  *
  * This codec accepts magnitudes up to 2^62, and 8 * 2^62 does not fit in an
  * int64 -- the product wraps negative and the comparison silently says "not
- * commensurable". Python never had to think about it because its ints are
- * arbitrary precision, so the bug existed only on this side, and it cost
- * real compression: every group of large numeric columns was refused, and
- * the archive came out bigger than the Python one for no visible reason.
- * For positive integers, a <= 8b is exactly ceil(a/8) <= b. */
+ * commensurable" -- every group of large numeric columns was once refused
+ * that way, for no visible reason. For positive integers, a <= 8b is exactly ceil(a/8) <= b. */
 static int le_times8(int64_t a, int64_t b)
 {
     return (a + 7) / 8 <= b;
@@ -809,20 +752,10 @@ static Group *find_2d_groups(ColPlan *plan, size_t nc, size_t nrows,
 
 /* ------------------------------------------------------------ parent search */
 
-/* Entropy scores are COMPARED as integers, never as floats. See the long note
- * at fast._score -- the short version is that pairwise_sum() below reproduces
- * numpy's documented scalar algorithm exactly and still cannot match np.sum on
- * a 13,000-bin joint histogram, because numpy takes a SIMD reduction whose
- * grouping depends on the CPU's vector width. Bit-identity with numpy is not
- * achievable from portable C, and two numpy builds on different hardware need
- * not agree either.
- *
- * The last bit was never meaningful. Quantising to a ~1e-6 grid and comparing
- * int64 makes the parent choice depend on the part of the number that carries
- * information, and ties fall to the lower column index on both sides.
- *
- * floor(x*SCALE + 0.5), not llround(): it has to match Python's
- * math.floor(x * SCALE + 0.5) exactly, and every score here is non-negative. */
+/* Entropy scores are COMPARED as integers, never as floats: quantised to a
+ * ~1e-6 grid, so a parent choice depends on the part of the number that
+ * carries information and never on rounding in the last bit. Ties fall to
+ * the lower column index. Every score here is non-negative. */
 #define SCORE_SCALE 1048576.0
 
 static int64_t score_of(double x)
@@ -832,21 +765,16 @@ static int64_t score_of(double x)
 
 static double counts_entropy(const int64_t *counts, size_t nc, size_t n)
 {
-    double *t = malloc((nc ? nc : 1) * sizeof(double));
-    if (!t) return 0.0;
+    double s = 0.0;
     for (size_t i = 0; i < nc; i++) {
         double p = (double)counts[i] / (double)n;
-        t[i] = p * log2(p);
+        s += p * log2(p);
     }
-    double s = pairwise_sum(t, nc);
-    free(t);
     return -s;
 }
 
-/* counts of each distinct value in `v`, as np.unique(return_counts) would --
- * i.e. ascending by value, which is the order np.bincount also yields for the
- * nonzero-count subset. Order only affects summation order, which is why it
- * has to match. */
+/* Counts of each distinct value in `v`, ascending by value -- a fixed order,
+ * because it is the summation order of the entropy. */
 static int i64_cmp(const void *a, const void *b)
 {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
@@ -1074,8 +1002,7 @@ typedef struct { int64_t g; size_t dp; } Cand;   /* g is a quantised score_of() 
 static int cand_cmp(const void *a, const void *b)
 {
     const Cand *x = a, *y = b;
-    /* by descending gain, then ascending column index -- matching
-     * ranked.sort(key=lambda r: (-r[0], r[1])) on the Python side */
+    /* by descending gain, then ascending column index */
     if (x->g > y->g) return -1;
     if (x->g < y->g) return 1;
     return x->dp < y->dp ? -1 : (x->dp > y->dp ? 1 : 0);
@@ -1101,8 +1028,7 @@ static size_t probe_order(const Table *t, size_t col, const size_t *perm,
 /* Choose a reorder parent for each text column.
  *
  * Text columns were the one place the reordering idea was never applied, and
- * they dominate the datasets this codec does worst on. Mirrors
- * fast.pick_text_parents exactly, including the two-stage shape: conditional
+ * they dominate the datasets this codec does worst on. Two stages: conditional
  * entropy only NOMINATES candidates, and the winner is decided by actually
  * compressing. Trusting the score alone made one real dataset 66% larger --
  * entropy measures how often the parent pins the exact value, which is not
@@ -1230,7 +1156,7 @@ done:
 
 /* --------------------------------------------------------------------- json */
 
-/* Exactly json.dumps' ensure_ascii escaping: anything outside 0x20..0x7e, plus
+/* ASCII-only JSON strings: anything outside 0x20..0x7e, plus
  * quote and backslash, becomes an escape; non-BMP becomes a surrogate pair. */
 static void json_str(Buf *b, const char *s, size_t n)
 {
@@ -1286,7 +1212,7 @@ static void json_int(Buf *b, long long v)
 
 /* ------------------------------------------------------------------ encode */
 
-typedef struct { size_t n, b; int nl; int fc; } SMeta;
+typedef struct { size_t n, b; int nl; } SMeta;
 
 /* One group into the pile. `front` front-codes it; otherwise newline-joined,
  * or concatenated with an external length array when it contains a newline. */
@@ -1325,9 +1251,8 @@ static void pile_group(Buf *out, const Str *w, size_t count, int has_nl,
     }
 }
 
-/* One candidate layout of the text pile, built and compressed. The pile
- * itself is dropped as soon as it is compressed: only its size, its metadata
- * and its compressed bytes are needed to decide. */
+/* The text pile, built and compressed; the uncompressed pile is dropped as
+ * soon as it is compressed. */
 typedef struct {
     Str                 **sg;
     const size_t         *sgn;
@@ -1372,15 +1297,9 @@ static void build_pile(Str **sg, const size_t *sgn, size_t nsg,
         sm[g].n = sgn[g];
         sm[g].b = txt->len - at;
         sm[g].nl = has_nl[g] ? 0 : 1;
-        sm[g].fc = (!has_nl[g] && front[g]) ? 1 : 0;
     }
 }
 
-/* `use_2d` off skips the planar grouping entirely, which is safe because
- * classify() callocs the plan: in_group stays 0 and group_idx stays -1, so
- * every numeric column falls through to its own measured differencing order.
- * `ngroups_out` reports how many groups formed, so the caller knows whether
- * the second encode is worth running at all. */
 /* Are all the column names valid UTF-8? They travel in the JSON metadata,
  * and JSON cannot carry a stray byte: the escaper would turn 0xFF into
  * \u00ff, which comes back as C3 BF -- a renamed column. Tables read from
@@ -1408,33 +1327,14 @@ static int names_are_utf8(const Table *t)
     return 1;
 }
 
-static int encode_modelled(const Table *t, Buf *out, long *fired,
-                           int use_2d, size_t *ngroups_out,
-                           int use_lenient, size_t *nlax_out,
-                           const Buf *derive_meta, ColPlan *pre)
+/* The archive for table `t`, from its column plan (which this frees). */
+static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
+                           const Buf *derive_meta)
 {
-    if (!names_are_utf8(t)) { if (pre) plan_free(pre, t->ncols); return -1; }
-    if (fired) *fired = 0;
-    if (ngroups_out) *ngroups_out = 0;
-    if (nlax_out) *nlax_out = 0;
     size_t nc = t->ncols, nr = t->nrows;
     double tr = ppz_now();
-    /* `pre` is a plan the caller already built with these settings (it is
-     * ours now); classifying is a third of the work, so it is done once */
-    ColPlan *plan = pre ? pre : classify(t, use_lenient);
-    ppz_trace(use_lenient ? "classify (lenient)" : "classify (strict)", tr); tr = ppz_now();
-    if (!plan) return -1;
-    if (nlax_out) {
-        /* only PROMISING columns are reported, because this is what decides
-         * whether the caller pays for a second encode */
-        size_t nl = 0;
-        for (size_t j = 0; j < nc; j++) if (plan[j].nex && plan[j].ex_prom) nl++;
-        *nlax_out = nl;
-    }
-
     size_t ngroups = 0;
-    Group *groups = use_2d ? find_2d_groups(plan, nc, nr, &ngroups) : NULL;
-    if (ngroups_out) *ngroups_out = ngroups;
+    Group *groups = find_2d_groups(plan, nc, nr, &ngroups);
     Parents P = pick_parents(plan, nc, nr);
     ppz_trace("2d groups + dictionary parents", tr); tr = ppz_now();
     if (!P.parent) { plan_free(plan, nc); return -1; }
@@ -1636,11 +1536,7 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
     }
     free(pile.front);
     tz = pile.z;
-    /* "exactly the alphabets" is spelled once, archive-wide, instead of per
-     * group -- the older, shorter form of the same flag; the decoder reads
-     * both. */
-    int use_fc = P.norder > 0;
-    for (size_t g = 0; g < nsg; g++) smeta[g].fc = 0;
+    int use_fc = P.norder > 0;          /* the alphabets are front-coded */
 
     free(has_nl);
     ppz_bg_join(bins_bg);
@@ -1683,8 +1579,6 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
             json_int(&meta, c->dec);
             buf_put(&meta, ",\"g\":", 5);
             json_int(&meta, c->group_idx);
-            /* "nex" is appended last because fast.py adds it to an already
-             * built dict, and the metadata is compared byte for byte. */
             if (c->nex) {
                 buf_put(&meta, ",\"nex\":", 7);
                 json_int(&meta, (long long)c->nex);
@@ -1737,42 +1631,19 @@ static int encode_modelled(const Table *t, Buf *out, long *fired,
         json_int(&meta, (long long)smeta[g].b);
         buf_put(&meta, ",\"nl\":", 6);
         buf_put(&meta, smeta[g].nl ? "true" : "false", smeta[g].nl ? 4 : 5);
-        /* fast.py adds "fc" to an already-built dict, so it lands last */
-        if (smeta[g].fc) buf_put(&meta, ",\"fc\":1", 7);
         buf_putc(&meta, '}');
     }
     buf_put(&meta, "],\"nlenbins\":", 13);
     json_int(&meta, (long long)nlenbins);
-    /* fast.py sets meta["fc"] on an already-built dict, so it lands last and
-     * the metadata is compared byte for byte */
     if (use_fc) buf_put(&meta, ",\"fc\":1", 7);
     if (derive_meta) buf_put(&meta, derive_meta->data, derive_meta->len);
     buf_putc(&meta, '}');
 
-    /* Did any of the three ideas actually do something? A parent-sorted
-     * dictionary column, a numeric column whose differences packed smaller
-     * than its values, or a 2D group. The same three counts fast.py sums --
-     * note grouped numeric columns are excluded there because their spec is
-     * "grp" rather than "num", and text parents are not counted at all. */
-    if (fired) {
-        long f = (long)ngroups;
-        for (size_t pos = 0; pos < nc; pos++) {
-            if (plan[pos].kind == K_DICT) {
-                if (P.parent[pos] >= 0) f++;
-            } else if (plan[pos].kind == K_NUM && !plan[pos].in_group
-                       && plan[pos].k) {
-                f++;
-            }
-        }
-        *fired = f;
-    }
-
     /* ------------------------------------------------------- container */
     if (ppz_lzma_compress(meta.data, meta.len, &mz)) goto done;
-    /* bz was compressed in the background; tz is the winning pile */
 
     buf_free(out);
-    buf_put(out, derive_meta ? PPZ_MAGIC_DERIVED : PPZ_MAGIC, 4);
+    buf_put(out, PPZ_MAGIC, 4);
     for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((mz.len >> s) & 0xFF));
     for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((bz.len >> s) & 0xFF));
     for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((tz.len >> s) & 0xFF));
@@ -2051,26 +1922,6 @@ fail:
 
 /* ------------------------------------------------------------ the encoder */
 
-/* Do the tables hold the same strings? */
-static int tables_equal(const Table *a, const Table *b)
-{
-    if (a->ncols != b->ncols || a->nrows != b->nrows) return 0;
-    for (size_t j = 0; j < a->ncols; j++)
-        if (strcmp(a->names[j], b->names[j])) return 0;
-    for (size_t i = 0; i < a->nrows; i++) {
-        for (size_t j = 0; j < a->ncols; j++) {
-            Str x = table_at(a, i, j), y = table_at(b, i, j);
-            if (x.n != y.n || memcmp(x.p, y.p, x.n)) return 0;
-        }
-    }
-    return 1;
-}
-
-int ppz_encode_modelled(const Table *t, Buf *out, long *fired)
-{
-    return encode_modelled(t, out, fired, 1, NULL, 1, NULL, NULL, NULL);
-}
-
 /* Does this table have lenient columns at all, and could any of them win?
  * A column that is numeric apart from a few cells (blanks, "-0.0") can be
  * stored as numbers plus exceptions -- worth 41% of the Treasury yield curve
@@ -2106,36 +1957,17 @@ static void lenient_verdict(const ColPlan *plan, size_t nc, int *any_lax, int *p
  * plain xz -9e on every suite table but one, where it ties.
  *
  * Derived columns (2026-10-01) run first, on a sample, as one more fixed
- * rule: when they fire the archive is PPZ2, otherwise the bytes are exactly
- * what they were before. Measured on the suite before shipping: -5.1% in
+ * rule. Measured on the suite before shipping: -5.1% in
  * total, -19% chicago_crimes, -16% nyc_collisions, -12% nyc_311 and
  * seattle_fire911, 31 of 39 tables byte-identical, encode time down 5%.
  * The one loss is xs_noaa_gsoy_ord, +78 bytes, where *_ATTRIBUTES flag
  * columns match each other by coincidence.
  *
- * The plain containers (PPZX/PPZB) are still READ -- older archives use
- * them -- and PPZX is still written in one case: column names that are not
- * UTF-8, which the JSON metadata cannot carry (library use only; the readers
- * validate UTF-8). */
+ * Column names must be UTF-8 (the JSON metadata carries them); the readers
+ * guarantee it, so only a program using this as a library can be refused. */
 int ppz_encode(const Table *t, Buf *out)
 {
-    if (!names_are_utf8(t)) {
-        Buf canon, z;
-        buf_init(&canon); buf_init(&z);
-        table_write_canonical(t, &canon);
-        Table back;
-        int ok = table_parse_csv(&back, canon.data, canon.len) == 0
-                 && tables_equal(t, &back);
-        table_free(&back);
-        if (ok) ok = ppz_lzma_compress(canon.data, canon.len, &z) == 0;
-        if (ok) {
-            buf_free(out);
-            buf_put(out, PPZ_MAGIC_RAW_XZ, 4);
-            buf_put(out, z.data, z.len);
-        }
-        buf_free(&canon); buf_free(&z);
-        return ok ? 0 : -1;
-    }
+    if (!names_are_utf8(t)) return -1;
     double tr = ppz_now();
     Table dt;
     Buf dmeta;
@@ -2144,17 +1976,18 @@ int ppz_encode(const Table *t, Buf *out)
     const Table *src = nd ? &dt : t;
     ppz_trace("derived columns", tr);
     tr = ppz_now();
+    /* Lenient columns (numbers apart from a few odd cells) are kept as
+     * numbers only when the screen says one could win; otherwise the table
+     * is classified strictly. */
     int any_lax = 0, promising = 0;
     ColPlan *plan = classify(src, 1);
-    if (!plan) { if (nd) table_free(&dt); buf_free(&dmeta); return -1; }
-    lenient_verdict(plan, src->ncols, &any_lax, &promising);
-    int use_lenient = (!any_lax) || promising;
-    if (!use_lenient) { plan_free(plan, src->ncols); plan = NULL; }
+    if (plan) {
+        lenient_verdict(plan, src->ncols, &any_lax, &promising);
+        if (any_lax && !promising) { plan_free(plan, src->ncols); plan = classify(src, 0); }
+    }
     ppz_trace("classify + lenient screen", tr);
     tr = ppz_now();
-    long fired = 0;
-    int rc = encode_modelled(src, out, &fired, 1, NULL, use_lenient,
-                             NULL, nd ? &dmeta : NULL, plan);
+    int rc = plan ? encode_modelled(src, out, plan, nd ? &dmeta : NULL) : -1;
     ppz_trace("== encode", tr);
     if (nd) table_free(&dt);
     buf_free(&dmeta);

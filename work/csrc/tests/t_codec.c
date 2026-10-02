@@ -2,36 +2,22 @@
  *
  *     t_codec [fuzz-count] [fuzz-seed]
  *
- * Four promises, checked on every table this file builds:
+ * Checked on every table this file builds:
  *
  *   1. Round trip. The decoded table is the table: the same column names, the
- *      same row count, every cell the same bytes. Nothing else the format says
- *      matters if this fails.
- *   2. Old archives open. The encoder is one pass since 2026-09-29 and no
- *      longer writes the plain containers (PPZX = xz, PPZB = bzip2 over the
- *      canonical CSV) or promises to be smaller than them -- Mahdi traded
- *      that guarantee for speed. But archives written before are full of
- *      them, so for every table both are built here and must decode.
- *   3. Threads change nothing. The threaded encoder writes exactly the bytes
- *      the serial one does. That was the promise when the encoder was
- *      threaded on 2026-09-28; this checks it on every hand-built table and a
- *      share of the fuzzed ones.
- *   4. The modelled container round-trips by itself, and ppz_encode writes
- *      it (PPZ1) for every table whose column names are UTF-8.
+ *      same row count, every cell the same bytes.
+ *   2. Threads change nothing. The threaded encoder writes exactly the bytes
+ *      the serial one does, on every hand-built table and a share of the
+ *      fuzzed ones.
  *
- * The hand-built tables are the ones from the retired test_dtz.py and
- * test_fast.py (each keeps the reason it was written), plus shapes the port
- * needed: the empty table, NUL and CR in cells, the dictionary-width
- * boundaries at 256 and 65,536 distinct values, and so on. After them comes a
- * seeded random-table fuzzer (test_fuzz.py's generators, and more).
- *
- * The C program is the definition now. Nothing here compares against another
- * implementation -- only against the contract.
+ * The hand-built tables each keep the reason they were written: the empty
+ * table, NUL and CR in cells, the dictionary-width boundaries at 256 and
+ * 65,536 distinct values, and so on. After them comes a seeded random-table
+ * fuzzer.
  */
 
 #include "harness.h"
 
-#include <bzlib.h>
 #include <lzma.h>
 
 static int g_threads_checks = 1;      /* off for the few very large tables */
@@ -43,14 +29,42 @@ static int is_magic(const Buf *b, const char *m)
     return b->len >= 4 && !memcmp(b->data, m, 4);
 }
 
-/* PPZ1, or PPZ2 -- the same container with derived columns */
-static int is_modelled(const Buf *b)
+/* Does the archive's metadata name derived columns? */
+static int has_derive(const Buf *b)
 {
-    return is_magic(b, PPZ_MAGIC) || is_magic(b, PPZ_MAGIC_DERIVED);
+    if (b->len < 16) return 0;
+    size_t ml = ((size_t)b->data[4] << 24) | ((size_t)b->data[5] << 16)
+              | ((size_t)b->data[6] << 8) | b->data[7];
+    Buf m;
+    buf_init(&m);
+    int yes = 16 + ml <= b->len && !ppz_lzma_decompress(b->data + 16, ml, &m)
+              && memmem(m.data, m.len, "\"derive\"", 8) != NULL;
+    buf_free(&m);
+    return yes;
 }
 
-/* Everything this file promises, for one table. `quiet_threads` skips the
- * two extra encodes that promise 3 costs. Returns 1 if every check passed. */
+/* Is every column name valid UTF-8? ppz_encode refuses the table otherwise.
+ * Strict: no overlongs, no surrogates, nothing above U+10FFFF. */
+static int names_ok(const Table *t)
+{
+    for (size_t j = 0; j < t->ncols; j++) {
+        const unsigned char *p = (const unsigned char *)t->names[j];
+        while (*p) {
+            unsigned c = *p, need = c < 0x80 ? 0 : (c >= 0xC2 && c <= 0xDF) ? 1
+                       : (c >= 0xE0 && c <= 0xEF) ? 2 : (c >= 0xF0 && c <= 0xF4) ? 3 : 9;
+            if (need == 9) return 0;
+            unsigned lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80;
+            unsigned hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+            for (unsigned k = 1; k <= need; k++)
+                if (p[k] < (k == 1 ? lo : 0x80) || p[k] > (k == 1 ? hi : 0xBF)) return 0;
+            p += need + 1;
+        }
+    }
+    return 1;
+}
+
+/* Everything this file promises, for one table. `check_threads` 0 skips the
+ * two extra encodes that promise 2 costs. Returns 1 if every check passed. */
 static int check_table(const char *name, const Table *t, int check_threads)
 {
     int ok = 1;
@@ -60,11 +74,15 @@ static int check_table(const char *name, const Table *t, int check_threads)
 
     /* 1. round trip */
     int rc = ppz_encode(t, &blob);
+    if (!names_ok(t)) {
+        /* names that are not UTF-8 cannot travel in the JSON metadata, and
+         * renaming a column would be a silent loss: refused instead */
+        buf_free(&blob);
+        return CHECK(rc != 0, "%s: a non-UTF-8 column name was accepted", name);
+    }
     ok &= CHECK(rc == 0, "%s: ppz_encode failed (rc %d)", name, rc);
     if (rc) { buf_free(&blob); return 0; }
-    ok &= CHECK(is_modelled(&blob) || is_magic(&blob, PPZ_MAGIC_RAW_XZ)
-                || is_magic(&blob, PPZ_MAGIC_RAW_BZ),
-                "%s: archive starts with an unknown magic", name);
+    ok &= CHECK(is_magic(&blob, PPZ_MAGIC), "%s: archive starts with %.4s", name, blob.data);
     Table back;
     rc = ppz_decode(blob.data, blob.len, &back);
     ok &= CHECK(rc == 0, "%s: ppz_decode refused its own archive (%.4s)", name, blob.data);
@@ -74,69 +92,7 @@ static int check_table(const char *name, const Table *t, int check_threads)
         table_free(&back);
     }
 
-    /* 4. the modelled container on its own */
-    Buf mod;
-    buf_init(&mod);
-    long fired = -1;
-    rc = ppz_encode_modelled(t, &mod, &fired);
-    /* A column name that is not UTF-8 cannot go in the JSON metadata, so the
-     * modelled container must REFUSE it -- never rename the column -- and
-     * ppz_encode must then have used a plain container, which stores bytes.
-     * (A name with any high byte is only a candidate; the encoder decides.) */
-    int high = 0;
-    for (size_t j = 0; j < t->ncols; j++)
-        for (const unsigned char *p = (const unsigned char *)t->names[j]; *p; p++)
-            if (*p >= 0x80) high = 1;
-    int refused_ok = rc != 0 && high && !is_modelled(&blob);
-    ok &= CHECK((rc == 0 && is_magic(&mod, PPZ_MAGIC)) || refused_ok,
-                "%s: ppz_encode_modelled failed", name);
-    if (!rc) {
-        rc = ppz_decode(mod.data, mod.len, &back);
-        ok &= CHECK(rc == 0, "%s: the modelled container does not decode", name);
-        if (!rc) {
-            ok &= CHECK(table_same(t, &back, why, sizeof(why)),
-                        "%s: the modelled container round trip differs: %s", name, why);
-            table_free(&back);
-        }
-    }
-
-    /* 2. the plain containers older archives use still decode */
-    Buf canon, xz, bz;
-    buf_init(&canon); buf_init(&xz); buf_init(&bz);
-    table_write_canonical(t, &canon);
-    Table ct;
-    int survives = table_parse_csv(&ct, canon.data, canon.len) == 0;
-    if (survives) {
-        survives = table_same(t, &ct, why, sizeof(why));
-        table_free(&ct);
-    }
-    if (survives) {
-        CHECK(ppz_lzma_compress(canon.data, canon.len, &xz) == 0, "%s: xz failed", name);
-        CHECK(test_bz2_compress(canon.data, canon.len, &bz) == 0, "%s: bzip2 failed", name);
-        const char *mg[2] = { PPZ_MAGIC_RAW_XZ, PPZ_MAGIC_RAW_BZ };
-        Buf *body[2] = { &xz, &bz };
-        for (int k = 0; k < 2; k++) {
-            Buf fb;
-            buf_init(&fb);
-            buf_put(&fb, mg[k], 4);
-            buf_put(&fb, body[k]->data, body[k]->len);
-            rc = ppz_decode(fb.data, fb.len, &back);
-            ok &= CHECK(rc == 0, "%s: a %s fallback container does not decode", name, mg[k]);
-            if (!rc) {
-                ok &= CHECK(table_same(t, &back, why, sizeof(why)),
-                            "%s: the %s fallback round trip differs: %s", name, mg[k], why);
-                table_free(&back);
-            }
-            buf_free(&fb);
-        }
-    } else {
-        /* A table the canonical CSV cannot carry must never be shipped in it. */
-        ok &= CHECK(is_modelled(&blob),
-                    "%s: canonical CSV does not survive, yet the archive is %.4s",
-                    name, blob.data);
-    }
-
-    /* 3. threads change nothing */
+    /* 2. threads change nothing */
     if (check_threads && g_threads_checks) {
         Buf ser, two;
         buf_init(&ser); buf_init(&two);
@@ -155,8 +111,6 @@ static int check_table(const char *name, const Table *t, int check_threads)
         buf_free(&ser); buf_free(&two);
     }
 
-    buf_free(&canon); buf_free(&xz); buf_free(&bz);
-    buf_free(&mod);
     buf_free(&blob);
     return ok;
 }
@@ -180,7 +134,7 @@ static void col1(TB *b, const char *name, const char *const *vals, size_t n)
 
 #define N_OF(a) (sizeof(a) / sizeof((a)[0]))
 
-/* ------------------------------------------------- cases from test_dtz.py */
+/* ----------------------------------------------------- table shapes */
 
 /* "The cases that break naive table tools: embedded delimiters and newlines,
  * quotes, unicode, ragged rows, empty values, duplicate headers, degenerate
@@ -302,7 +256,7 @@ static void cases_dtz(void)
     }
 }
 
-/* ------------------------------------------------ cases from test_fast.py */
+/* --------------------------------------------------- modelling cases */
 
 static void cases_fast(void)
 {
@@ -529,17 +483,14 @@ static void cases_fast(void)
 
 /* ------------------------------------------------------------- one pass */
 
-/* ppz_encode is one pass: it writes the modelled container for every table
- * with UTF-8 names -- noise included, where plain xz would be smaller -- and
- * the canonical CSV's frozen quirks still decide what the OLD plain
- * containers could carry. */
+/* ppz_encode is one pass: the same container for every table, noise
+ * included, where plain xz would be smaller. */
 static void cases_one_pass(void)
 {
     h_section("one pass: always the modelled container");
     Rng r = { 4 };
     const char al[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     TB b;
-    char why[256];
 
     tb_start(&b, 2, (const char *const[]){ "a", "b" });
     for (int i = 0; i < 3000; i++)
@@ -552,13 +503,12 @@ static void cases_one_pass(void)
     tb_finish(&b, &noise);
     Buf got;
     buf_init(&got);
-    CHECK(ppz_encode(&noise, &got) == 0 && is_modelled(&got),
-          "noise: one pass must still write PPZ1");
+    CHECK(ppz_encode(&noise, &got) == 0 && is_magic(&got, PPZ_MAGIC),
+          "noise: one pass must still write the one container");
     check_table("noise", &noise, 1);
     table_free(&noise);
 
-    /* a bare '\r' is NOT quoted by the canonical writer (a frozen rule), so
-     * the old plain containers could never carry this table */
+    /* quoting and line-ending characters in cells */
     tb_start(&b, 2, (const char *const[]){ "t", "u" });
     tb_row(&b, "has,comma", "has\"quote", NULL);
     tb_row(&b, "has\nnewline", "has\ttab", NULL);
@@ -567,16 +517,7 @@ static void cases_one_pass(void)
     tb_row(&b, "\r", "a\r\nb", NULL);
     Table nasty;
     tb_finish(&b, &nasty);
-    Buf canon;
-    buf_init(&canon);
-    table_write_canonical(&nasty, &canon);
-    Table ct;
-    int same = table_parse_csv(&ct, canon.data, canon.len) == 0
-               && table_same(&nasty, &ct, why, sizeof(why));
-    if (ct.cells) table_free(&ct);
-    CHECK(!same, "nasty: the canonical CSV carried a bare \\r -- the frozen rule says it cannot");
     check_table("nasty", &nasty, 1);
-    buf_free(&canon);
     table_free(&nasty);
 
     tb_start(&b, 2, (const char *const[]){ "zip", "city" });
@@ -585,61 +526,10 @@ static void cases_one_pass(void)
     for (int i = 0; i < 2000; i++) { tb_cellz(&b, zips[i % 3]); tb_cellz(&b, cities[i % 3]); }
     Table st;
     tb_finish(&b, &st);
-    long fired = 0;
-    Buf mod;
-    buf_init(&mod);
-    CHECK(ppz_encode_modelled(&st, &mod, &fired) == 0 && fired > 0,
-          "structured table fired no tricks");
     check_table("structured", &st, 1);
     table_free(&st);
-    buf_free(&mod); buf_free(&got);
+    buf_free(&got);
 }
-
-/* The canonical CSV is frozen: every PPZX/PPZB archive in existence is built
- * on its exact bytes. Three quirks, pinned here as bytes (they were taken
- * from Python's csv.writer when this was a port, and test_cbin.py pinned them
- * against Python; now the rule itself is pinned). */
-static void cases_canonical(void)
-{
-    h_section("canonical CSV bytes (frozen format)");
-    struct { const char *name; size_t ncols; const char *names[3];
-             const char *cells[6]; size_t ncells; size_t lens[6];
-             const char *want; size_t wantn; } cs[] = {
-        /* an empty field IS quoted when it is the only field in its row */
-        { "lone empty field", 1, { "a" }, { "" }, 1, { 0 }, "a\n\"\"\n", 5 },
-        /* ...and not when it has company */
-        { "empty with company", 2, { "a", "b" }, { "", "" }, 2, { 0, 0 }, "a,b\n,\n", 6 },
-        /* a bare '\r' is NOT quoted */
-        { "bare CR", 1, { "a" }, { "x\ry" }, 1, { 3 }, "a\nx\ry\n", 6 },
-        /* a NUL byte forces quoting */
-        { "NUL", 1, { "a" }, { "n\0l" }, 1, { 3 }, "a\n\"n\0l\"\n", 8 },
-        /* quotes doubled, commas and newlines quoted */
-        { "quote comma newline", 3, { "q", "c", "n" }, { "a\"b", "a,b", "a\nb" }, 3,
-          { 3, 3, 3 }, "q,c,n\n\"a\"\"b\",\"a,b\",\"a\nb\"\n", 0 },
-        /* a header-only name that is empty, alone -> quoted too */
-        { "empty lone name", 1, { "" }, { "x" }, 1, { 1 }, "\"\"\nx\n", 5 },
-    };
-    for (size_t k = 0; k < N_OF(cs); k++) {
-        TB b;
-        tb_start(&b, cs[k].ncols, cs[k].names);
-        for (size_t i = 0; i < cs[k].ncells; i++) tb_cell(&b, cs[k].cells[i], cs[k].lens[i]);
-        Table t;
-        tb_finish(&b, &t);
-        Buf out;
-        buf_init(&out);
-        table_write_canonical(&t, &out);
-        char s1[128], s2[128];
-        if (!cs[k].wantn) cs[k].wantn = strlen(cs[k].want);
-        CHECK(out.len == cs[k].wantn && !memcmp(out.data, cs[k].want, out.len),
-              "canonical %s: got %s want %s", cs[k].name,
-              h_show((const char *)out.data, out.len, s1, sizeof(s1)),
-              h_show(cs[k].want, cs[k].wantn, s2, sizeof(s2)));
-        buf_free(&out);
-        table_free(&t);
-    }
-}
-
-/* ------------------------------------------------------ shapes the port adds */
 
 static void cases_more(void)
 {
@@ -840,10 +730,11 @@ static void cases_dict_limit(void)
 
 /* ----------------------------------------------------------------- V0 magic */
 
-/* Archives written before the rename to PPZ1 carry "FAST" and still open. */
-static void case_v0_magic(void)
+/* Every earlier container (dropped 2026-10-01; nothing was stored in them)
+ * is refused, never guessed at. */
+static void case_old_magics(void)
 {
-    h_section("FAST (pre-rename) archives still open");
+    h_section("earlier containers are refused");
     TB b;
     tb_start(&b, 2, (const char *const[]){ "zip", "city" });
     for (int i = 0; i < 300; i++) { tb_cellf(&b, "%05d", 90000 + i % 9); tb_cellf(&b, "c%d", i % 9); }
@@ -851,15 +742,13 @@ static void case_v0_magic(void)
     tb_finish(&b, &t);
     Buf blob;
     buf_init(&blob);
-    long fired;
-    CHECK(ppz_encode_modelled(&t, &blob, &fired) == 0, "encode");
-    memcpy(blob.data, PPZ_MAGIC_V0, 4);
-    Table back;
-    char why[256];
-    int rc = ppz_decode(blob.data, blob.len, &back);
-    if (CHECK(rc == 0, "a FAST archive is refused")) {
-        CHECK(table_same(&t, &back, why, sizeof(why)), "FAST archive differs: %s", why);
-        table_free(&back);
+    CHECK(ppz_encode(&t, &blob) == 0, "encode");
+    const char *old[] = { "PPZ1", "FAST", "PPZX", "PPZB" };
+    for (size_t k = 0; k < N_OF(old); k++) {
+        memcpy(blob.data, old[k], 4);
+        Table back;
+        int rc = ppz_decode(blob.data, blob.len, &back);
+        if (!CHECK(rc != 0, "a %s archive was decoded", old[k])) table_free(&back);
     }
     buf_free(&blob);
     table_free(&t);
@@ -876,7 +765,7 @@ static void drv_round_is(const char *v, int d, const char *want)
           "round(%s, %d) = %.*s, want %s", v, d, (int)n, out, want);
 }
 
-/* Encode, expect PPZ2 (or not), round trip. */
+/* Encode, expect derived columns (or not), round trip. */
 static void derived_case(const char *name, TB *b, int want_derived)
 {
     Table t;
@@ -885,9 +774,8 @@ static void derived_case(const char *name, TB *b, int want_derived)
     Buf blob;
     buf_init(&blob);
     if (CHECK(ppz_encode(&t, &blob) == 0, "%s: encode", name))
-        CHECK(is_magic(&blob, want_derived ? PPZ_MAGIC_DERIVED : PPZ_MAGIC),
-              "%s: wrote %.4s, wanted %s", name, blob.data,
-              want_derived ? PPZ_MAGIC_DERIVED : PPZ_MAGIC);
+        CHECK(has_derive(&blob) == want_derived, "%s: derived columns %s",
+              name, want_derived ? "missing" : "where none belong");
     buf_free(&blob);
     table_free(&t);
 }
@@ -898,7 +786,8 @@ static void cases_derived(void)
     size_t n;
     CHECK(drv_token("POINT (-87.6 41.88)", 19, 7) == 5, "token -87.6");
     CHECK(drv_token("a-b", 3, 1) == 0, "a lone minus is not a number");
-    CHECK((n = drv_token("1.2.3", 5, 0)) == 3, "1.2.3 starts with 1.2 (got %zu)", n);
+    n = drv_token("1.2.3", 5, 0);
+    CHECK(n == 3, "1.2.3 starts with 1.2 (got %zu)", n);
     CHECK(drv_token("7.", 2, 0) == 1, "a trailing dot is not a decimal");
     CHECK(drv_is_number("-0.50", 5) && !drv_is_number("", 0) && !drv_is_number("1e5", 3), "is_number");
     CHECK(drv_decimals("41.881", 6) == 3 && drv_decimals("12", 2) == 0, "decimals");
@@ -972,7 +861,7 @@ static void cases_derived(void)
 /* The capped forms are streamed so another thread can stop them early.
  * Stopping may change only the time taken, never the answer: when a capped
  * run does NOT stop, its bytes must be exactly the one-shot library call's.
- * The reference here is liblzma's and libbzip2's own buffer-to-buffer API,
+ * The reference here is liblzma's own buffer-to-buffer API,
  * not the program's wrappers. Inputs cross the 1 MB chunk the capped forms
  * feed at, because a chunk boundary is where a streamed encoder can differ. */
 static void oneshot_xz(const uint8_t *in, size_t n, Buf *out)
@@ -986,16 +875,6 @@ static void oneshot_xz(const uint8_t *in, size_t n, Buf *out)
     size_t pos = 0;
     if (lzma_raw_buffer_encode(f, NULL, in, n, out->data, &pos, cap) != LZMA_OK) pos = 0;
     out->len = pos;
-}
-
-static void oneshot_bz(const uint8_t *in, size_t n, Buf *out)
-{
-    buf_free(out);
-    unsigned int cap = (unsigned int)(n + n / 100 + 1024);
-    buf_need(out, cap);
-    if (BZ2_bzBuffToBuffCompress((char *)out->data, &cap, (char *)(uintptr_t)in,
-                                 (unsigned int)n, 9, 0, 0) != BZ_OK) cap = 0;
-    out->len = cap;
 }
 
 static void make_input(Rng *r, size_t n, Buf *out)
@@ -1016,7 +895,7 @@ static void make_input(Rng *r, size_t n, Buf *out)
 
 static void cases_capped(void)
 {
-    h_section("the compressor equals the one-shot one; bzip2 still decodes");
+    h_section("the compressor equals the one-shot one");
     Rng r = { 77 };
     size_t sizes[] = { 0, 1, 1000, ((size_t)1 << 20) - 1, (size_t)1 << 20,
                        ((size_t)1 << 20) + 1, (size_t)5 * 1000 * 1000 + 17 };
@@ -1033,18 +912,13 @@ static void cases_capped(void)
         rc = ppz_lzma_decompress(got.data, got.len, &back);
         CHECK(rc == 0 && back.len == n && (!n || !memcmp(back.data, in.data, n)),
               "xz round trip on %zu B", n);
-        oneshot_bz(in.data, n, &ref);
-        rc = ppz_bz2_decompress(ref.data, ref.len, &back);
-        CHECK(rc == 0 && back.len == n && (!n || !memcmp(back.data, in.data, n)),
-              "bz2 decode on %zu B", n);
         buf_free(&in); buf_free(&ref); buf_free(&got); buf_free(&back);
     }
 }
 
 /* ------------------------------------------------------------------- fuzzer */
 
-/* test_fuzz.py's generators, and a few that aim at machinery the Python ones
- * reached only by luck: commensurable runs (2D groups), derived columns
+/* Random tables, with generators that aim at specific machinery: commensurable runs (2D groups), derived columns
  * (parents), monotonic text (front-coding), rare exceptions (the lenient
  * numeric path), and raw bytes. Its record: in one run it found a JSON parser
  * storing int64 warm-start values as doubles (74884171959489212 came back as
@@ -1077,7 +951,7 @@ static void gen_cell(Rng *r, int mode, size_t row, size_t col, TB *b, Str prev)
         return;
     }
     case M_TEXT: {
-        /* Python's string.printable: digits, letters, punctuation, whitespace */
+        /* printable ASCII: digits, letters, punctuation, whitespace */
         static const char pr[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
                                  "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c";
         size_t n = (size_t)rng_below(r, 21);
@@ -1194,13 +1068,12 @@ int main(int argc, char **argv)
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 1;
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    cases_canonical();
     cases_dtz();
     cases_fast();
     cases_one_pass();
     cases_more();
     case_invalid_utf8_names();
-    case_v0_magic();
+    case_old_magics();
     cases_derived();
     cases_dict_limit();
     cases_capped();

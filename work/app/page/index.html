@@ -132,8 +132,7 @@ function status(j) {
 function detail(d) {
   if (!d) return "";
   const lines = [];
-  const kind = { modelled: "modelled", xz: "plain xz, nothing modelled beat it",
-                 bzip2: "plain bzip2, nothing modelled beat it", stream: "in blocks" }[d.container] || d.container;
+  const kind = { modelled: "one block", stream: "in blocks" }[d.container] || d.container;
   let first = "<b>" + Number(d.rows).toLocaleString() + "</b> rows · <b>" + d.columns + "</b> columns · " + esc(kind);
   if (d.blocks) first += " · " + d.blocks + " blocks of " + Number(d.rows_per_block).toLocaleString();
   lines.push(first);

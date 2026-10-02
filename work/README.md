@@ -90,7 +90,7 @@ competitor's own entropy coder still wins 449 of 450 against `parquet+zstd`.
 
 To run: nothing -- the program is C with liblzma linked in. To build: a C
 compiler and the liblzma headers (`brew install xz`, or `apt install
-liblzma-dev libbz2-dev`). Parquet input and output go through
+liblzma-dev`). Parquet input and output go through
 `py/parquet.py`, which needs Python and `pyarrow`.
 
 ## More

@@ -181,20 +181,6 @@ static void csv_dialect(void)
         tb_finish(&b, &w);
         expect_read("NUL in a cell", "nul.csv", s, sizeof(s) - 1, NULL, &w);
     }
-
-    /* table_parse_csv, the in-memory reader the encoder uses on its own
-     * canonical CSV, follows the same rows-wider rule */
-    {
-        Table t;
-        const char *ok = "a,b\n1,2,,\n";
-        const char *bad = "a,b\n1,2,3\n";
-        int rc = table_parse_csv(&t, (const uint8_t *)ok, strlen(ok));
-        if (CHECK(rc == 0 && t.nrows == 1 && t.ncols == 2, "table_parse_csv: empty extras"))
-            table_free(&t);
-        rc = table_parse_csv(&t, (const uint8_t *)bad, strlen(bad));
-        CHECK(rc != 0, "table_parse_csv accepted a row wider than its header");
-        if (rc == 0) table_free(&t);
-    }
 }
 
 /* ------------------------------------------------------------- delimiters */

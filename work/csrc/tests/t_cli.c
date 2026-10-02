@@ -120,7 +120,7 @@ static void happy(void)
 
     /* info, text and JSON */
     rc = cli(&out, &err, NULL, 2, "info", moved);
-    CHECK(rc == 0 && strstr((char *)out.data, "container   modelled")
+    CHECK(rc == 0 && strstr((char *)out.data, "container   single block")
           && strstr((char *)out.data, "rows        3,000") && strstr((char *)out.data, "columns     4"),
           "info: exit %d: %s%s", rc, out.data, err.data);
     buf_free(&out); buf_free(&err);
@@ -175,55 +175,10 @@ static void happy(void)
         same_file_table(src, dst, label);
         buf_free(&err);
     }
-    /* the old command names still work */
-    rc = cli(&out, NULL, NULL, 2, "stream-info", sarc);
-    CHECK(rc == 0 && strstr((char *)out.data, "streamed"), "stream-info");
-    buf_free(&out);
-    rc = cli(NULL, NULL, NULL, 4, "stream-restore", sarc, "-o", tpath("old.csv"));
-    CHECK(rc == 0 && same_file_table(src, tpath("old.csv"), "stream-restore"), "stream-restore");
     /* stream-compress reads delimited text only */
     rc = cli(NULL, &err, NULL, 4, "stream-compress", tpath("conv.json"), "-o", tpath("x.ppz"));
     CHECK(rc == 1 && !file_exists(tpath("x.ppz")), "stream-compress of .json: exit %d", rc);
     buf_free(&err);
-
-    /* info on the plain fallbacks, built directly */
-    {
-        Table t;
-        char e[256];
-        table_read_any(&t, src, NULL, e, sizeof(e));
-        Buf canon, z;
-        buf_init(&canon);
-        table_write_canonical(&t, &canon);
-        const char *mg[2] = { "PPZX", "PPZB" }, *word[2] = { "plain xz", "plain bzip2" };
-        const char *js[2] = { "xz", "bzip2" };
-        for (int k = 0; k < 2; k++) {
-            buf_init(&z);
-            if (k) test_bz2_compress(canon.data, canon.len, &z); else ppz_lzma_compress(canon.data, canon.len, &z);
-            Buf f;
-            buf_init(&f);
-            buf_put(&f, mg[k], 4);
-            buf_put(&f, z.data, z.len);
-            char p[1280];
-            snprintf(p, sizeof(p), "%s", tpath("fb%d.ppz", k));
-            write_bytes(p, f.data, f.len);
-            rc = cli(&out, &err, NULL, 2, "info", p);
-            CHECK(rc == 0 && strstr((char *)out.data, word[k]) && strstr((char *)out.data, "3,000"),
-                  "info on %s: %s%s", mg[k], out.data, err.data);
-            buf_free(&out); buf_free(&err);
-            rc = cli(&out, &err, NULL, 3, "info", p, "--json");
-            Js *jj = rc == 0 ? js_parse((const char *)out.data, out.len) : NULL;
-            const Js *cc = js_get(jj, "container");
-            CHECK(cc && cc->kind == JS_STR && !strcmp(cc->str, js[k]), "info --json on %s: %s", mg[k], out.data);
-            js_free(jj);
-            buf_free(&out); buf_free(&err);
-            rc = cli(NULL, &err, NULL, 4, "restore", p, "-o", tpath("fb%d.csv", k));
-            CHECK(rc == 0 && same_file_table(src, tpath("fb%d.csv", k), mg[k]), "restore %s", mg[k]);
-            buf_free(&err);
-            buf_free(&f); buf_free(&z);
-        }
-        buf_free(&canon);
-        table_free(&t);
-    }
 
     /* "-" is standard input and standard output */
     rc = cli(&out, &err, NULL, 2, "compress", "-");
@@ -307,11 +262,9 @@ static void guard(void)
         { "t.csv.xz", "\xfd" "7zXZ\x00", 6, "already compressed" },
         { "t.csv.zst", "\x28\xb5\x2f\xfd", 4, "already compressed" },
         { "db.sqlite", "SQLite format 3\x00", 16, "a database, not a table file" },
-        { "again.ppz", "PPZ1\0\0\0\0", 8, "compressing an archive again is always a mistake" },
-        { "again.csv", "PPZX\0\0\0\0", 8, "an archive named .csv" },
-        { "againb.csv", "PPZB\0\0\0\0", 8, "an archive named .csv" },
+        { "again.ppz", "PPZ2\0\0\0\0", 8, "compressing an archive again is always a mistake" },
+        { "again.csv", "PPZ2\0\0\0\0", 8, "an archive named .csv" },
         { "agains.csv", "PPZS\0\0\0\0", 8, "a stream archive named .csv" },
-        { "old.csv", "FAST\0\0\0\0", 8, "a pre-rename archive" },
         { "empty.xlsx", "id,name\n1,a\n", 12, "an Excel extension, whatever is inside" },
         { "stata.dta", "id,name\n1,a\n", 12, "Stata" },
         { "spss.sav", "id,name\n1,a\n", 12, "SPSS" },

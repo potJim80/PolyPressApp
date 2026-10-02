@@ -47,7 +47,7 @@ static int mul_ok(size_t a, size_t b, size_t *out)
 
 /* --------------------------------------------------------------- varints */
 
-/* Mirror of fast.unpack_ints. `buf` is width byte, then n head bytes, then
+/* The inverse of the encoder's pack_ints. `buf` is width byte, then n head bytes, then
  * the escaped tail at 4 or 8 bytes each. */
 static int64_t *unpack_ints(const uint8_t *buf, size_t buflen, size_t n)
 {
@@ -89,51 +89,23 @@ static int64_t *unpack_ints(const uint8_t *buf, size_t buflen, size_t n)
 
 /* ------------------------------------------------------------ stable sort */
 
-typedef struct { int64_t v; size_t i; } KV;
-
-static int kv_cmp(const void *a, const void *b)
-{
-    const KV *x = a, *y = b;
-    if (x->v < y->v) return -1;
-    if (x->v > y->v) return 1;
-    /* Ties broken by original position. qsort is not stable, so the index is
-     * folded into the comparison -- this reproduces numpy's
-     * argsort(kind="stable"), which the encoder used to permute the column
-     * and which the decoder must reproduce exactly or the rows come back
-     * shuffled. */
-    return x->i < y->i ? -1 : (x->i > y->i ? 1 : 0);
-}
-
-/* The values are a parent column's dictionary ids, already checked to be
- * inside its alphabet (0..alpha_n-1, an array that exists), so a counting
- * sort is both exact and bounded: same order as the qsort with the index
- * tiebreak above, in O(n + alphabet) instead of O(n log n). The qsort stays
- * for anything else. */
+/* The row order the encoder sorted a column into: rows by their parent's
+ * dictionary id, ties in original order. The ids are checked to lie inside
+ * the parent's alphabet -- an array that exists -- before this runs, so a
+ * counting sort is exact and its table is bounded by real data. O(n + k). */
 static size_t *stable_argsort(const int64_t *v, size_t n)
 {
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++)
+        if (v[i] < 0) return NULL;
+        else if ((size_t)v[i] >= k) k = (size_t)v[i] + 1;
     size_t *out = malloc((n ? n : 1) * sizeof(size_t));
-    if (!out) return NULL;
-    int64_t mx = -1, mn = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (v[i] > mx) mx = v[i];
-        if (v[i] < mn) mn = v[i];
-    }
-    if (mn >= 0 && (uint64_t)mx <= (uint64_t)n + 65536) {
-        size_t k = (size_t)(mx + 1);
-        size_t *start = calloc(k + 1, sizeof(size_t));
-        if (!start) { free(out); return NULL; }
-        for (size_t i = 0; i < n; i++) start[(size_t)v[i] + 1]++;
-        for (size_t b = 0; b < k; b++) start[b + 1] += start[b];
-        for (size_t i = 0; i < n; i++) out[start[(size_t)v[i]]++] = i;
-        free(start);
-        return out;
-    }
-    KV *kv = malloc((n ? n : 1) * sizeof(KV));
-    if (!kv) { free(out); return NULL; }
-    for (size_t i = 0; i < n; i++) { kv[i].v = v[i]; kv[i].i = i; }
-    qsort(kv, n, sizeof(KV), kv_cmp);
-    for (size_t i = 0; i < n; i++) out[i] = kv[i].i;
-    free(kv);
+    size_t *start = calloc(k + 1, sizeof(size_t));
+    if (!out || !start) { free(out); free(start); return NULL; }
+    for (size_t i = 0; i < n; i++) start[(size_t)v[i] + 1]++;
+    for (size_t b = 0; b < k; b++) start[b + 1] += start[b];
+    for (size_t i = 0; i < n; i++) out[start[(size_t)v[i]]++] = i;
+    free(start);
     return out;
 }
 
@@ -141,7 +113,7 @@ static size_t *stable_argsort(const int64_t *v, size_t n)
 
 /* Invert k-fold differencing. `warm` holds the first k ORIGINAL values, not
  * the differences, so each level's leading term is re-derived as the first
- * element of the j-th difference of warm -- same as fast._undiff. */
+ * element of the j-th difference of warm. */
 static int64_t *undiff(int64_t *d, size_t dn, const int64_t *warm, int k,
                        size_t *out_n)
 {
@@ -187,8 +159,8 @@ static int64_t *undiff(int64_t *d, size_t dn, const int64_t *warm, int k,
 
 /* --------------------------------------------------------------- format */
 
-/* Scaled integers back to their printed text -- mirror of tcz.c fmt_fixed,
- * one value at a time so the caller can append into a growable buffer. */
+/* Scaled integers back to their printed text, one value at a time so the
+ * caller can append into a growable buffer. */
 static void fmt_fixed_one(Buf *b, int64_t v, int dec)
 {
     char digits[24];
@@ -221,28 +193,13 @@ typedef struct {
     int    owned;      /* whether store is in use */
 } Col;
 
-static int decode_fallback(const uint8_t *blob, size_t n, Table *out, int bz)
-{
-    Buf plain;
-    buf_init(&plain);
-    int r = bz ? ppz_bz2_decompress(blob + 4, n - 4, &plain)
-               : ppz_lzma_decompress(blob + 4, n - 4, &plain);
-    if (r) { buf_free(&plain); return -1; }
-
-    /* The fallback stores canonical CSV; parse it where it lies. */
-    int rc = table_parse_csv(out, plain.data, plain.len);
-    buf_free(&plain);
-    return rc;
-}
-
 /* Overwrite the cells a numeric column could not represent -- blanks, "-0.0",
  * a stray decimal count. The encoder filled those slots with a neighbouring
  * value so the column kept its full length, and stored the originals by
  * position and as text. Positions were delta-coded.
  *
  * Every bound is checked against the archive's own arrays rather than trusted,
- * because this reads files other people made. Mirrors fast._apply_exceptions.
- * Returns 0 on success. */
+ * because this reads files other people made. Returns 0 on success. */
 static int read_exceptions(const Js *sp, size_t nrows,
                            const uint8_t **cut, const size_t *cutlen,
                            size_t nbins, Str **sgroup, const size_t *sgroup_n,
@@ -273,7 +230,7 @@ static int read_exceptions(const Js *sp, size_t nrows,
     return 0;
 }
 
-/* Expand the references a PPZ2 archive stores in its derived columns (the
+/* Expand the references an archive stores in its derived columns (the
  * format is in ppz.h). Sources are never derived, so they are final here.
  * Everything is checked: a candidate list naming a column twice or a derived
  * column, a reference to a candidate that is not there, a source that is not
@@ -399,13 +356,7 @@ out:
 
 int ppz_decode(const uint8_t *blob, size_t n, Table *out)
 {
-    if (n < 4) return -1;
-    if (!memcmp(blob, PPZ_MAGIC_RAW_XZ, 4)) return decode_fallback(blob, n, out, 0);
-    if (!memcmp(blob, PPZ_MAGIC_RAW_BZ, 4)) return decode_fallback(blob, n, out, 1);
-    int derived = !memcmp(blob, PPZ_MAGIC_DERIVED, 4);
-    if (memcmp(blob, PPZ_MAGIC, 4) && memcmp(blob, PPZ_MAGIC_V0, 4) && !derived)
-        return -1;
-    if (n < 16) return -1;
+    if (n < 16 || memcmp(blob, PPZ_MAGIC, 4)) return -1;
 
     size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) |
                 ((size_t)blob[6] << 8) | blob[7];
@@ -433,9 +384,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     const Js *jgroups  = js_get(meta, "groups");
     if (!jcolumns || !jcols || !jbins || !jsmeta || !jorder || !jgroups)
         goto fail_meta;
-    /* derived columns only in a PPZ2, and a PPZ2 always has them */
-    const Js *jderive = js_get(meta, "derive");
-    if (!jderive != !derived) goto fail_meta;
+    const Js *jderive = js_get(meta, "derive");     /* derived columns, if any */
 
     size_t nrows, nlen;
     size_t ncols = jcols->count;
@@ -466,7 +415,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     }
 
     /* ------------------------------------------------- string groups */
-    /* Mirror of fast._unpack_strings. Two layouts: newline-joined (the usual
+    /* Two layouts: newline-joined (the usual
      * case) and explicit lengths (only when a cell contains a newline). */
     size_t ngroups_s = jsmeta->count;
     Str  **sgroup = calloc(ngroups_s ? ngroups_s : 1, sizeof(Str *));
@@ -504,12 +453,9 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
             if (cnt == 0) { sgroup[g] = NULL; if (!nl) li++; continue; }
             Str *arr = malloc(cnt * sizeof(Str));
             if (!arr) goto fail_sgroup;
-            /* Front-coding is recorded per group. The archive-level "fc",
-             * meaning "the first `norder` groups", is the older spelling and
-             * is still honoured -- reading such an archive under the new rule
-             * would return wrong strings rather than an error. */
-            int fc_g = (int)js_int(js_get(m, "fc"), 0)
-                       || (fc_on && g < norder);
+            /* "fc": the dictionary alphabets -- the first `norder` groups,
+             * sorted, so neighbours share prefixes -- are front-coded */
+            int fc_g = fc_on && g < norder;
             if (nl && fc_g) {
                 /* cnt prefix-length bytes, then newline-joined remainders */
                 if (nb < cnt) { free(arr); goto fail_sgroup; }
@@ -802,7 +748,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
 
         /* M[0] = row0; column 0 of the rest = col0; interior = D.
          * Rebuild D1 by cumsum along axis 1, then M by cumsum along axis 0 --
-         * the exact inverse of the encoder's np.diff twice. */
+         * the exact inverse of the encoder's two differencing passes. */
         int64_t *M = malloc(cells_n * sizeof(int64_t));
         if (!M) { free(flat); goto fail_ids; }
         for (size_t c = 0; c < w; c++) M[c] = flat[c];
@@ -896,7 +842,7 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
         }
     }
 
-    if (derived && derive_restore(out, jderive)) {
+    if (jderive && derive_restore(out, jderive)) {
         table_free(out);
         goto fail_ids;
     }

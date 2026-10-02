@@ -34,7 +34,7 @@ let PAGE = RES.appendingPathComponent("page/index.html")
 // -- which is what the progress bar shows. Below it a file takes seconds.
 var STREAM_ABOVE: Int64 = 64 << 20          // var: the self-test lowers it
 
-let ARCHIVE_MAGICS: Set<String> = ["PPZ1", "PPZ2", "FAST", "PPZX", "PPZB", "PPZS"]
+let ARCHIVE_MAGICS: Set<String> = ["PPZ2", "PPZS"]
 let TABLE_FORMATS = ["csv", "tsv", "json", "jsonl"]
 
 // ─── Running things ──────────────────────────────────────────────────────────
@@ -103,7 +103,7 @@ func fileSize(_ path: String) -> Int64? {
 
 func isArchive(_ path: String) -> Bool {
     let low = path.lowercased()
-    if low.hasSuffix(".ppz") || low.hasSuffix(".tcz") { return true }
+    if low.hasSuffix(".ppz") { return true }
     guard let h = FileHandle(forReadingAtPath: path) else { return false }
     defer { h.closeFile() }
     let d = h.readData(ofLength: 4)
@@ -131,7 +131,7 @@ func unused(_ dir: String, _ stem: String, _ ext: String) -> String {
 func restoredName(_ archive: String) -> (String, String) {
     var base = (archive as NSString).lastPathComponent
     let low = base.lowercased()
-    if low.hasSuffix(".ppz") || low.hasSuffix(".tcz") { base = String(base.dropLast(4)) }
+    if low.hasSuffix(".ppz") { base = String(base.dropLast(4)) }
     let ext = (base as NSString).pathExtension.lowercased()
     let known = TABLE_FORMATS + ["psv", "txt", "parquet"]
     if known.contains(ext) { return ((base as NSString).deletingPathExtension, ext == "txt" ? "csv" : ext) }
@@ -626,7 +626,7 @@ func selftest() -> Int32 {
     let xj = go(Job(src: xl, kind: .compress))
     check("refuses/xlsx", xj.state == .failed && xj.message.contains("Excel"), xj.message)
     let bogus = sc.path("bogus.ppz")
-    try? "PPZ1 not really".write(toFile: bogus, atomically: true, encoding: .utf8)
+    try? "PPZ2 not really".write(toFile: bogus, atomically: true, encoding: .utf8)
     let bj = go(Job(src: bogus, kind: .restore))
     check("refuses/damaged", bj.state == .failed && bj.message.contains("damaged"), bj.message)
     w.add([sc.dir])

@@ -1,14 +1,8 @@
-/* Buffers, the table, the canonical CSV, liblzma/libbz2 wrappers, and a small
- * JSON parser.
- *
- * Everything here is infrastructure the codec sits on. The parts with
- * opinions are the canonical CSV and the lzma filter chain: both are part of
- * the archive format, so changing either changes what existing files mean.
- */
+/* Buffers, the table, the liblzma wrappers, a small JSON parser, and the
+ * numbers derived columns are made of. Infrastructure the codec sits on. */
 
 #include "ppz.h"
 
-#include <bzlib.h>
 #include <errno.h>
 #include <limits.h>
 #include <lzma.h>
@@ -126,57 +120,6 @@ Str table_at(const Table *t, size_t row, size_t col)
     return t->cells[row * t->ncols + col];
 }
 
-/* ------------------------------------------------------------------- csv */
-
-/* The canonical CSV the plain fallback compresses. Its rules were taken from
- * Python's csv.writer(lineterminator="\n") when this was a port, and they are
- * frozen now because every PPZX/PPZB archive in existence is built on them.
- * It is NOT what `restore` writes (ppz_io.c does that). Three quirks:
- *
- *   - a bare '\r' is NOT quoted, so such a cell does not survive the trip
- *     -- which is exactly why the fallback is round-trip checked before it
- *     is allowed to win (raw_candidates in ppz_encode.c).
- *   - an empty field IS quoted when it is the only field in its row.
- *   - a NUL byte forces quoting.
- */
-static int canon_needs_quotes(Str s, size_t ncols)
-{
-    if (s.n == 0) return ncols == 1;
-    for (size_t i = 0; i < s.n; i++) {
-        char c = s.p[i];
-        if (c == ',' || c == '"' || c == '\n' || c == '\0') return 1;
-    }
-    return 0;
-}
-
-static void canon_write_field(Buf *out, Str s, size_t ncols)
-{
-    if (!canon_needs_quotes(s, ncols)) { buf_put(out, s.p, s.n); return; }
-    buf_putc(out, '"');
-    for (size_t i = 0; i < s.n; i++) {
-        if (s.p[i] == '"') buf_putc(out, '"');
-        buf_putc(out, s.p[i]);
-    }
-    buf_putc(out, '"');
-}
-
-void table_write_canonical(const Table *t, Buf *out)
-{
-    for (size_t j = 0; j < t->ncols; j++) {
-        if (j) buf_putc(out, ',');
-        Str s = { t->names[j], strlen(t->names[j]) };
-        canon_write_field(out, s, t->ncols);
-    }
-    buf_putc(out, '\n');
-    for (size_t i = 0; i < t->nrows; i++) {
-        for (size_t j = 0; j < t->ncols; j++) {
-            if (j) buf_putc(out, ',');
-            canon_write_field(out, table_at(t, i, j), t->ncols);
-        }
-        buf_putc(out, '\n');
-    }
-}
-
 /* ------------------------------------------------------------------- lzma */
 
 /* Raw LZMA2 at preset 9e, streamed a megabyte at a time. Each run holds one
@@ -193,7 +136,7 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out)
 /* LZMA's three layout settings per stream: literal context bits (lc),
  * literal and match position bits (lp, pb). The decoder needs none of
  * them -- LZMA2 carries them in its chunk headers -- so they are free to
- * choose and every archive stays readable by every build. Measured
+ * choose. Measured
  * 2026-10-01 over the 39 suite tables' raw streams (xz -9e, total bytes):
  *   numbers  lc3 lp0 pb2 (xz default) 11,482,660 -> lc0 lp2 pb2 11,228,268 (-2.2%)
  *   text     lc3 lp0 pb2              10,189,881 -> lc4 lp0 pb1 10,177,320 (-0.1%)
@@ -311,39 +254,6 @@ int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out)
     }
 done:
     lzma_end(&strm);
-    if (rc) buf_free(out);
-    return rc;
-}
-
-/* bzip2 is only ever DECODED now: archives written before 2026-09-29 may be
- * the plain-bzip2 container (PPZB), and they must keep opening. */
-int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out)
-{
-    bz_stream strm;
-    memset(&strm, 0, sizeof(strm));
-    if (BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK) return -1;
-
-    buf_free(out);
-    size_t chunk = n * 2 + 65536;
-    if (chunk > (size_t)8 << 20) chunk = (size_t)8 << 20;
-
-    strm.next_in = (char *)(uintptr_t)in;
-    strm.avail_in = (unsigned int)n;
-    int rc = -1;
-    for (;;) {
-        if (out->len + chunk > PPZ_MAX_PLAIN) goto done;
-        buf_need(out, chunk);
-        strm.next_out = (char *)out->data + out->len;
-        strm.avail_out = (unsigned int)chunk;
-        unsigned int before = strm.avail_out;
-        int r = BZ2_bzDecompress(&strm);
-        out->len += before - strm.avail_out;
-        if (r == BZ_STREAM_END) { rc = 0; goto done; }
-        if (r != BZ_OK) goto done;            /* corrupt: stop */
-        if (strm.avail_in == 0 && before == strm.avail_out) goto done;
-    }
-done:
-    BZ2_bzDecompressEnd(&strm);
     if (rc) buf_free(out);
     return rc;
 }

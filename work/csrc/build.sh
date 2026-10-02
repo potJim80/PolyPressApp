@@ -7,11 +7,7 @@
 #
 # liblzma has no header in the macOS SDK even though the library ships there,
 # so the include path is discovered rather than assumed: pkg-config first,
-# then the usual Homebrew and /usr/local locations. The LIBRARY may still be
-# the system one -- that is fine and in fact preferable, and it is checked:
-# liblzma 5.4.3 and 5.8.3 were both verified to emit byte-identical output to
-# Python's lzma module for this filter chain, which is what makes a
-# byte-identical port possible.
+# then the usual Homebrew and /usr/local locations.
 
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -19,16 +15,16 @@ out="$here/polypress"
 
 CFLAGS="-O2 -std=gnu99 -pthread -Wall -Wextra -Wno-unused-parameter"
 INC=""
-LIB="-llzma -lbz2"
+LIB="-llzma"
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists liblzma 2>/dev/null; then
     INC="$(pkg-config --cflags liblzma)"
-    LIB="$(pkg-config --libs liblzma) -lbz2"
+    LIB="$(pkg-config --libs liblzma)"
 else
     for d in /opt/homebrew /usr/local /opt/local; do
         if [ -f "$d/include/lzma.h" ]; then
             INC="-I$d/include"
-            LIB="-L$d/lib -llzma -lbz2"
+            LIB="-L$d/lib -llzma"
             break
         fi
     done
@@ -37,14 +33,14 @@ fi
 if [ -z "$INC" ] && [ ! -f /usr/include/lzma.h ]; then
     echo "build.sh: cannot find lzma.h." >&2
     echo "  macOS:  brew install xz" >&2
-    echo "  Debian: apt install liblzma-dev libbz2-dev" >&2
+    echo "  Debian: apt install liblzma-dev" >&2
     exit 1
 fi
 
 # liblzma is not part of macOS, so a binary linked to Homebrew's copy only
 # runs on Macs that have Homebrew's xz. Link the static archive when there is
 # one, so the program -- and the app that ships it -- runs anywhere.
-# (bzip2 and iconv ship with the OS and stay dynamic.)
+# (iconv ships with the OS and stays dynamic.)
 for a in $(echo "$LIB" | tr ' ' '\n' | sed -n 's/^-L//p') /opt/homebrew/lib /usr/local/lib; do
     if [ -f "$a/liblzma.a" ]; then
         LIB="$(echo "$LIB" | sed 's/-llzma//') $a/liblzma.a"

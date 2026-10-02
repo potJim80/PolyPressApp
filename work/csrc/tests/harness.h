@@ -505,20 +505,4 @@ static void run_cmd(char *const argv[], const char *in_path, const char *out_pat
     child_wait(pid, timeout_ms, (size_t)2 << 30, r);
 }
 
-/* bzip2 -9 straight from libbz2. The program no longer writes bzip2 -- it
- * only reads the PPZB archives made before 2026-09-29 -- so the tests build
- * such archives themselves. */
-#include <bzlib.h>
-static inline int test_bz2_compress(const uint8_t *in, size_t n, Buf *out)
-{
-    unsigned int cap = (unsigned int)(n + n / 100 + 1024);
-    buf_free(out);
-    buf_need(out, cap);
-    int r = BZ2_bzBuffToBuffCompress((char *)out->data, &cap, (char *)(uintptr_t)in,
-                                     (unsigned int)n, 9, 0, 0);
-    if (r != BZ_OK) return -1;
-    out->len = cap;
-    return 0;
-}
-
 #endif /* PPZ_HARNESS_H */

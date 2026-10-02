@@ -116,7 +116,7 @@ static int ends_with_ci(const char *s, const char *suf)
 
 static void default_restore_name(const char *src, char *out, size_t cap)
 {
-    if (ends_with_ci(src, ".ppz") || ends_with_ci(src, ".tcz"))
+    if (ends_with_ci(src, ".ppz"))
         snprintf(out, cap, "%.*s", (int)(strlen(src) - 4), src);
     else
         snprintf(out, cap, "%s.csv", src);
@@ -148,11 +148,8 @@ static const char *input_refusal(const char *path)
         { "\xfd" "7zXZ",      6, "an xz-compressed file" },
         { "\x28\xb5\x2f\xfd", 4, "a zstd-compressed file" },
         { "SQLite format 3", 15, "an SQLite database" },
-        { "PPZ1",             4, "a Polypress archive already" },
-        { "PPZX",             4, "a Polypress archive already" },
-        { "PPZB",             4, "a Polypress archive already" },
-        { "PPZS",             4, "a Polypress archive already" },
-        { "FAST",             4, "a Polypress archive already" },
+        { PPZ_MAGIC,          4, "a Polypress archive already" },
+        { PPZ_MAGIC_STREAM,   4, "a Polypress archive already" },
     };
     static const struct { const char *ext; const char *what; } EXT[] = {
         { ".xlsx", "an Excel" }, { ".xls", "an Excel" }, { ".ods", "an OpenDocument" },
@@ -591,16 +588,8 @@ static int cmd_info(int argc, char **argv)
 
     Buf blob;
     if (read_file(a.path, &blob, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
-    const char *kind = NULL;
-    if (blob.len >= 4) {
-        if (!memcmp(blob.data, PPZ_MAGIC, 4))             kind = "modelled";
-        else if (!memcmp(blob.data, PPZ_MAGIC_DERIVED, 4)) kind = "modelled, with derived columns";
-        else if (!memcmp(blob.data, PPZ_MAGIC_V0, 4))     kind = "modelled (written by an older version)";
-        else if (!memcmp(blob.data, PPZ_MAGIC_RAW_XZ, 4)) kind = "plain xz -- no modelling helped on this table";
-        else if (!memcmp(blob.data, PPZ_MAGIC_RAW_BZ, 4)) kind = "plain bzip2 -- no modelling helped on this table";
-    }
     Table t;
-    if (!kind || ppz_decode(blob.data, blob.len, &t)) {
+    if (ppz_decode(blob.data, blob.len, &t)) {
         fprintf(stderr, "polypress: cannot read %s -- it is not a Polypress "
                 "archive, or it is damaged.\n", a.path);
         buf_free(&blob);
@@ -612,8 +601,7 @@ static int cmd_info(int argc, char **argv)
     const char *kn[4] = { "dict", "num", "text", "grp" };
     size_t reordered = 0;
     Js *meta = NULL;
-    if (!memcmp(blob.data, PPZ_MAGIC, 4) || !memcmp(blob.data, PPZ_MAGIC_V0, 4)
-        || !memcmp(blob.data, PPZ_MAGIC_DERIVED, 4)) {
+    {
         size_t ml = ((size_t)blob.data[4] << 24) | ((size_t)blob.data[5] << 16) |
                     ((size_t)blob.data[6] << 8) | blob.data[7];
         Buf mb;
@@ -643,7 +631,7 @@ static int cmd_info(int argc, char **argv)
         buf_putc(&b, '{');
         json_kv_str(&b, "file", a.path, &first);
         json_kv_num(&b, "size", blob.len, &first);
-        json_kv_str(&b, "container", meta ? "modelled" : (blob.data[3] == 'X' ? "xz" : "bzip2"), &first);
+        json_kv_str(&b, "container", "modelled", &first);
         json_kv_num(&b, "rows", t.nrows, &first);
         json_kv_num(&b, "columns", t.ncols, &first);
         buf_put(&b, ", \"plan\": {", 11);
@@ -689,7 +677,7 @@ static int cmd_info(int argc, char **argv)
     } else {
         printf("file        %s\n", a.path);
         printf("size        %s\n", human((double)blob.len, h1, sizeof(h1)));
-        printf("container   %s\n", kind);
+        printf("container   single block\n");
         printf("rows        %s\n", commas(t.nrows, r1, sizeof(r1)));
         printf("columns     %zu\n", t.ncols);
         if (meta) {
@@ -756,9 +744,6 @@ int main(int argc, char **argv)
     if (!strcmp(c, "info"))            return cmd_info(argc - 2, argv + 2);
     if (!strcmp(c, "convert"))         return cmd_convert(argc - 2, argv + 2);
     if (!strcmp(c, "stream-compress")) return cmd_stream_compress(argc - 2, argv + 2);
-    /* kept so older scripts work: restore and info read stream archives */
-    if (!strcmp(c, "stream-restore"))  return cmd_restore(argc - 2, argv + 2);
-    if (!strcmp(c, "stream-info"))     return cmd_info(argc - 2, argv + 2);
     fprintf(stderr, "polypress: unknown command %s\n\n", c);
     usage(stderr);
     return 2;

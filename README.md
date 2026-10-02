@@ -117,9 +117,11 @@ against the original's 645,280 — **79 KB smaller as text** — and yet
 the quoting removed redundancy the Burrows-Wheeler transform had been
 exploiting.
 
-So the guarantee is **"never worse than our own plain fallback"**, not "never
-worse than any tool run on your original bytes". The gap is 0.1%–1.6% on nine
-of 500 tables. It is stated here rather than left for someone else to find.
+So the guarantee was **"never worse than our own plain fallback"**, not "never
+worse than any tool run on your original bytes". The gap was 0.1%–1.6% on nine
+of 500 tables. (The fallback and the guarantee were both retired in 2026-09
+for a one-pass encoder; this is kept as the record of what the guarantee
+meant.)
 
 ### Parquet did not reproduce the data on 356 of the 500 tables
 
@@ -659,8 +661,8 @@ before the Python went).
 ```
 
 **Using it needs nothing installed.** liblzma is linked into the binary;
-libbz2 and iconv ship with macOS and every Linux. Building needs the liblzma
-headers (`brew install xz`, or `apt install liblzma-dev libbz2-dev`).
+iconv ships with macOS and every Linux. Building needs the liblzma headers
+(`brew install xz`, or `apt install liblzma-dev`).
 
 **What is still Python, and why:**
 

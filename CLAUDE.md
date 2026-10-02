@@ -36,21 +36,15 @@ at here independently; claim withdrawn — see the prior-art note in README.md.
 
 ## Non-negotiable invariants
 
-1. **The archive format is frozen, and threads never change bytes.** Every
-   `.ppz` ever written must keep opening: a format change needs a new
-   container magic or a metadata key old decoders refuse, and lands in
-   `ppz_encode.c` and `ppz_decode.c` in the same commit. The encoder is
-   deterministic -- `PPZ_THREADS=1` and the default must write identical
-   bytes (`csrc/tests/` checks it). Until 2026-09-29 this invariant read "the
-   C encoder is byte-identical to the Python one"; the port is why the
-   deterministic-choice rules below exist (quantised entropy scores, index
-   tie-breaks, frozen canonical CSV), and they still bind.
-   **Since 2026-10-01 there are two modelled magics:** `PPZ1`, and `PPZ2`
-   = the same container plus a `"derive"` key (derived columns, format in
-   `ppz.h`). The decoder refuses `"derive"` in a PPZ1 and a PPZ2 without
-   it, so a pre-2026-10-01 build refuses PPZ2 outright instead of returning
-   the `\x01k:d\x02` references as data. A table where nothing is derived
-   still gets PPZ1 and exactly the old bytes (31 of 39 suite tables).
+1. **One archive format, and threads never change bytes.** Since
+   2026-10-01 there is exactly one container, `PPZ2` (layout in `ppz.h`);
+   FAST, PPZ1, PPZX, PPZB and bzip2 were removed that day at Mahdi's word --
+   "nothing was ever compressed with those". From here on every `.ppz`
+   written must keep opening: a format change needs a metadata key or magic
+   that older builds refuse, and lands in `ppz_encode.c` and `ppz_decode.c`
+   in the same commit. The encoder is deterministic -- `PPZ_THREADS=1` and
+   the default must write identical bytes (`csrc/tests/` checks it) -- via
+   quantised entropy scores and index tie-breaks.
 2. **~~Never worse.~~ RETIRED 2026-09-29 by Mahdi: one pass.** "Just have a
    single process ... one algorithm to reorder, one compression algorithm."
    Measured first on the 39-table suite: the trial encodes (strict plan,
@@ -62,11 +56,8 @@ at here independently; claim withdrawn — see the prior-art note in README.md.
    a whole-table check without asking him; propose it with numbers. The
    historical text below explains why each trial existed, and the
    measured/unmeasured lesson still applies to how a FIXED rule is chosen.
-   Old text: A modelled encoding must beat the plain fallback, and a
-   parent must beat no parent, *measured*, not assumed. This binds **both**
-   paths: the C encoder once ran without the plain fallbacks and quietly wrote
-   larger files on any table where no trick fired. See "the measured/unmeasured
-   trap" below.
+   The lesson that survives: a parent must beat no parent, *measured*, not
+   assumed. See "the measured/unmeasured trap" below.
 3. **The decoder treats its input as hostile.** It reads files other people
    made. Corrupt input must be refused, never crash, never allocate unbounded.
 4. **Verify before writing.** `compress` and `stream-compress` decode the

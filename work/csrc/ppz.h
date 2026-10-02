@@ -1,13 +1,10 @@
 /* Polypress -- shared declarations.
  *
- * This tree IS Polypress: the codec, the table readers and writers, the
- * streaming container and the command line, with nothing but liblzma and
- * libbz2 behind it. The Python implementation it was ported from was retired
- * on 2026-09-29 (recoverable from git); there is no second implementation to
- * agree with any more, so tests/ checks this one against its own contract:
- * every table round-trips cell for cell, the output never loses to plain xz
- * or bzip2, hostile archives are refused, and the threaded encoder writes
- * exactly the bytes the serial one does.
+ * The codec, the table readers and writers, the streaming container and the
+ * command line, with nothing but liblzma behind it. tests/ checks it against
+ * its contract: every table round-trips cell for cell, hostile archives are
+ * refused, and the threaded encoder writes exactly the bytes the serial one
+ * does.
  */
 
 #ifndef PPZ_H
@@ -18,12 +15,12 @@
 
 /* ------------------------------------------------------------- containers */
 
-#define PPZ_MAGIC      "PPZ1"   /* modelled encoding */
-#define PPZ_MAGIC_V0   "FAST"   /* pre-rename archives still open */
-#define PPZ_MAGIC_RAW_XZ "PPZX" /* whole table, plain xz */
-#define PPZ_MAGIC_RAW_BZ "PPZB" /* whole table, plain bzip2 */
-
-#define PPZ_MAGIC_DERIVED "PPZ2" /* PPZ1 layout + derived columns (2026-10-01) */
+/* The one archive format: "PPZ2", then the compressed lengths of the
+ * metadata, binary and text streams (4 bytes each, big-endian), then the
+ * three raw LZMA2 streams. Every earlier format (FAST,
+ * PPZ1, PPZX, PPZB) was dropped on 2026-10-01 -- nothing was ever stored in
+ * them -- so builds from before then refuse these archives outright. */
+#define PPZ_MAGIC      "PPZ2"
 
 /* ------------------------------------------------------------------ bytes */
 
@@ -60,15 +57,6 @@ typedef struct {
 void   table_init(Table *t);
 void   table_free(Table *t);
 Str    table_at(const Table *t, size_t row, size_t col);
-
-/* Comma-separated text already in memory. Only the encoder uses this, to
- * check its own canonical CSV parses back before the plain fallback built on
- * it may win. Files go through ppz_io.c. */
-int  table_parse_csv(Table *t, const uint8_t *data, size_t n);
-
-/* The canonical CSV the plain fallback compresses. Its quoting rules are
- * frozen: they decide the bytes of every PPZX/PPZB archive. */
-void table_write_canonical(const Table *t, Buf *out);
 
 /* ------------------------------------------------------------- table I/O */
 
@@ -160,12 +148,10 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);   /* PLAIN */
 int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind);
 
 /* Compressed length at preset 1, used only to choose between two orderings of
- * the same column. Nothing it produces is stored; it exists because the real
- * preset-9 stage is far too slow to run as a decision procedure, and preset 1
- * ranks candidates the same way. */
+ * the same column. Nothing it produces is stored; the real preset-9 stage is
+ * far too slow to run as a decision procedure. */
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
-int ppz_bz2_decompress(const uint8_t *in, size_t n, Buf *out);
 
 /* ------------------------------------------------------------------- json */
 
@@ -240,9 +226,8 @@ void   ppz_bg_join(PpzBg *b);
  *
  * A number is `-?[0-9]+(\.[0-9]+)?`, read left to right; one longer than
  * DRV_MAX_TOK bytes is never referenced, which also bounds how far a hostile
- * archive can make a cell grow. Archives using this are PPZ2 and carry
- * "derive": [[column, [candidates...]], ...] in their metadata; a decoder
- * that predates it refuses the magic instead of returning the references. */
+ * archive can make a cell grow. Archives that use this carry
+ * "derive": [[column, [candidates...]], ...] in their metadata. */
 #define DRV_MAX_TOK   64
 #define DRV_MAX_CANDS 4
 
@@ -255,16 +240,13 @@ size_t drv_round(const char *v, size_t n, int d, char *out);
 
 /* --------------------------------------------------------------- decoding */
 
-/* Decode any Polypress container into `out`. Returns 0 on success. */
+/* Decode an archive into `out`. Returns 0 on success. */
 int ppz_decode(const uint8_t *blob, size_t n, Table *out);
 
 /* --------------------------------------------------------------- encoding */
 
-/* Encode a table, in one pass (see ppz_encode in ppz_encode.c). */
+/* Encode a table, in one pass (see ppz_encode in ppz_encode.c). Column
+ * names must be UTF-8 -- the readers guarantee it -- or this returns -1. */
 int ppz_encode(const Table *t, Buf *out);
-
-/* Just the modelled container (PPZ1), with `*fired` set to the number of times
- * one of the three ideas actually did something. */
-int ppz_encode_modelled(const Table *t, Buf *out, long *fired);
 
 #endif /* PPZ_H */

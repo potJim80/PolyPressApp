@@ -626,59 +626,6 @@ fail:
     return -1;
 }
 
-/* The in-memory parse the encoder uses to check its canonical CSV comes back.
- * Same state machine, comma only, no decoding (the bytes are its own). */
-int table_parse_csv(Table *t, const uint8_t *data, size_t n)
-{
-    table_init(t);
-    buf_need(&t->arena, 1);
-    Span *sp = NULL;
-    size_t nsp = 0, capsp = 0, nf = 0, pos = 0, width = 0, nrows = 0;
-    Buf hdr;
-    buf_init(&hdr);
-    int have_header = 0;
-    for (;;) {
-        size_t before = nsp;
-        int r = parse_record(data, n, &pos, 1, ',', have_header ? &t->arena : &hdr,
-                             &sp, &nsp, &capsp, &nf);
-        if (r != REC_OK) break;
-        if (!have_header) {
-            width = nf;
-            t->names = calloc(nf ? nf : 1, sizeof(char *));
-            if (!t->names) oom();
-            for (size_t j = 0; j < nf; j++) {
-                char *nm = malloc(sp[j].len + 1);
-                if (!nm) oom();
-                memcpy(nm, hdr.data + sp[j].off, sp[j].len);
-                nm[sp[j].len] = 0;
-                t->names[j] = nm;
-            }
-            t->ncols = width;
-            nsp = 0;
-            have_header = 1;
-            continue;
-        }
-        if (nf < width) for (; nf < width; nf++) span_push(&sp, &nsp, &capsp, 0, 0);
-        else if (nf > width) {
-            for (size_t j = width; j < nf; j++)
-                if (sp[before + j].len) { buf_free(&hdr); free(sp); table_free(t); return -1; }
-            nsp = before + width;
-        }
-        nrows++;
-    }
-    buf_free(&hdr);
-    t->nrows = nrows;
-    Str *cells = (Str *)sp;
-    if (!cells) { cells = calloc(1, sizeof(Str)); if (!cells) oom(); }
-    for (size_t k = 0; k < nsp; k++) {
-        size_t off = sp[k].off, len = sp[k].len;
-        cells[k].p = (const char *)t->arena.data + off;
-        cells[k].n = len;
-    }
-    t->cells = cells;
-    return 0;
-}
-
 /* ================================================================= json */
 
 /* Column names to indices, first appearance wins the position. */

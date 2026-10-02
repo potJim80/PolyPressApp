@@ -2,14 +2,14 @@
  *
  * It reads files other people made, so a damaged or dishonest archive must be
  * refused -- or decode to some self-consistent table -- and never crash, hang
- * or allocate without bound. Two halves, from two retired Python suites:
+ * or allocate without bound. Two halves:
  *
- *   test_hostile.py      damaged bytes: truncations, bit flips, aimed shots at
- *                        length fields. That found decompressors doubling
- *                        their buffer toward a terabyte on input that never
- *                        decodes at any size. Here it covers every container:
- *                        PPZ1, PPZX, PPZB, and PPZS stream files.
- *   test_lying_header.py headers that are well-formed and LIE. A random
+ *   damaged bytes        truncations, bit flips, aimed shots at length
+ *                        fields. That found decompressors doubling their
+ *                        buffer toward a terabyte on input that never decodes
+ *                        at any size. Covers both containers: single archives
+ *                        and PPZS stream files.
+ *   lying headers        headers that are well-formed and LIE. A random
  *                        mutation almost never lands on a coherent header, so
  *                        these are built on purpose: decompress the metadata,
  *                        edit the JSON, recompress. Three unchecked indices and
@@ -80,9 +80,8 @@ static int survive(const char *kind, const char *name, const uint8_t *blob, size
                  child_describe(&r, d, sizeof(d)));
 }
 
-/* A truncated archive is missing its end: raw LZMA2 ends with an end marker
- * and bzip2 with an end-of-stream block, so a cut-short payload is always
- * detectable. It must be refused -- or, if the cut fell somewhere harmless,
+/* A truncated archive is missing its end: raw LZMA2 ends with an end marker,
+ * so a cut-short payload is always detectable. It must be refused -- or, if the cut fell somewhere harmless,
  * decode to exactly the original. Decoding to a DIFFERENT table is the worst
  * outcome a decoder has: a file that looks fine and is wrong. Exit 3 means
  * that happened. */
@@ -210,7 +209,7 @@ static void mutate_all(const char *kind, const Buf *good)
             memcpy(m.data + m.len - 8, vals[v], 8);         /* index length, last */
             snprintf(name, sizeof(name), "index len=%s", vn[v]);
             cases++; bad += !survive(kind, name, m.data, m.len);
-        } else if (!strcmp(kind, "PPZ1")) {
+        } else {
             for (int f = 0; f < 3; f++) {                    /* meta, bins, text */
                 m.len = 0;
                 buf_put(&m, good->data, good->len);
@@ -220,22 +219,14 @@ static void mutate_all(const char *kind, const Buf *good)
             }
         }
     }
-    /* a fallback container whose body is some other compressor's */
-    if (!strcmp(kind, "PPZX") || !strcmp(kind, "PPZB")) {
-        m.len = 0;
-        buf_put(&m, !strcmp(kind, "PPZX") ? "PPZB" : "PPZX", 4);
-        buf_put(&m, good->data + 4, good->len - 4);
-        cases++; bad += !survive(kind, "swapped magic", m.data, m.len);
-    }
     buf_free(&m);
     printf("   %d cases, %d did not survive\n", cases, bad);
 }
 
 /* -------------------------------------------------------- lying headers */
 
-/* A PPZ1 archive from its three parts: the metadata text and the two
- * payloads, raw LZMA2 each, behind four 4-byte big-endian lengths. */
-static const char *g_magic = PPZ_MAGIC;     /* PPZ2 for the derived-column lies */
+/* An archive from its three parts: the metadata text and the two payloads,
+ * raw LZMA2 each, behind the magic and three 4-byte big-endian lengths. */
 
 static void rebuild(const char *meta, size_t mlen, const Buf *bins, const Buf *txt, Buf *out)
 {
@@ -245,7 +236,7 @@ static void rebuild(const char *meta, size_t mlen, const Buf *bins, const Buf *t
     ppz_lzma_compress(bins->data, bins->len, &bz);
     ppz_lzma_compress(txt->data, txt->len, &tz);
     buf_init(out);
-    buf_put(out, g_magic, 4);
+    buf_put(out, PPZ_MAGIC, 4);
     size_t lens[3] = { mz.len, bz.len, tz.len };
     for (int k = 0; k < 3; k++)
         for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((lens[k] >> s) & 0xFF));
@@ -255,7 +246,7 @@ static void rebuild(const char *meta, size_t mlen, const Buf *bins, const Buf *t
     buf_free(&mz); buf_free(&bz); buf_free(&tz);
 }
 
-/* Split a PPZ1 archive into metadata text and the two raw payloads. */
+/* Split an archive into metadata text and the two raw payloads. */
 static int split(const Buf *blob, Buf *meta, Buf *bins, Buf *txt)
 {
     const uint8_t *d = blob->data;
@@ -290,7 +281,7 @@ static int lie(const char *name, const Buf *meta, const char *from, const char *
     Buf m2, arc;
     if (!CHECK(edit(meta, from, to, &m2), "lie %s: the base metadata has no %s", name, from)) return 0;
     rebuild((const char *)m2.data, m2.len, bins, txt, &arc);
-    int ok = survive("PPZ1", name, arc.data, arc.len);
+    int ok = survive("PPZ2", name, arc.data, arc.len);
     buf_free(&m2); buf_free(&arc);
     return ok;
 }
@@ -304,7 +295,7 @@ static int crafted(const char *name, const char *meta, const void *bins, size_t 
     buf_put(&b, bins, bl);
     buf_put(&t, txt, tl);
     rebuild(meta, strlen(meta), &b, &t, &arc);
-    int ok = survive("PPZ1", name, arc.data, arc.len);
+    int ok = survive("PPZ2", name, arc.data, arc.len);
     buf_free(&b); buf_free(&t); buf_free(&arc);
     return ok;
 }
@@ -316,8 +307,7 @@ static void lying_headers(void)
     base_table(&t);
     Buf blob;
     buf_init(&blob);
-    long fired;
-    ppz_encode_modelled(&t, &blob, &fired);
+    ppz_encode(&t, &blob);
     table_free(&t);
     Buf meta, bins, txt;
     if (!CHECK(split(&blob, &meta, &bins, &txt) == 0, "base archive does not split")) return;
@@ -479,14 +469,12 @@ static int refused(const char *name, const Buf *arc)
     return CHECK(rc != 0, "PPZ2 %s: decoded instead of being refused", name);
 }
 
-static int derive_lie(const char *name, const char *magic, const Buf *meta,
+static int derive_lie(const char *name, const Buf *meta,
                       const char *from, const char *to, const Buf *bins, const Buf *txt)
 {
     Buf m2, arc;
     if (!CHECK(edit(meta, from, to, &m2), "lie %s: the metadata has no %s", name, from)) return 0;
-    g_magic = magic;
     rebuild((const char *)m2.data, m2.len, bins, txt, &arc);
-    g_magic = PPZ_MAGIC;
     int ok = refused(name, &arc);
     buf_free(&m2); buf_free(&arc);
     return ok;
@@ -506,9 +494,7 @@ static int derive_crafted(const char *name, const char *a, const char *bcell, in
     buf_init(&b); buf_init(&t);
     buf_put(&t, a, strlen(a));
     buf_put(&t, bcell, strlen(bcell));
-    g_magic = PPZ_MAGIC_DERIVED;
     rebuild(meta, strlen(meta), &b, &t, &arc);
-    g_magic = PPZ_MAGIC;
     int ok;
     if (want_ok) {
         Table out;
@@ -533,41 +519,35 @@ static void derived_lies(void)
     Buf good;
     buf_init(&good);
     CHECK(ppz_encode(&t, &good) == 0, "encode the derived sample");
-    if (!CHECK(good.len >= 4 && !memcmp(good.data, PPZ_MAGIC_DERIVED, 4),
-               "the derived sample was not written as PPZ2")) {
-        buf_free(&good); table_free(&t); return;
-    }
     mutate_all("PPZ2", &good);
     truncations("PPZ2", &good, &t);
 
     h_section("lying headers: derived columns");
     Buf meta, bins, txt;
-    if (!CHECK(split(&good, &meta, &bins, &txt) == 0, "PPZ2 archive does not split")) {
+    if (!CHECK(split(&good, &meta, &bins, &txt) == 0, "derived archive does not split")) {
         buf_free(&good); table_free(&t); return;
     }
     const char *D = "\"derive\":[[4,[2,3]]]";
     CHECK(strstr((char *)meta.data, D) != NULL, "derived sample metadata has no %s: %.*s",
           D, (int)meta.len, meta.data);
     int bad = 0;
-    struct { const char *name, *magic, *to; } L[] = {
-        { "derive key in a PPZ1",    PPZ_MAGIC,         D },
-        { "PPZ2 without derive",     PPZ_MAGIC_DERIVED, "\"x\":[[4,[2,3]]]" },
-        { "derived from itself",     PPZ_MAGIC_DERIVED, "\"derive\":[[4,[4,3]]]" },
-        { "source out of range",     PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,9]]]" },
-        { "source negative",         PPZ_MAGIC_DERIVED, "\"derive\":[[4,[-1,3]]]" },
-        { "column out of range",     PPZ_MAGIC_DERIVED, "\"derive\":[[40,[2,3]]]" },
-        { "column listed twice",     PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,3]],[4,[2]]]" },
-        { "source is derived",       PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,3]],[3,[0]]]" },
-        { "five sources",            PPZ_MAGIC_DERIVED, "\"derive\":[[4,[2,3,0,1,0]]]" },
-        { "no sources",              PPZ_MAGIC_DERIVED, "\"derive\":[[4,[]]]" },
-        { "empty list",              PPZ_MAGIC_DERIVED, "\"derive\":[]" },
-        { "not a list",              PPZ_MAGIC_DERIVED, "\"derive\":{\"4\":[2,3]}" },
-        { "reference past sources",  PPZ_MAGIC_DERIVED, "\"derive\":[[4,[3]]]" },
-        { "source is text",          PPZ_MAGIC_DERIVED, "\"derive\":[[4,[1,3]]]" },
-        { "fractional column",       PPZ_MAGIC_DERIVED, "\"derive\":[[4.5,[2,3]]]" },
+    struct { const char *name, *to; } L[] = {
+        { "derived from itself",     "\"derive\":[[4,[4,3]]]" },
+        { "source out of range",     "\"derive\":[[4,[2,9]]]" },
+        { "source negative",         "\"derive\":[[4,[-1,3]]]" },
+        { "column out of range",     "\"derive\":[[40,[2,3]]]" },
+        { "column listed twice",     "\"derive\":[[4,[2,3]],[4,[2]]]" },
+        { "source is derived",       "\"derive\":[[4,[2,3]],[3,[0]]]" },
+        { "five sources",            "\"derive\":[[4,[2,3,0,1,0]]]" },
+        { "no sources",              "\"derive\":[[4,[]]]" },
+        { "empty list",              "\"derive\":[]" },
+        { "not a list",              "\"derive\":{\"4\":[2,3]}" },
+        { "reference past sources",  "\"derive\":[[4,[3]]]" },
+        { "source is text",          "\"derive\":[[4,[1,3]]]" },
+        { "fractional column",       "\"derive\":[[4.5,[2,3]]]" },
     };
     for (size_t k = 0; k < N_OF(L); k++)
-        bad += !derive_lie(L[k].name, L[k].magic, &meta, D, L[k].to, &bins, &txt);
+        bad += !derive_lie(L[k].name, &meta, D, L[k].to, &bins, &txt);
 
     /* references written by hand */
     bad += !derive_crafted("a good exact reference", "5", "x\x01" "0:\x02y", 1, "x5y");
@@ -638,29 +618,11 @@ int main(void)
     Table t;
     sample_table(&t);
 
-    /* PPZ1: the sample is structured, so the modelled container */
-    Buf ppz1, canon, body, good;
-    buf_init(&ppz1);
-    long fired;
-    CHECK(ppz_encode_modelled(&t, &ppz1, &fired) == 0, "encode the sample");
-    mutate_all("PPZ1", &ppz1);
-    truncations("PPZ1", &ppz1, &t);
-
-    /* PPZX and PPZB: built directly, whatever encode would choose */
-    buf_init(&canon);
-    table_write_canonical(&t, &canon);
-    const char *kinds[2] = { "PPZX", "PPZB" };
-    for (int k = 0; k < 2; k++) {
-        buf_init(&body);
-        if (k == 0) ppz_lzma_compress(canon.data, canon.len, &body);
-        else test_bz2_compress(canon.data, canon.len, &body);
-        buf_init(&good);
-        buf_put(&good, kinds[k], 4);
-        buf_put(&good, body.data, body.len);
-        mutate_all(kinds[k], &good);
-        truncations(kinds[k], &good, &t);
-        buf_free(&body); buf_free(&good);
-    }
+    Buf one, good;
+    buf_init(&one);
+    CHECK(ppz_encode(&t, &one) == 0, "encode the sample");
+    mutate_all("PPZ2", &one);
+    truncations("PPZ2", &one, &t);
 
     /* PPZS: stream-compressed in blocks of 500 */
     {
@@ -680,8 +642,7 @@ int main(void)
     lying_headers();
     derived_lies();
 
-    buf_free(&canon);
-    buf_free(&ppz1);
+    buf_free(&one);
     table_free(&t);
     tmpdir_remove();
     return h_done();
