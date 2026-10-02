@@ -259,10 +259,24 @@ few lines of shell. A full sweep of 26 datasets takes **19 minutes**, not the
 **Superseded again 2026-09-29: the C program.** Its threaded encoder peaks
 at about **`(input MB x 50) + 100`** (the ten `l_` suite tables: worst
 `chicago_permits` 26 MB -> 1,268 MB, `chicago_crimes` 1,155 MB), against
-~500-630 MB for the same tables on one thread. `stream-compress` runs on one
-thread so its `--budget` means what it says; `PPZ_THREADS=1` gives the serial
+~500-630 MB for the same tables on one thread. `stream-compress` keeps each
+block serial inside so its `--budget` means what it says; `PPZ_THREADS=1` gives the serial
 peak anywhere, and `run_suite.sh` sets it so the benchmark compares one thread
 with one thread.
+
+**Streaming, 2026-10-01.** (1) A bug made big files single-threaded after the
+first batch: `block_task` set the serial flag on whatever thread ran it, and
+`ppz_parallel` runs tasks on the caller's thread too. NEMSIS ran 19.5 min at
+0.76 cores. The flag is now restored after each block -- **a thread-local
+flag set inside a task must be put back**. (2) It is a pipeline now: a
+reader thread, `ppz_workers()` encoders, the caller writing blocks in order,
+`par + 2` slots. Same block cuts, same bytes (cmp'd). (3) The default
+`--budget` is an eighth of RAM, 1-4 GB (was 1 GB): on 2M NEMSIS rows,
+36k-row blocks gave 20.21 MB in 9.2 s, 132k-row blocks (2 GB) 19.74 MB in
+7.9 s at 1.0 GB peak. The per-row memory model (PER_BYTE/PER_CELL) is
+calibrated on text-heavy chicago_permits and overestimates numeric tables
+about 2x. Six workers were 23% faster than four on the slice; four stays
+(fanless Air) unless Mahdi says otherwise.
 
 ## The measured/unmeasured trap — read this before optimising
 

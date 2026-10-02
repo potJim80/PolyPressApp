@@ -15,6 +15,7 @@
 #include "ppz.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,16 +105,117 @@ typedef struct {
 static void block_task(void *arg)
 {
     BlockJob *j = arg;
-    ppz_set_serial(1);                     /* this worker thread only */
+    /* Serial for this block only. The caller's own thread runs blocks too
+     * (ppz_parallel puts it to work), so the flag is put back afterwards:
+     * left set, it made every batch after the first run one block at a
+     * time -- NEMSIS (1,475 blocks) used 0.76 of a core for 19.5 minutes. */
+    int was = ppz_serial();
+    ppz_set_serial(1);
     buf_init(&j->blob);
-    if (ppz_encode(&j->t, &j->blob)) { j->rc = 1; return; }
-    if (j->verify) {
+    j->rc = 0;
+    if (ppz_encode(&j->t, &j->blob)) j->rc = 1;
+    else if (j->verify) {
         Table back;
         int ok = ppz_decode(j->blob.data, j->blob.len, &back) == 0;
         if (ok) { ok = tables_equal(&j->t, &back); table_free(&back); }
-        if (!ok) { j->rc = 2; return; }
+        if (!ok) j->rc = 2;
     }
-    j->rc = 0;
+    ppz_set_serial(was);
+}
+
+/* Compressing while the file is read. One thread reads blocks, `par`
+ * workers encode them, and the caller writes them out in order -- so the
+ * reader never waits for a batch to finish and a slow block holds up only
+ * the writer. Until 2026-10-01 it went in rounds: read four blocks, encode
+ * the four, write, repeat.
+ *
+ * A block lives in one slot from read to write. Its state only moves
+ * forward (empty -> read -> busy -> done -> empty), and each step belongs to
+ * one party: the reader fills empty slots, a worker takes read ones, the
+ * writer empties done ones in sequence. Blocks are cut and encoded exactly as
+ * before, so the archive's bytes do not depend on any of this. */
+enum { SL_EMPTY, SL_READ, SL_BUSY, SL_DONE };
+
+typedef struct {
+    BlockJob job;
+    int      state;
+    uint64_t in_bytes;       /* of the input, read when this block was */
+} Slot;
+
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+    Slot   *slot;
+    size_t  nslot;
+    size_t  nread;           /* blocks read, which is the next block's number */
+    size_t  nclaimed;        /* the next block a worker takes */
+    int     eof;             /* the reader is finished, for any reason */
+    int     stop;            /* give up: the writer failed */
+    int     read_failed;
+    char    rerr[512];
+    CsvIn  *c;
+    size_t  rows;
+    int     verify;
+} Pipe;
+
+static void *reader_main(void *arg)
+{
+    Pipe *p = arg;
+    for (;;) {
+        pthread_mutex_lock(&p->mu);
+        Slot *s = &p->slot[p->nread % p->nslot];
+        while (!p->stop && s->state != SL_EMPTY) pthread_cond_wait(&p->cv, &p->mu);
+        int stop = p->stop;
+        pthread_mutex_unlock(&p->mu);
+        if (stop) break;
+        /* the slot is empty, so it is the reader's until marked read */
+        int r = csv_next(p->c, &s->job.t, p->rows);
+        pthread_mutex_lock(&p->mu);
+        if (r <= 0) {
+            if (r < 0) {
+                p->read_failed = 1;
+                snprintf(p->rerr, sizeof(p->rerr), "%s", csv_error(p->c));
+            }
+            p->eof = 1;
+            pthread_cond_broadcast(&p->cv);
+            pthread_mutex_unlock(&p->mu);
+            break;
+        }
+        s->job.verify = p->verify;
+        s->in_bytes = csv_bytes_read(p->c);
+        s->state = SL_READ;
+        p->nread++;
+        pthread_cond_broadcast(&p->cv);
+        pthread_mutex_unlock(&p->mu);
+    }
+    pthread_mutex_lock(&p->mu);
+    p->eof = 1;
+    pthread_cond_broadcast(&p->cv);
+    pthread_mutex_unlock(&p->mu);
+    return NULL;
+}
+
+static void *worker_main(void *arg)
+{
+    Pipe *p = arg;
+    for (;;) {
+        pthread_mutex_lock(&p->mu);
+        while (!p->stop && p->nclaimed >= p->nread && !p->eof)
+            pthread_cond_wait(&p->cv, &p->mu);
+        if (p->stop || p->nclaimed >= p->nread) {   /* stopped, or all done */
+            pthread_mutex_unlock(&p->mu);
+            break;
+        }
+        Slot *s = &p->slot[p->nclaimed++ % p->nslot];
+        s->state = SL_BUSY;
+        pthread_mutex_unlock(&p->mu);
+        block_task(&s->job);
+        pthread_mutex_lock(&p->mu);
+        s->state = SL_DONE;
+        pthread_cond_broadcast(&p->cv);
+        pthread_mutex_unlock(&p->mu);
+    }
+    return NULL;
 }
 
 int ppz_stream_compress(const char *src, const char *dst, double budget_gb,
@@ -157,54 +259,76 @@ int ppz_stream_compress(const char *src, const char *dst, double budget_gb,
     uint64_t written = 8;
     Buf hdr, hz;
     buf_init(&hdr); buf_init(&hz);
-    BlockJob *jobs = calloc((size_t)par, sizeof(BlockJob));
-    size_t njobs = 0;
-    if (!jobs) goto done;
-
+    Pipe pp;
+    memset(&pp, 0, sizeof(pp));
+    pthread_mutex_init(&pp.mu, NULL);
+    pthread_cond_init(&pp.cv, NULL);
+    /* par encoding, one being read, one finished and waiting its turn */
+    pp.nslot = (size_t)par + 2;
+    pp.slot = calloc(pp.nslot, sizeof(Slot));
+    pp.c = c;
+    pp.rows = rows;
+    pp.verify = verify;
+    pthread_t rth, *wth = calloc((size_t)par, sizeof(pthread_t));
+    int started = 0, reader_up = 0;
+    if (!pp.slot || !wth) goto done;
     if (write_all(out, PPZ_MAGIC_STREAM "\0\0\0\0", 8)) goto io_fail;
-    for (int eof = 0; !eof; ) {
-        /* read up to `par` blocks, then encode them side by side */
-        njobs = 0;
-        while (njobs < (size_t)par) {
-            BlockJob *j = &jobs[njobs];
-            int r = csv_next(c, &j->t, rows);
-            if (r < 0) { seterr(err, cap, "%s", csv_error(c)); goto done; }
-            if (r == 0) { eof = 1; break; }
-            j->verify = verify;
-            njobs++;
+    if (pthread_create(&rth, NULL, reader_main, &pp)) goto done;
+    reader_up = 1;
+    for (; started < par; started++)
+        if (pthread_create(&wth[started], NULL, worker_main, &pp)) break;
+    if (!started) goto done;
+
+    double last_report = 0;
+    for (size_t w = 0; ; w++) {
+        Slot *s = &pp.slot[w % pp.nslot];
+        pthread_mutex_lock(&pp.mu);
+        while (!(w < pp.nread && s->state == SL_DONE) && !(pp.eof && w >= pp.nread))
+            pthread_cond_wait(&pp.cv, &pp.mu);
+        int finished = w >= pp.nread;          /* and so eof */
+        pthread_mutex_unlock(&pp.mu);
+        if (finished) {
+            if (pp.read_failed) { seterr(err, cap, "%s", pp.rerr); goto done; }
+            break;
         }
-        if (!njobs) break;
+        BlockJob *j = &s->job;
+        if (j->rc) {
+            seterr(err, cap, j->rc == 1 ? "block %zu could not be encoded"
+                                        : "block %zu failed verification -- nothing written",
+                   nsizes + 1);
+            goto done;
+        }
         if (!cols) {
-            ncols = jobs[0].t.ncols;
+            ncols = j->t.ncols;
             cols = calloc(ncols ? ncols : 1, sizeof(char *));
             if (!cols) goto done;
-            for (size_t k = 0; k < ncols; k++) cols[k] = strdup(jobs[0].t.names[k]);
+            for (size_t k = 0; k < ncols; k++) cols[k] = strdup(j->t.names[k]);
         }
-        ppz_parallel(block_task, jobs, sizeof(BlockJob), njobs);
-        for (size_t i = 0; i < njobs; i++) {
-            BlockJob *j = &jobs[i];
-            if (j->rc) {
-                seterr(err, cap, j->rc == 1 ? "block %zu could not be encoded"
-                                            : "block %zu failed verification -- nothing written",
-                       nsizes + 1);
-                goto done;
-            }
-            if (write_all(out, j->blob.data, j->blob.len)) goto io_fail;
-            if (nsizes == capsz) {
-                capsz = capsz ? capsz * 2 : 64;
-                uint64_t *ns = realloc(sizes, capsz * sizeof(uint64_t));
-                if (!ns) goto done;
-                sizes = ns;
-            }
-            sizes[nsizes++] = j->blob.len;
-            written += j->blob.len;
-            st->rows += j->t.nrows;
-            buf_free(&j->blob);
-            table_free(&j->t);
+        if (write_all(out, j->blob.data, j->blob.len)) goto io_fail;
+        if (nsizes == capsz) {
+            capsz = capsz ? capsz * 2 : 64;
+            uint64_t *ns = realloc(sizes, capsz * sizeof(uint64_t));
+            if (!ns) goto done;
+            sizes = ns;
         }
-        njobs = 0;
-        if (progress) progress(nsizes, st->rows, written, csv_bytes_read(c), in_total);
+        sizes[nsizes++] = j->blob.len;
+        written += j->blob.len;
+        st->rows += j->t.nrows;
+        uint64_t in_bytes = s->in_bytes;
+        buf_free(&j->blob);
+        table_free(&j->t);
+        pthread_mutex_lock(&pp.mu);
+        s->state = SL_EMPTY;
+        pthread_cond_broadcast(&pp.cv);
+        pthread_mutex_unlock(&pp.mu);
+        /* a line four times a second is plenty for a progress bar */
+        double now = ppz_now();
+        if (progress && now - last_report >= 0.25) {
+            progress(nsizes, st->rows, written, in_bytes, in_total);
+            last_report = now;
+        }
     }
+    if (progress) progress(nsizes, st->rows, written, in_total ? in_total : 0, in_total);
 
     /* the index */
     buf_put(&hdr, "{\"columns\":[", 12);
@@ -238,11 +362,21 @@ int ppz_stream_compress(const char *src, const char *dst, double budget_gb,
 io_fail:
     seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
 done:
-    for (size_t i = 0; jobs && i < (size_t)par; i++) {
-        buf_free(&jobs[i].blob);
-        if (i < njobs) table_free(&jobs[i].t);
+    /* stop the threads before anything they touch is freed */
+    pthread_mutex_lock(&pp.mu);
+    pp.stop = 1;
+    pthread_cond_broadcast(&pp.cv);
+    pthread_mutex_unlock(&pp.mu);
+    if (reader_up) pthread_join(rth, NULL);
+    for (int i = 0; i < started; i++) pthread_join(wth[i], NULL);
+    for (size_t i = 0; pp.slot && i < pp.nslot; i++) {
+        buf_free(&pp.slot[i].job.blob);
+        table_free(&pp.slot[i].job.t);
     }
-    free(jobs);
+    free(pp.slot);
+    free(wth);
+    pthread_mutex_destroy(&pp.mu);
+    pthread_cond_destroy(&pp.cv);
     if (out) fclose(out);
     if (rc) unlink(tmp);
     ppz_tmp_forget(tmp);
