@@ -17,7 +17,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mono="${POLYPRESSAPP:-$HOME/Desktop/ideas/PolyPressApp}"
+mono="${POLYPRESSAPP:-$HOME/Desktop/Projects/PolyPressApp}"
 prefix="handrail"
 run_tests=1
 

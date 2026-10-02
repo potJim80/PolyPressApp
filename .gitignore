@@ -68,3 +68,6 @@ PROJECT-BRIEF.md
 *Recovery-Codes*
 *recovery-codes*
 .pypirc
+
+# per-machine Claude Code settings
+.claude/settings.local.json

@@ -3,7 +3,7 @@
 # Merge a standalone project repository into this one, under a directory,
 # keeping its full history.
 #
-#   scripts/sync-app.sh handrail /Users/you/Desktop/ideas/handrail master
+#   scripts/sync-app.sh handrail /Users/you/Desktop/Projects/handrail master
 #
 # Safe to run again: the first run creates the directory, every run after it
 # brings in whatever is new. There is one mechanism, not two.
