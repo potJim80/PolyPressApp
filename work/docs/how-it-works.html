@@ -77,7 +77,7 @@ pre.box { background: var(--panel); border-radius: 4px; padding: 12px 14px; font
 
 <main>
 <h1>How PolyPress works</h1>
-<p class="lede">PolyPress compresses data tables (CSV, TSV, JSON, Parquet) without losing a single character. It doesn't compress the table as one block of text. It works out what each column is, rearranges the data so the patterns line up, and only then hands it to xz. This page follows one small table through every step, as the code stands on 1 October 2026.</p>
+<p class="lede">PolyPress compresses data tables (CSV, TSV, JSON, Parquet) without losing a single character. It doesn't compress the table as one block of text. It works out what each column is, rearranges the data so the patterns line up, and only then hands it to xz. This page follows one small table through every step, as the code stands on 2 October 2026.</p>
 
 <div class="flow" aria-label="The steps in order">
   <a href="#read">Read</a><span class="arrow">→</span>
@@ -136,7 +136,7 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
   <tr><td class="k-txt">text</td><td>everything else</td><td>(none here)</td></tr>
 </table></div>
 <p><b>Numbers</b> are stored as whole numbers scaled by their decimals. <code>41.881203</code> with 6 decimals becomes <code>41881203</code>. The column must print back to its exact original text, or it isn't numeric.</p>
-<p><b>Nearly-numeric columns.</b> <code>latitude</code> has a blank cell, so strictly it isn't numeric. In a real table that's one blank among thousands of rows. If at most 5% of cells are odd (blanks, <code>-0.0</code>, a stray extra decimal), the odd cells are stored separately by position and as text. Their slots are filled with the neighbouring value, so the column keeps its full length. A quick trial compression decides this <b>for each column</b>: stay numeric only if that could beat the dictionary or text form.</p>
+<p><b>Nearly-numeric columns.</b> <code>latitude</code> has a blank cell, so strictly it isn't numeric. In a real table that's one blank among thousands of rows. If at most 5% of cells are odd (blanks, <code>-0.0</code>, a stray extra decimal), the odd cells are stored separately by position and as text. Their slots are filled with the neighbouring value, so the column keeps its full length. A quick trial compression decides this <b>for each column</b>, once every dictionary column is known: stay numeric only if that could beat the dictionary or text form. The numeric side counts the option of being sorted by a parent (step 5).</p>
 <p><b>Dictionaries.</b> For each column, the distinct values are found with a hash table, sorted, and each cell is replaced by its position in that sorted list. <code>primary_type</code> becomes <code>BATTERY=0, NARCOTICS=1, THEFT=2</code> and the column becomes <code>2 0 2 2 1 0</code>.</p>
 <p class="why"><b>Measured:</b> four blank cells in 72,048 once cost 41% on the Treasury yield curve, because one bad cell turned a whole column into text. That's why nearly-numeric columns exist. The per-column decision is from today. It used to be one decision for the whole table, and on a CDC vaccination table that made the archive 3.77 MB instead of 2.73 MB.</p>
 </section>
@@ -177,9 +177,10 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
   <li><b>Choosing parents.</b> On a sample of up to 40,000 rows, PolyPress measures how much each column tells you about each other column (conditional entropy). It builds a tree: the most predictable column is the root, and each other column hangs under the parent that helps it most.</li>
   <li><b>Then it checks.</b> A quick trial compression of the column in its new order against its original order. If reordering doesn't actually make it smaller, the parent is dropped. The score only nominates; the trial decides.</li>
   <li><b>Text columns</b> can have a parent too. Up to 5 candidates are nominated, each one is tried, and the smallest result wins.</li>
+  <li><b>Numeric columns</b> can have a parent too. This is new on 2 October, and it's for tables where many places are each measured over time: sorted by county, a county's daily counts sit next to each other and their differences shrink. The candidate is picked by counting the bits its differences would need in each order (no compression involved), then confirmed with a quick trial. Numeric parents are chosen before the 2D groups form, because a group keeps file order.</li>
   <li>The sorts are counting sorts on the dictionary positions: one pass over the rows, no comparisons.</li>
 </ul>
-<p class="why"><b>Measured:</b> trusting the score without the check once made a real table 66% larger. Adding the check took 19.7% off the CDC disease-surveillance table, the one PolyPress was already best at. The same idea was published by AT&amp;T in 2012 (US 8,312,026, now expired); PolyPress arrived at it independently.</p>
+<p class="why"><b>Measured:</b> numeric parents took a CDC vaccination table (3,300 counties × dates) from 2.73 MB to 1.69 MB, 25% under plain xz, and the 100 open-data tables down 5.3% overall. Trusting the score without the check once made a real table 66% larger. Adding the check took 19.7% off the CDC disease-surveillance table, the one PolyPress was already best at. The same idea was published by AT&amp;T in 2012 (US 8,312,026, now expired); PolyPress arrived at it independently.</p>
 </section>
 
 <section id="pack">
@@ -256,14 +257,14 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
 <h2><span class="n"></span>Where it stands</h2>
 <div class="scroll"><table>
   <tr><th>test</th><th>result</th></tr>
-  <tr><td>100 open-data tables, vs 22 other tools</td><td>smallest on 66/100; 9.5% smaller than the best rival per table, in total; beats xz -9e on 98/100</td></tr>
-  <tr><td>same, 10–30 MB tables only</td><td>smallest on 34/44 (before today's fix); typical margin 14.7%</td></tr>
-  <tr><td>vs PolyPress in July, same inputs</td><td>1.75% smaller and 6× faster</td></tr>
+  <tr><td>100 open-data tables, vs 22 other tools</td><td>smallest on 71/100; 14.3% smaller than the best rival per table, in total; beats xz -9e on 99/100</td></tr>
+  <tr><td>same, tables over 1 MB</td><td>smallest on 61/74; typical margin 15–16%</td></tr>
+  <tr><td>vs PolyPress in July, same inputs</td><td>8.2% smaller and about 5.5× faster</td></tr>
   <tr><td>speed vs xz -9e</td><td>about 2.5× faster to compress (10.7 vs 4.0 MB/s), and smaller</td></tr>
   <tr><td>vs Parquet (any setting)</td><td>40–63% smaller, on every table it can read</td></tr>
   <tr><td>where it loses</td><td>small and narrow tables, to 7-Zip PPMd</td></tr>
 </table></div>
-<p class="note">The program is 6,391 lines of C with liblzma, about 10,000 tests, and a Swift Mac app on top. Numbers are from 1 October 2026 and include the per-column fix in step 3.</p>
+<p class="note">The program is 6,391 lines of C with liblzma, about 10,000 tests, and a Swift Mac app on top. Numbers are from 2 October 2026 and include the per-column decision in step 3 and numeric parents in step 5.</p>
 </section>
 </main>
 </div>
