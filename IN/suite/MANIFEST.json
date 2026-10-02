@@ -79,7 +79,7 @@
    "rows": 69,
    "cols": 102,
    "sha256": "adfc76024c30983b260ce017a173cae4da814b338e1b7c3ab3bd9ac9e3e1d150",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/noaa_gsoy_ord.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus/noaa_gsoy_ord.csv"
   },
   {
    "name": "xs_wide_row.csv",
@@ -94,7 +94,7 @@
    "rows": 1,
    "cols": 5000,
    "sha256": "c144cf3d404116422534c46b724eeb4e0294afd29f3871b0e93f4d1c1fe7b82d",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/single_wide_row.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/single_wide_row.csv"
   },
   {
    "name": "s_treasury_yields.csv",
@@ -110,7 +110,7 @@
    "rows": 9006,
    "cols": 9,
    "sha256": "7c0abb22e0ca89b5519eeab890c80a076e4cb63832795a3b727e3b53698c7f3b",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_matrix/treasury_yields.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_matrix/treasury_yields.csv"
   },
   {
    "name": "s_permits_1k.csv",
@@ -142,7 +142,7 @@
    "rows": 40000,
    "cols": 2,
    "sha256": "fa9f8d193b6cf0add3bc5ff063cf0491709eb5f498196b377cc456ea62394b73",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/anticorrelated.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/anticorrelated.csv"
   },
   {
    "name": "s_high_precision.csv",
@@ -158,7 +158,7 @@
    "rows": 40000,
    "cols": 2,
    "sha256": "140b5c24fa14f93748d1fb4327944ecb63a24a4b6603f12fff8a9da9ad0dda0a",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/high_precision.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/high_precision.csv"
   },
   {
    "name": "s_mixed_types.csv",
@@ -174,7 +174,7 @@
    "rows": 40000,
    "cols": 2,
    "sha256": "ebcb0ea3b264b36306bd6449c6cfca278253a81e44745575f96abb002973e46a",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/mixed_types.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/mixed_types.csv"
   },
   {
    "name": "s_shuffled_cats.csv",
@@ -190,7 +190,7 @@
    "rows": 40000,
    "cols": 8,
    "sha256": "629d68086b4b0c563829e4d6efa39dfa2b153136635a6edf525d3cc422167fd1",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/shuffled_cats.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/shuffled_cats.csv"
   },
   {
    "name": "s_weblog.csv",
@@ -239,7 +239,7 @@
    "rows": 29685,
    "cols": 6,
    "sha256": "04ff8991b83219b11c0e0bb618758dd92de468b1241d6873751c3a72800ff514",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/nyc_baby_names.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus/nyc_baby_names.csv"
   },
   {
    "name": "m_quakes.csv",
@@ -256,7 +256,7 @@
    "rows": 16190,
    "cols": 22,
    "sha256": "2b2de697b9744550fdbfd78a60435e8449d3e14e4be34553cd9092fb2b232315",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/usgs_quakes.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus/usgs_quakes.csv"
   },
   {
    "name": "m_weather_wide.csv",
@@ -272,7 +272,7 @@
    "rows": 26304,
    "cols": 25,
    "sha256": "1b0bda729abcc1789aee74d7c5d8358a0195ea4d56e2cd27980c9616f68aaf50",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_matrix/weather_wide.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_matrix/weather_wide.csv"
   },
   {
    "name": "m_weather_hourly.csv",
@@ -288,7 +288,7 @@
    "rows": 87672,
    "cols": 11,
    "sha256": "228784edcf056123ce49b73129a320294b0726eef0d4c741156cf89a6df59bed",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_matrix/weather_hourly.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_matrix/weather_hourly.csv"
   },
   {
    "name": "m_survey_demo.csv",
@@ -304,7 +304,7 @@
    "rows": 40000,
    "cols": 21,
    "sha256": "b0a87afbd55cb822bbbfa1c8fddcb00342e7797cb9fe67343ed59bff77222c73",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/polypress-demo.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/polypress-demo.csv"
   },
   {
    "name": "m_nndss_2mb.csv",
@@ -404,7 +404,7 @@
    "rows": 40000,
    "cols": 2,
    "sha256": "2f6439f2e62af76a3da0953cd951f0af6fe756801c020b41a17fcecfc5ed58fa",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/uuid_keys.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/uuid_keys.csv"
   },
   {
    "name": "m_random_floats.csv",
@@ -419,7 +419,7 @@
    "rows": 40000,
    "cols": 3,
    "sha256": "e535e26eb87dc55ac037d2e0753a1b288dfb407fb49c1e3d796e099de12f64e2",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/random_floats.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/random_floats.csv"
   },
   {
    "name": "m_random_text.csv",
@@ -434,7 +434,7 @@
    "rows": 40000,
    "cols": 3,
    "sha256": "fc6a479dcf69094877882eed24dd97691fecaa7e0d1b4c0de44045ef9b5e3ea2",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/random_text.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/random_text.csv"
   },
   {
    "name": "m_base64_blob.csv",
@@ -450,7 +450,7 @@
    "rows": 40000,
    "cols": 1,
    "sha256": "c8de1033f788d7fe357c014aaaa0e4fce1a9fd782a276adb956ddc3364376c97",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/base64_blob.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/base64_blob.csv"
   },
   {
    "name": "m_wide_random.csv",
@@ -466,7 +466,7 @@
    "rows": 4000,
    "cols": 200,
    "sha256": "fe5c5ae5725c3fb8a4cbb7d6801af5577a1ef5792f6e1bb4e0b58620a34ea102",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus_hostile/wide_random.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus_hostile/wide_random.csv"
   },
   {
    "name": "l_nndss_8mb.csv",
@@ -498,7 +498,7 @@
    "rows": 150000,
    "cols": 16,
    "sha256": "82491a87207abe3131cf021b4a9ce272ce574f07e5169660604abc95c1624400",
-   "source": "/Users/mahdiakbarin/Desktop/Compression/IN/corpus/cdc_nndss.csv"
+   "source": "/Users/mahdiakbarin/Desktop/Projects/Compression/IN/corpus/cdc_nndss.csv"
   },
   {
    "name": "l_chicago_permits.csv",

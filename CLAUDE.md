@@ -270,13 +270,28 @@ first batch: `block_task` set the serial flag on whatever thread ran it, and
 0.76 cores. The flag is now restored after each block -- **a thread-local
 flag set inside a task must be put back**. (2) It is a pipeline now: a
 reader thread, `ppz_workers()` encoders, the caller writing blocks in order,
-`par + 2` slots. Same block cuts, same bytes (cmp'd). (3) The default
-`--budget` is an eighth of RAM, 1-4 GB (was 1 GB): on 2M NEMSIS rows,
-36k-row blocks gave 20.21 MB in 9.2 s, 132k-row blocks (2 GB) 19.74 MB in
-7.9 s at 1.0 GB peak. The per-row memory model (PER_BYTE/PER_CELL) is
-calibrated on text-heavy chicago_permits and overestimates numeric tables
-about 2x. Six workers were 23% faster than four on the slice; four stays
-(fanless Air) unless Mahdi says otherwise.
+`par + 2` slots. Same block cuts, same bytes (cmp'd). (3) A bigger default
+budget (2 GB) was tried and **reverted the same day: Mahdi, "the speed should
+come from actual code and algorithmic fixes, not just increases resources."**
+Four workers and the 1 GB default stay; speed work changes code, not
+resources, and reports each gain by its cause.
+
+**Encoder work halved, 2026-10-01 (same bytes, all 39 suite tables cmp'd).**
+Profile before: sorting 43% of busy time, xz 40%. Fixes: the lenient screen's
+plan is reused instead of classifying twice; dictionaries are built by
+hashing (sort only the distinct values, stop past the cap); parent reorders
+use a counting sort on dictionary ids (`argsort_ids`, and the decoder's
+`stable_argsort`); entropy value counts use counting/radix sort. 2M NEMSIS
+rows 9.2 s -> 4.6 s, suite 30.7 s -> 18.9 s. Profile after: final xz -9e
+~61%, preset-1 probes ~25% (the dictionary-parent never-worse guard and text
+parent probes), classify ~9%, verification decode ~8%.
+
+Negative results from the same session (suite, one thread): a dictionary
+sized to the input instead of 64 MB -- identical bytes, no faster (liblzma's
+setup is not the cost; a probe's setup is ~0.2 ms). xz depth 512 -> 128:
+-0.03% size, -3% time; 256: -0.08%, -1.6%; nice_len 128: +0.18%, -5%;
+preset 9 without EXTREME: +0.13% size, -13% time. xz time is the optimal
+parser's pricing, not the match search; none of these was adopted.
 
 ## The measured/unmeasured trap — read this before optimising
 

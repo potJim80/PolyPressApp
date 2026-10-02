@@ -12,8 +12,6 @@
  *
  *     polypress stream-compress big.csv --budget 1.0
  *
- * (without --budget: an eighth of the machine's memory, 1 to 4 GB)
- *
  * Restoring writes whatever format the output extension asks for, so it
  * doubles as a converter. Compression decodes the archive and compares every
  * cell before anything is written.
@@ -26,9 +24,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef __APPLE__
-#include <sys/sysctl.h>
-#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -218,29 +213,10 @@ typedef struct {
     long rows;
 } Args;
 
-/* The default memory budget for stream-compress: an eighth of the machine's
- * memory, between 1 and 4 GB (2 GB on a 16 GB Mac). Bigger blocks compress
- * better and faster -- measured 2026-10-01 on 2M NEMSIS rows: 36k-row blocks
- * (what 1 GB gave) 20.21 MB in 9.2 s, 250k-row blocks 19.53 MB in 7.6 s. */
-static double default_budget(void)
-{
-    uint64_t mem = 0;
-    size_t len = sizeof(mem);
-#ifdef __APPLE__
-    if (sysctlbyname("hw.memsize", &mem, &len, NULL, 0)) mem = 0;
-#else
-    long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
-    if (pages > 0 && psz > 0) mem = (uint64_t)pages * (uint64_t)psz;
-    (void)len;
-#endif
-    double gb = (double)mem / (8.0 * 1024 * 1024 * 1024);
-    return gb < 1.0 ? 1.0 : gb > 4.0 ? 4.0 : gb;
-}
-
 static int parse_args(int argc, char **argv, Args *a, int want_two)
 {
     memset(a, 0, sizeof(*a));
-    a->budget = default_budget();
+    a->budget = 1.0;
     for (int i = 0; i < argc; i++) {
         const char *s = argv[i];
         if ((!strcmp(s, "-o") || !strcmp(s, "--output")) && i + 1 < argc) a->out = argv[++i];
