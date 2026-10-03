@@ -201,6 +201,18 @@ python3 benchmarks/measure_one.py ../IN/suite/l_nndss_full.csv --reps 3
   100-corpus capped at 28 MB and the 500-corpus at 16 MB; **their absolute
   totals are not comparable, only their ratios are.**
 
+**Re-measuring only Polypress** (added 2026-10-03). When the codec changed
+and the competitors did not, `benchmarks/rerun_ours.py SWEEP.jsonl CORPUS/
+--out NEW.jsonl --max-mb CAP` keeps every competitor row and re-measures only
+the rows this codec produces, exactly as `measure_one.py` does, on exactly the
+file the sweep measured -- a truncated table is truncated again with
+`sweep.py`'s function and refused if it is not the size the sweep recorded
+(which is how a wrong cap is caught: `socrata100-v2` ran at **16 MB**, not
+the 28 MB default). Every record carries `"rerun_of"`. Say so wherever its
+numbers are quoted: the rival timings are from the earlier day's run.
+Polypress is timed as the program runs by default, up to 4 threads; every
+other tool is single-threaded except as its own defaults have it.
+
 ## 8. Known non-comparabilities, stated up front
 
 - **"Never worse" means never worse than our own plain fallback**, which

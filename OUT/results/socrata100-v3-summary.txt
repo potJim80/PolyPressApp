@@ -1,0 +1,165 @@
+==========================================================================
+Socrata 100, v3 (2026-10-03, public turbo d04ea36: lenient columns per column + numeric parents; Polypress re-measured by rerun_ours.py, competitor rows carried from v2)
+==========================================================================
+100 datasets measured, 880,792,024 bytes of CSV, 3,053,007 rows, 2213 columns in total
+12 truncated at the size ceiling (every codec got the same truncated file)
+round-trip: 100 of 100 datasets decoded back to the exact input
+peak RSS across the whole sweep: 1152 MB
+
+1. Polypress vs the best competitor on each table
+-------------------------------------------------
+wins 71 of 100 (71%)
+margin over the best other tool: median 1.14x, best 3.06x, worst 0.82x
+whole corpus: 51,324,527 B vs 59,890,540 B, 1.17x smaller in aggregate
+compression ratio vs raw CSV: median 14.27x, best 291.19x, worst 4.26x
+
+  strongest 12:
+  dataset                                            vs best  vs csv  best other
+  data_dashboard_expenditures_mi_fbey-tu9a.csv         3.06x 291.19x  parquet+brotli
+  data_covid_19_vaccine_distribution_allocation_saz5   2.24x  39.57x  brotli -q11
+  datos_casos_positivos_de_covid_19_en_colombia_gt2j   2.14x  55.10x  7z ppmd o16
+  opendata_fire_rescue_incidents_2012_present_f362-6   2.13x  85.33x  xz -9e
+  data_covid_19_case_surveillance_public_use_da_n8mc   2.07x 110.30x  xz -9e
+  opendata_building_electrical_fire_grading_mechani_   2.03x  65.08x  7z ppmd o12
+  data_covid_19_vaccine_distribution_allocation_b7pe   2.03x  36.15x  brotli -q11
+  data_crimes_2001_to_present_ijzp-q8t2.csv            1.86x  17.92x  7z ppmd o12
+  opendata_fire_rescue_personnel_responses_2012_201_   1.85x  37.87x  xz -9e
+  health_new_york_state_statewide_covid_19_testin_xd   1.84x  14.72x  orc+zstd
+  data_covid_19_tests_cases_and_deaths_by_town_28fr-   1.77x  18.22x  xz -9e
+  data_civil_service_list_certification_a9md-ynri.cs   1.74x  59.43x  parquet+brotli
+
+  weakest 12 (losses first):
+  dataset                                            vs best  vs csv  best other
+  data_daily_arrests_xhwt-7h2h.csv                     0.93x   4.91x  7z ppmd o12
+  data_police_active_warrants_cab7-wvn5.csv            0.92x  10.84x  7z ppmd o12
+  data_missouri_beer_wine_and_liquor_solicitor_mmn5-   0.92x   4.82x  7z ppmd o6
+  data_contracts_vmu2-pnrc.csv                         0.92x   8.59x  7z ppmd o16
+  data_active_trademark_registrations_ny3n-dx3v.csv    0.92x   7.63x  7z ppmd o16
+  data_listing_of_active_businesses_6rrh-rzua.csv      0.90x   7.15x  7z ppmd o16
+  data_new_liquor_licenses_dymb-xy5c.csv               0.90x   7.96x  7z ppmd o16
+  data_open_meetings_au6r-w9n3.csv                     0.89x   5.74x  7z ppmd o12
+  data_equine_death_and_breakdown_q6ts-kwhk.csv        0.85x   6.93x  7z ppmd o12
+  data_hhs_provider_relief_fund_kh8y-3es6.csv          0.85x   5.32x  7z ppmd o6
+  data_state_of_vermont_employee_salaries_jgqy-2smf.   0.82x  11.87x  7z ppmd o16
+  datahub_smart_city_challenge_finalists_project_p_4   0.82x   9.20x  7z ppmd o16
+
+  every loss, in full (29 of 100):
+  datahub_smart_city_challenge_finalists_project_p_4 lost to 7z ppmd o16      by 22.0%
+  data_state_of_vermont_employee_salaries_jgqy-2smf. lost to 7z ppmd o16      by 21.3%
+  data_hhs_provider_relief_fund_kh8y-3es6.csv        lost to 7z ppmd o6       by 18.1%
+  data_equine_death_and_breakdown_q6ts-kwhk.csv      lost to 7z ppmd o12      by 18.1%
+  data_open_meetings_au6r-w9n3.csv                   lost to 7z ppmd o12      by 12.5%
+  data_new_liquor_licenses_dymb-xy5c.csv             lost to 7z ppmd o16      by 11.6%
+  data_listing_of_active_businesses_6rrh-rzua.csv    lost to 7z ppmd o16      by 11.5%
+  data_active_trademark_registrations_ny3n-dx3v.csv  lost to 7z ppmd o16      by 9.2%
+  data_contracts_vmu2-pnrc.csv                       lost to 7z ppmd o16      by 9.2%
+  data_missouri_beer_wine_and_liquor_solicitor_mmn5- lost to 7z ppmd o6       by 8.7%
+  data_police_active_warrants_cab7-wvn5.csv          lost to 7z ppmd o12      by 8.6%
+  data_daily_arrests_xhwt-7h2h.csv                   lost to 7z ppmd o12      by 7.3%
+  data_horse_racing_rulings_beginning_1985_igam-2tkj lost to 7z ppmd o16      by 7.2%
+  health_food_service_establishment_last_inspecti_cn lost to 7z ppmd o16      by 5.6%
+  data_medallion_drivers_active_jb3k-j3gp.csv        lost to 7z ppmd o12      by 5.6%
+  data_for_hire_vehicles_fhv_active_drivers_xjfq-wh2 lost to 7z ppmd o12      by 5.4%
+  data_lottery_cash_4_life_winning_numbers_2014_kwxv lost to 7z ppmd o6       by 5.3%
+  data_county_clerk_license_information_hbmv-rqk9.cs lost to 7z ppmd o16      by 5.1%
+  data_missouri_law_enforcement_agencies_cgbu-k38b.c lost to 7z ppmd o12      by 4.6%
+  data_lottery_take_5_winning_numbers_beginning_dg63 lost to 7z ppmd o6       by 4.2%
+  data_food_inspections_4ijn-s7e5.csv                lost to 7z ppmd o16      by 4.1%
+  data_missouri_alcohol_licenses_not_renewed_fo_mtgj lost to 7z ppmd o6       by 3.3%
+  data_health_care_provider_credential_data_qxh8-f4b lost to 7z ppmd o16      by 1.8%
+  data_citywide_payroll_data_fiscal_year_k397-673e.c lost to 7z ppmd o16      by 1.7%
+  data_providence_police_department_arrests_and_vank lost to 7z ppmd o12      by 1.4%
+  data_lottery_powerball_winning_numbers_beginn_d6yy lost to 7z ppmd o6       by 1.4%
+  datos_lista_oficial_de_precios_unitarios_fijos_ae7 lost to 7z ppmd o16      by 1.1%
+  data_lottery_mega_millions_winning_numbers_be_5xaw lost to orc+zstd         by 0.5%
+  data_affordable_rental_housing_developments_s6ha-p lost to 7z ppmd o16      by 0.2%
+
+2. Head to head, one competitor at a time
+-----------------------------------------
+  competitor                  n   ppz wins     median      worst
+  7z lzma2 -mx9             100     99/100      1.41x      0.99x
+  7z ppmd o12               100     79/100      1.19x      0.83x
+  7z ppmd o16               100     79/100      1.18x      0.82x
+  7z ppmd o6                100     82/100      1.39x      0.85x
+  brotli -q11               100     97/100      1.38x      0.89x
+  bzip2 -9                  100     99/100      1.55x      1.00x
+  feather+lz4                90      90/90      5.91x      2.39x
+  feather+zstd               90      90/90      3.55x      1.74x
+  gzip -9                   100    100/100      2.51x      1.22x
+  lz4 -9                    100    100/100      2.89x      1.33x
+  orc+snappy                 86      86/86      3.23x      1.29x
+  orc+zlib                   86      86/86      2.31x      1.03x
+  orc+zstd                   86      85/86      2.15x      0.99x
+  parquet+brotli             90      90/90      1.73x      1.17x
+  parquet+gzip               90      90/90      1.98x      1.32x
+  parquet+snappy             90      90/90      2.75x      1.63x
+  parquet+zstd               90      90/90      1.82x      1.17x
+  xz -9e                    100     99/100      1.34x      0.98x
+  zip -9                    100    100/100      2.51x      1.23x
+  zstd -19                  100    100/100      1.47x      1.03x
+  zstd -22                  100    100/100      1.45x      1.03x
+  zstd -3                   100    100/100      2.28x      1.17x
+
+3. Like for like: the same finisher on both sides
+-------------------------------------------------
+Polypress finishes with xz. pyarrow answers 'Unsupported
+compression: xz', so Parquet cannot. These rows strip that
+advantage out by re-finishing the same modelled streams.
+  polypress+zstd     vs parquet+zstd        90/90 wins   median   1.66x  worst   1.15x
+  polypress+zstd     vs orc+zstd            81/86 wins   median   1.96x  worst   0.89x
+  polypress+zstd     vs feather+zstd        90/90 wins   median   3.18x  worst   1.62x
+  polypress+zstd     vs zstd -22           98/100 wins   median   1.32x  worst   0.96x
+  polypress+brotli   vs parquet+brotli      90/90 wins   median   1.73x  worst   1.19x
+  polypress+brotli   vs brotli -q11        98/100 wins   median   1.34x  worst   0.97x
+
+4. Did the columnar formats reproduce the data exactly?
+-------------------------------------------------------
+Parquet read with type inference gave back the exact printed text
+on 9 datasets, changed it on 77, and could not be checked on 14.
+Where it changed the text, part of any Parquet size win is
+discarded formatting rather than compression -- '1.50' becoming
+1.5 is a smaller file for a reason that is not the codec.
+  changed: data_daily_arrests_xhwt-7h2h.csv, data_open_meetings_au6r-w9n3.csv, data_covid_19_vaccine_distribution_alloc, data_covid_19_vaccine_distribution_alloc, data_lottery_powerball_winning_numbers_b, data_lottery_mega_millions_winning_numbe, data_affordable_rental_housing_developme, data_lottery_cash_4_life_winning_numbers, data_transportation_services_index_and_s, datos_lista_oficial_de_precios_unitarios, data_rates_of_covid_19_cases_or_deaths_b, data_missouri_alcohol_licenses_not_renew, data_providence_police_department_arrest, data_police_active_warrants_cab7-wvn5.cs, data_lottery_take_5_winning_numbers_begi, datos_tasa_de_cambio_representativa_del_, data_county_clerk_license_information_hb, data_provisional_covid_19_deaths_by_week, data_tlc_new_driver_application_status_d, data_lottery_daily_numbers_win_4_winning
+  ...and 57 more
+
+5. Speed, indicative only
+-------------------------
+One timing pass per codec, taken while the sweep had the machine
+to itself but with no attempt to quiet it. Sizes are exact and
+reproducible; these numbers are not. Read them for order of
+magnitude and nothing finer.
+
+And they are NOT measured on the same basis, which matters more
+than the noise does. The general-purpose tools are handed the raw
+CSV bytes, because that is what compressing a CSV actually is.
+Parquet, ORC, Feather and Polypress are handed an already-parsed
+table, so none of them is charged for reading the CSV -- the cost
+every one of them would really pay. Read the columnar rows and the
+polypress row against each other; read either against gzip only as
+a rough guide.
+  codec                  enc MB/s     dec MB/s
+  7z lzma2 -mx9               6.3        290.6
+  7z ppmd o12                38.4         35.2
+  7z ppmd o16                32.3         30.0
+  7z ppmd o6                 63.0         58.0
+  brotli -q11                 1.0        479.9
+  bzip2 -9                   18.8         80.5
+  feather+lz4              1106.1       3089.3
+  feather+zstd              656.7       1294.6
+  gzip -9                    23.6        955.3
+  lz4 -9                     83.8        536.1
+  orc+snappy                411.1       1161.6
+  orc+zlib                  206.1        658.9
+  orc+zstd                  359.9       1053.0
+  parquet+brotli              2.8        561.4
+  parquet+gzip              103.6        771.7
+  parquet+snappy            540.5        233.5
+  parquet+zstd               31.9       1168.9
+  polypress                  14.7        162.7
+  xz -9e                      4.0        200.9
+  zip -9                     22.6        244.4
+  zstd -19                    3.9        864.3
+  zstd -22                    2.9        830.2
+  zstd -3                   182.5        690.1
+
+wrote ../OUT/results/socrata100-v3-results.csv
