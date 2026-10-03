@@ -30,6 +30,19 @@ A lossless compressor for data tables.
 > The 500-table headline and the other sweep results below were produced by
 > the earlier encoder, with the guarantee; they have not been re-run.
 > Details: [One pass](#one-pass).
+>
+> **Current numbers, Socrata 100, re-measured 2026-10-03** on this code
+> (one pass, derived columns, lenient columns per column, numeric parents):
+> **smallest of 23 tools on 71 of 100**, 1.17x smaller than the best rival
+> per table in aggregate (51.3 MB vs 59.9 MB), **smaller than `xz -9e` on 99
+> of 100** (worst 0.98x), 100 of 100 round-trip exact. Encode median 14.7
+> MB/s with up to 4 threads (xz -9e: 4.0, single-threaded), decode 163 MB/s.
+> Polypress was re-measured; the competitor rows are carried from the
+> 2026-10-01 run, since the competitors did not change
+> ([`benchmarks/rerun_ours.py`](work/benchmarks/rerun_ours.py)). Every loss
+> is listed in
+> [`OUT/results/socrata100-v3-summary.txt`](OUT/results/socrata100-v3-summary.txt);
+> 28 of the 29 are to 7z's PPMd, and one to `orc+zstd` (by 0.5%).
 
 ## The headline: 500 datasets nobody chose
 
