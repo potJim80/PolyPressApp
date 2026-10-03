@@ -522,13 +522,6 @@ too_many:
 
 typedef enum { K_NUM, K_DICT, K_TEXT } Kind;
 
-static int diff_order(const int64_t *a, size_t n);
-static int64_t *diff_n(const int64_t *a, size_t n, int k, size_t *out_n);
-static int str_cmp(const void *pa, const void *pb);
-static int str_eq(Str a, Str b);
-static void pack_ints(const int64_t *a, size_t n, Buf *out);
-
-
 typedef struct {
     Kind     kind;
     int64_t *ints;      /* K_NUM */
@@ -558,7 +551,6 @@ static void plan_free(ColPlan *p, size_t n)
 #define NUMPAR_SAMPLE 20000           /* rows a nomination looks at */
 static size_t num_probe(const int64_t *a, size_t n, const size_t *perm);
 static uint64_t num_bits(int64_t *a, size_t n, int64_t *tmp);
-static size_t *argsort_ids(const int64_t *v, size_t n, size_t k);
 
 /* Could storing this column as numbers possibly beat leaving it alone?
  *
@@ -1690,8 +1682,6 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
     }
 
     /* ------------------------------------------------- pack the strings */
-    Buf txt;
-    buf_init(&txt);
     SMeta *smeta = calloc(nsg ? nsg : 1, sizeof(SMeta));
     Buf lenbins;
     buf_init(&lenbins);
@@ -1878,7 +1868,7 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
 
 done:
     buf_free(&mz); buf_free(&bz); buf_free(&tz);
-    buf_free(&meta); buf_free(&txt); buf_free(&bins);
+    buf_free(&meta); buf_free(&bins);
     free(smeta); free(binsz); free(sg); free(sgn);
     for (size_t j = 0; j < nc; j++) { free(text_cells[j]); free(ex_cells[j]); }
     free(text_cells); free(ex_cells); free(tparent); free(nparent);

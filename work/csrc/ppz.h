@@ -274,6 +274,10 @@ int  ppz_original(const uint8_t *blob, size_t n, Buf *orig, char *fmt, size_t fc
 
 /* --------------------------------------------------------------- decoding */
 
+/* An archive's metadata, parsed (js_free it), or NULL if `blob` is not a
+ * PPZ2 archive or its metadata is damaged. Nothing else is decompressed. */
+Js *ppz_meta(const uint8_t *blob, size_t n);
+
 /* Decode an archive into `out`. Returns 0 on success. */
 int ppz_decode(const uint8_t *blob, size_t n, Table *out);
 

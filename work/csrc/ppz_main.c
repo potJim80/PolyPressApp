@@ -800,15 +800,8 @@ static int cmd_info(int argc, char **argv)
     size_t nk[4] = { 0, 0, 0, 0 };            /* dict, num, text, grp */
     const char *kn[4] = { "dict", "num", "text", "grp" };
     size_t reordered = 0;
-    Js *meta = NULL;
+    Js *meta = ppz_meta(blob.data, blob.len);
     {
-        size_t ml = ((size_t)blob.data[4] << 24) | ((size_t)blob.data[5] << 16) |
-                    ((size_t)blob.data[6] << 8) | blob.data[7];
-        Buf mb;
-        buf_init(&mb);
-        if (16 + ml <= blob.len && !ppz_lzma_decompress(blob.data + 16, ml, &mb))
-            meta = js_parse((const char *)mb.data, mb.len);
-        buf_free(&mb);
         const Js *cols = js_get(meta, "cols");
         for (size_t i = 0; cols && cols->kind == JS_ARR && i < cols->count; i++) {
             const Js *k = js_get(&cols->items[i], "kind");

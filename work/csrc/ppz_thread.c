@@ -1,24 +1,23 @@
 /* Threads for the encoder.
  *
- * 72-92% of encode time is lzma, and most of that is TRIAL compressions --
- * candidates that are compressed, measured, and compared. The trials of one
- * decision are independent, so they run at the same time.
+ * What runs side by side: the preset-1 probes that decide text and
+ * dictionary parents (each independent of the others), the binary payload's
+ * xz -9e beside the text pile's, and, in streaming mode, whole blocks.
  *
  * This changes when the work happens, never what is chosen: every decision
- * still folds its measured sizes in the original order with the original
- * strict `<`, so ties fall where they always did and the archive is byte for
- * byte the one the serial path writes. tests/ checks PPZ_THREADS=1 against the
+ * folds its measured sizes in the serial order with the serial strict `<`,
+ * so ties fall where they always did and the archive is byte for byte the
+ * one the serial path writes. tests/ checks PPZ_THREADS=1 against the
  * default on every table it builds.
  *
  * The price is memory. An xz -9e compressor touches ~64 MB plus ~8 bytes per
- * input byte. Trials are started from several places at once (the fallback,
- * the strict plan, the text pile), so the heavy compressions also take a slot
- * from one process-wide limit: never more than ppz_nthreads() of them run at
- * the same moment, however many threads are alive. A thread holding a slot
- * never waits for anything else, so the limit cannot deadlock.
+ * input byte, so the heavy compressions take a slot from one process-wide
+ * limit: never more than ppz_nthreads() of them run at the same moment,
+ * however many threads are alive. A thread holding a slot never waits for
+ * anything else, so the limit cannot deadlock.
  *
- * PPZ_THREADS=1 gives the serial path anywhere. Streaming mode sets it too,
- * because its --budget promises a memory ceiling.
+ * PPZ_THREADS=1 gives the serial path anywhere. Streaming mode makes each
+ * block serial inside, because its --budget promises a memory ceiling.
  */
 
 #include "ppz.h"

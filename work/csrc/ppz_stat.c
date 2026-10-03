@@ -882,16 +882,11 @@ static int undo_layout(const Js *lay, Buf *b)
 int ppz_original(const uint8_t *blob, size_t n, Buf *orig, char *fmt, size_t fcap, Js **meta_out)
 {
     if (meta_out) *meta_out = NULL;
-    if (n < 16 || memcmp(blob, PPZ_MAGIC, 4)) return -1;
+    Js *meta = ppz_meta(blob, n);
+    if (!meta) return -1;
     size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) | ((size_t)blob[6] << 8) | blob[7];
     size_t bl = ((size_t)blob[8] << 24) | ((size_t)blob[9] << 16) | ((size_t)blob[10] << 8) | blob[11];
-    if (ml > n - 16 || bl > n - 16 - ml) return -1;
-    Buf mb;
-    buf_init(&mb);
-    if (ppz_lzma_decompress(blob + 16, ml, &mb)) return -1;
-    Js *meta = js_parse((const char *)mb.data, mb.len);
-    buf_free(&mb);
-    if (!meta) return -1;
+    if (bl > n - 16 - ml) { js_free(meta); return -1; }
     const Js *o = js_get(meta, "original");
     if (!o) { js_free(meta); return 0; }
     const Js *f = js_get(o, "format");

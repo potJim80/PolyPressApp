@@ -922,3 +922,17 @@ int ppz_decode(const uint8_t *blob, size_t n, Table *out)
     buf_free(&orig);
     return r ? -1 : 0;
 }
+
+Js *ppz_meta(const uint8_t *blob, size_t n)
+{
+    if (n < 16 || memcmp(blob, PPZ_MAGIC, 4)) return NULL;
+    size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) |
+                ((size_t)blob[6] << 8) | blob[7];
+    if (ml > n - 16) return NULL;
+    Buf mb;
+    buf_init(&mb);
+    if (ppz_lzma_decompress(blob + 16, ml, &mb)) return NULL;
+    Js *meta = js_parse((const char *)mb.data, mb.len);
+    buf_free(&mb);
+    return meta;
+}
