@@ -29,6 +29,8 @@ IN/corpus100/
 IN/corpus500/
 IN/corpus_matrix/
 IN/corpus_hostile/
+# Stata/SPSS/SAS test files: re-fetch with work/benchmarks/fetch_formats.py
+IN/formats/
 
 # The standard benchmark suite (IN/suite/) is 267 MB rebuilt in 25 seconds by
 # work/benchmarks/make_suite.py from the corpora above -- so the DATA is not
