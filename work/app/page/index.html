@@ -129,13 +129,22 @@ function status(j) {
   return bits.join(" · ");
 }
 
+const STAT = { dta: "Stata", sav: "SPSS", zsav: "SPSS", por: "SPSS portable", sas7bdat: "SAS", xpt: "SAS transport" };
+
 function detail(d) {
   if (!d) return "";
   const lines = [];
-  const kind = { modelled: "one block", stream: "in blocks" }[d.container] || d.container;
-  let first = "<b>" + Number(d.rows).toLocaleString() + "</b> rows · <b>" + d.columns + "</b> columns · " + esc(kind);
-  if (d.blocks) first += " · " + d.blocks + " blocks of " + Number(d.rows_per_block).toLocaleString();
-  lines.push(first);
+  const kind = { modelled: "one block", stream: "in blocks" }[d.container]
+    || (d.container === "original" ? (STAT[d.format] || d.format) + " file, kept byte for byte" : d.container);
+  if (d.rows != null) {
+    let first = "<b>" + Number(d.rows).toLocaleString() + "</b> rows · <b>" + d.columns + "</b> columns · " + esc(kind);
+    if (d.blocks) first += " · " + d.blocks + " blocks of " + Number(d.rows_per_block).toLocaleString();
+    lines.push(first);
+  }
+  if (d.container === "original")
+    lines.push(d.variable_labels + " variable labels · " + d.value_labelled_columns + " columns with value labels"
+      + (d.notes ? " · " + d.notes + " notes" : ""));
+  for (const t of d.translation || []) lines.push(esc(t));
   const plan = Object.entries(d.plan || {}).map(([k, v]) => v + " " + k).join(", ");
   if (plan) lines.push("plan " + esc(plan) + (d.reordered ? " · " + d.reordered + " sorted by a parent" : ""));
   for (const g of d.groups || []) lines.push("2d group " + esc(g.join(", ")));

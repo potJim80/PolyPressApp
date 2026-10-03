@@ -51,12 +51,17 @@ done
 # iconv (for --encoding) is part of libc on Linux, a separate library on macOS
 [ "$(uname)" = "Darwin" ] && LIB="$LIB -liconv"
 
+# ReadStat, for Stata/SPSS/SAS files: vendored C, built once into .build/.
+# It needs zlib (SPSS .zsav), which macOS ships and Linux has as zlib1g-dev.
+"$here/readstat/build.sh" "$here/.build" -O2
+LIB="$here/.build/libreadstat.a $LIB -lz"
+
 echo "cc $CFLAGS $INC ... $LIB"
 # shellcheck disable=SC2086
 cc $CFLAGS $INC \
     "$here/ppz_util.c" "$here/ppz_io.c" "$here/ppz_thread.c" \
     "$here/ppz_decode.c" "$here/ppz_encode.c" "$here/ppz_stream.c" \
-    "$here/ppz_main.c" \
+    "$here/ppz_stat.c" "$here/ppz_main.c" \
     -o "$out" $LIB
 
 echo "built $out"

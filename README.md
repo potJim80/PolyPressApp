@@ -590,6 +590,7 @@ OUT/results/    sweep output: the JSONL, summaries and CSVs that are the evidenc
 work/           everything below is inside work/ -- run commands from there
   csrc/         THE PROGRAM, in C: codec, table readers and writers,
                 streaming container, threads, command line
+  csrc/readstat/  ReadStat (MIT), vendored: the Stata/SPSS/SAS readers
   csrc/tests/   its test suite, also C
   py/           parquet.py -- the one format that needs Python (Arrow)
   app/          the Mac app: PolypressApp.swift + page/ (one window around the
@@ -660,9 +661,10 @@ before the Python went).
 ./csrc/polypress info     data.csv.ppz       # plan, shape, what was reordered
 ```
 
-**Using it needs nothing installed.** liblzma is linked into the binary;
-iconv ships with macOS and every Linux. Building needs the liblzma headers
-(`brew install xz`, or `apt install liblzma-dev`).
+**Using it needs nothing installed.** liblzma and ReadStat are linked into
+the binary; iconv and zlib ship with macOS and every Linux. Building needs
+the liblzma headers (`brew install xz`, or `apt install liblzma-dev`) and,
+on Linux, zlib's (`apt install zlib1g-dev`).
 
 **What is still Python, and why:**
 
@@ -732,6 +734,8 @@ polypress restore  data.csv.ppz             # -> data.csv
 polypress restore  data.csv.ppz -o out.json # the extension picks the format
 polypress convert  data.tsv data.jsonl      # a plain format change, no archive
 polypress info     data.csv.ppz [--json]
+polypress compress survey.dta               # Stata, SPSS, SAS: kept byte for byte
+polypress restore  survey.dta.ppz -o s.csv  #   ...or translated, naming what it drops
 ```
 
 `-` is standard input or output as CSV, which is how Parquet gets in and out:
@@ -775,6 +779,8 @@ chain of AppleScript dialogs before):
 
 - **drop a table** on it — compressed into a `.ppz` beside the original,
   verified cell for cell. Big files go a block at a time automatically.
+- **drop a Stata, SPSS or SAS file** — archived byte for byte with its
+  labels; "as csv ..." on it writes a translation and lists what it left out
 - **drop a `.ppz`** — restored beside itself, never over an existing file
 - **hover a line** — "show" in Finder, and "as csv tsv json jsonl parquet" to
   write the same table in another format
@@ -785,6 +791,66 @@ The C program ships inside the bundle, so the app needs nothing installed;
 Parquet is offered only when the system Python has pyarrow.
 `Polypress --selftest` runs every action on generated files without opening
 a window, and `build_app.sh` refuses to install a build that fails it.
+
+## Stata, SPSS and SAS files
+
+Since 2026-10-02 `compress`, `restore`, `convert` and `info` take Stata
+(`.dta`), SPSS (`.sav`, `.zsav`, `.por`) and SAS (`.sas7bdat`, `.xpt`) files,
+read by [ReadStat](https://github.com/WizardMac/ReadStat) compiled into the
+program (`csrc/readstat/`, MIT, pinned at dev `835b88c8`).
+
+**An archive of one keeps the original file, byte for byte**, plus a JSON
+schema of what ReadStat found in it: column types and widths, variable
+labels, value-label sets, display formats, SPSS measure levels and
+user-missing values, notes, the file label. These formats carry more than a
+table, and no table format can carry it all back, so the table codec is not
+used on them:
+
+- **Restoring to the same format gives the original file.** `restore
+  survey.dta.ppz` writes `survey.dta`, identical to what went in. Compress
+  checks that before writing anything, as it does for tables.
+- **Restoring or converting to CSV, TSV, JSON or JSON Lines is a
+  translation, and it says what it dropped.** Numbers print shortest
+  round-trip, dates and times as ISO text (Stata `%td`/`%tc`, SAS `DATE`/
+  `DATETIME`/`TIME` families, SPSS `DATE`/`ADATE`/`DATETIME`/`TIME`...), system
+  missing as an empty cell, Stata's tagged missing values as `.a`...`.z`. Then:
+
+  ```
+  survey.csv is a translation of the Stata file:
+    column types and widths are not kept (text has none)
+    1 date/time column written as dates (YYYY-MM-DD hh:mm:ss)
+    value labels on 2 columns: the codes are written, not the labels
+    variable labels on 7 columns dropped
+    (all of it stays in the archive: restore to .dta for the original)
+  ```
+- **Writing Stata/SPSS/SAS from another format is not built.** `restore
+  x.dta.ppz -o x.sav` is refused rather than half-done.
+
+Checked: 25 public files (Stata Press, NHANES, POE, pyreadstat's samples)
+restore byte for byte, and every cell of their CSV translation matches
+pyreadstat's reading of the same file. The tests write a small table in
+every format ReadStat writes and check each cell, then decode 600 randomly
+damaged files in a child process under AddressSanitizer -- a hostile archive
+can carry a hostile Stata file, and ReadStat is what parses it.
+
+**Stata rows are stored as columns.** A `.dta` (formats 117-119) keeps its
+observations as fixed-width rows; the archive rewrites that block column by
+column -- the same bytes, permuted -- and `restore` puts them back. Measured
+on 12 public `.dta` files against `xz -9e` on the original:
+
+| | total | nhanes2.dta | nlswork.dta |
+|---|---|---|---|
+| `xz -9e` on the file | 843,848 B | 417,413 | 342,845 |
+| **rows stored as columns** | **607,336 B (-28.0%)** | **293,195 (-29.8%)** | **242,390 (-29.3%)** |
+| columns, then numbers split into byte planes | 732,621 B (-13.2%) | 345,231 | 306,963 |
+
+11 of 12 got smaller; `citytemp.dta` grew 3.0%. Splitting numbers into
+byte planes was worse, and xz's `lc`/`lp`/`pb` settings moved the total by
+0.1%. **SAS transport files were measured the same way and are left as they
+are**: -6.6% over seven NHANES files, but `BIOPRO_J.xpt` got 4.2% bigger, and
+one pass means no trying both. SPSS `.sav` is usually row-compressed already;
+not measured. On tiny files the archive is ~400 bytes bigger than xz alone:
+the schema is stored beside the file.
 
 ## Fidelity
 

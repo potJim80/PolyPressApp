@@ -266,8 +266,11 @@ static void guard(void)
         { "again.csv", "PPZ2\0\0\0\0", 8, "an archive named .csv" },
         { "agains.csv", "PPZS\0\0\0\0", 8, "a stream archive named .csv" },
         { "empty.xlsx", "id,name\n1,a\n", 12, "an Excel extension, whatever is inside" },
-        { "stata.dta", "id,name\n1,a\n", 12, "Stata" },
-        { "spss.sav", "id,name\n1,a\n", 12, "SPSS" },
+        /* read through ReadStat since 2026-10-02: text under these names is
+         * refused by the parser, not by the extension */
+        { "stata.dta", "id,name\n1,a\n", 12, "a CSV called .dta is not a Stata file" },
+        { "spss.sav", "id,name\n1,a\n", 12, "a CSV called .sav is not an SPSS file" },
+        { "sas.sas7bdat", "id,name\n1,a\n", 12, "a CSV called .sas7bdat is not a SAS file" },
     };
     const char *cmds[] = { "compress", "convert", "stream-compress" };
     for (size_t k = 0; k < N_OF(REFUSE); k++) {

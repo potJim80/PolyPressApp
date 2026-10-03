@@ -12,13 +12,15 @@
 # same sources, so this never touches csrc/polypress. Everything built and
 # written goes under one mktemp directory in $TMPDIR, removed at the end.
 #
-# The real-data smoke test reads ../IN/suite (xs_ and s_ tables only) and
-# skips itself when that directory is absent.
+# The real-data smoke test reads ../IN/suite (xs_ and s_ tables only), and
+# the Stata/SPSS/SAS test ../IN/formats; each skips itself when its directory
+# is absent.
 
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)
 suite_dir=$(cd "$src/../../IN/suite" 2>/dev/null && pwd || echo "")
+formats_dir=$(cd "$src/../../IN/formats" 2>/dev/null && pwd || echo "")
 
 CFLAGS="-O2 -g -std=gnu99 -pthread -Wall -Wextra -Wno-unused-parameter"
 if [ "${SANITIZE:-0}" = "1" ]; then
@@ -49,9 +51,15 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/ppz-tests-XXXXXX") || exit 1
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT INT TERM
 
-CODEC="ppz_util.c ppz_io.c ppz_thread.c ppz_decode.c ppz_encode.c ppz_stream.c"
+CODEC="ppz_util.c ppz_io.c ppz_thread.c ppz_decode.c ppz_encode.c ppz_stream.c ppz_stat.c"
 
 echo "building in $work"
+# ReadStat (Stata/SPSS/SAS): cached in csrc/.build, keyed on the flags, so a
+# sanitizer run builds its own copy
+# shellcheck disable=SC2086
+"$src/readstat/build.sh" "$src/.build/tests-$( echo "$CFLAGS" | cksum | cut -d' ' -f1)" $CFLAGS \
+    || { echo "BUILD FAILED: readstat"; exit 1; }
+LIB="$src/.build/tests-$( echo "$CFLAGS" | cksum | cut -d' ' -f1)/libreadstat.a $LIB -lz"
 objs=""
 for f in $CODEC; do
     o="$work/${f%.c}.o"
@@ -63,7 +71,7 @@ done
 cc $CFLAGS $INC "$src/ppz_main.c" $objs -o "$work/polypress" $LIB \
     || { echo "BUILD FAILED: polypress"; exit 1; }
 
-all="codec io stream hostile cli suite"
+all="codec io stream hostile cli stat suite"
 want="${*:-$all}"
 for t in $want; do
     # shellcheck disable=SC2086
@@ -80,6 +88,7 @@ for t in $want; do
     case "$t" in
         codec) set -- "${FUZZ:-1000}" "${SEED:-1}" ;;
         cli)   set -- "$work/polypress" ;;
+        stat)  set -- "$work/polypress" "$formats_dir" ;;
         suite) set -- "$suite_dir" ;;
         *)     set -- ;;
     esac

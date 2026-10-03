@@ -36,6 +36,8 @@ var STREAM_ABOVE: Int64 = 64 << 20          // var: the self-test lowers it
 
 let ARCHIVE_MAGICS: Set<String> = ["PPZ2", "PPZS"]
 let TABLE_FORMATS = ["csv", "tsv", "json", "jsonl"]
+// Stata, SPSS and SAS: kept byte for byte with their labels, never streamed
+let STAT_FORMATS = ["dta", "sav", "zsav", "por", "sas7bdat", "xpt"]
 
 // ─── Running things ──────────────────────────────────────────────────────────
 struct Ran { let ok: Bool; let out: String; let err: String; let secs: Double; let stopped: Bool }
@@ -110,9 +112,21 @@ func isArchive(_ path: String) -> Bool {
     return ARCHIVE_MAGICS.contains(String(decoding: d, as: UTF8.self))
 }
 
+func isStat(_ path: String) -> Bool {
+    STAT_FORMATS.contains((path as NSString).pathExtension.lowercased())
+}
+
 func isParquet(_ path: String) -> Bool {
     let low = path.lowercased()
     return low.hasSuffix(".parquet") || low.hasSuffix(".pq")
+}
+
+/// What a translation of a Stata/SPSS/SAS file left out: the indented lines
+/// the program prints under "... is a translation of the Stata file:".
+func translationNotes(_ out: String) -> [String] {
+    guard out.contains("is a translation of") else { return [] }
+    return out.split(separator: "\n").filter { $0.hasPrefix("  ") }
+        .map { $0.trimmingCharacters(in: .whitespaces) }
 }
 
 /// `dir/stem.ext`, or `dir/stem 2.ext`, `stem 3.ext`... -- never over a file.
@@ -127,14 +141,23 @@ func unused(_ dir: String, _ stem: String, _ ext: String) -> String {
     return p
 }
 
-/// "survey.csv.ppz" -> ("survey", "csv"); "x.ppz" -> ("x", "csv").
+/// "survey.csv.ppz" -> ("survey", "csv"); "x.ppz" -> ("x", "csv");
+/// "survey.dta 2.ppz" -> ("survey 2", "dta").
 func restoredName(_ archive: String) -> (String, String) {
     var base = (archive as NSString).lastPathComponent
     let low = base.lowercased()
     if low.hasSuffix(".ppz") { base = String(base.dropLast(4)) }
-    let ext = (base as NSString).pathExtension.lowercased()
-    let known = TABLE_FORMATS + ["psv", "txt", "parquet"]
-    if known.contains(ext) { return ((base as NSString).deletingPathExtension, ext == "txt" ? "csv" : ext) }
+    var ext = (base as NSString).pathExtension.lowercased()
+    var stem = (base as NSString).deletingPathExtension
+    // "survey.csv 2.ppz" (a second archive of survey.csv) -> ("survey 2", "csv");
+    // NSString sees no extension in "survey.csv 2", so split it by hand
+    if let dot = base.lastIndex(of: "."), let sp = base.lastIndex(of: " "), sp > dot,
+       Int(base[base.index(after: sp)...]) != nil {
+        ext = base[base.index(after: dot)..<sp].lowercased()
+        stem = String(base[..<dot]) + String(base[sp...])
+    }
+    let known = TABLE_FORMATS + STAT_FORMATS + ["psv", "txt", "parquet"]
+    if known.contains(ext) { return (stem, ext == "txt" ? "csv" : ext) }
     return (base, "csv")
 }
 
@@ -337,7 +360,7 @@ final class Work {
             let name = (j.src as NSString).lastPathComponent
             let out = unused(dir, name, "ppz")
             let size = fileSize(input) ?? 0
-            let stream = size > STREAM_ABOVE
+            let stream = size > STREAM_ABOVE && !isStat(input)
             update(j) { $0.stream = stream }
             var extra = ["--progress"]
             if stream, let rpb = ProcessInfo.processInfo.environment["POLYPRESS_TEST_ROWS"] {
@@ -362,11 +385,13 @@ final class Work {
             let pq = ext == "parquet"
             if pq && !parquet { return fail(j, "writing Parquet needs Python with pyarrow (pip3 install pyarrow)") }
             let target = pq ? sc.path("out.csv") : out
-            let details = j.kind == .restore ? info(j.src) : nil
+            var details = j.kind == .restore ? info(j.src) : nil
             guard let r = tool(j, BINARY, j.kind == .restore ? ["restore", j.src, "-o", target]
                                                              : ["convert", input, target],
                                stage: j.kind == .restore ? "restoring" : "converting") else { return }
             if !r.ok { return fail(j, reason(r, [j.src, input])) }
+            let dropped = translationNotes(r.out)
+            if !dropped.isEmpty { details = (details ?? [:]).merging(["translation": dropped]) { $1 } }
             if pq {
                 guard let b = tool(j, PYTHON, [BRIDGE, "from-csv", target, out], stage: "writing Parquet")
                 else { try? FileManager.default.removeItem(atPath: out); return }
@@ -542,6 +567,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // ─── Self-test: every action, on real files, no window ───────────────────────
+// tiny.dta (3 rows: id, sex with value labels, a %td date) as a .ppz archive
+let TINY_DTA_PPZ = "UFBaMgAAASoAAAGUAAAAAeACNwEiXQA9iInnY8eHJIMjJlVUkZxEItGWpy94vf/P+KgAawgaWTeOuWWXyXhkJBYKjezAQojhfrg9uGMntcb2hMKp7l/opr7oZxp18647c6SeD5QQHj/Vgcxgya70gpqVLtY0oDIDhjHpU3tohH7sbyQq2SyvFgOGRSHycat8a/GGfhIeJRlBMFEsonSOkDli0Cf/Jk6kaqMY4dqWhJbtwsYE9l9wxV8Y12EoMCS1NKh5xRiQSTQ1joQ7zxifCqkUflSIA18Xcicw0Kr7Zm1jRAE009KsYyn7OXidR0CbuCDZ9NwJxV+gL5MRGI/hF6WcuB6jpd5GxYyMzX05BybT3S04pqjLriZ0D/38CyUkc7nn+w8X/TTAML1151npR9hRzJvn2RrIQADgCrMBjF0AHhzKhihAdnSft5jZXH3tsD7/ymVcXjA+e8/ZVHW8Y7IM+XZJEeJmxzNUKW93NsOx/I0bmckpVZmp7B1EIsfgguPL+sBWIUM+IypT7nKLv0uIGVU3pqBe0u2r8ekhAc24w0+KUBB78uqlTk6ROI3j+FfoejkWV6nmE2vlpipHn9NK0bBCgYk482VhuzYMYLRnmsq66Bk/QjnZsMO9GPpPzCmSGo21THW2jTveBik0qJbVNnmh+5xq04cELUhy7we4EqFLB0DhwDm/0udBzXRE5FDQJp9gbo5c7h/JsS++s8H3FvanqfaFsye/xzmkn62LinS4RsWzIDh530ngunclsUsgod6e2Ae63QD4V2ynYd8KWYnoPFsKcKMVFZXF5dCWXrn0dIu/k4JfDv/04KaPGdP4N0BOb+cbDLR/oC4j3q9apZEDlwIRwdhrH+h1y7krXHjFUCcDVb81JERw4D6D5s1T8gmcsVq55TMn0KkN30/us/cSUokqZ+qewVXLLDh6uVZlDZN7FcDd5zAAAAA="
+
 func selftest() -> Int32 {
     var bad: Int32 = 0
     func check(_ name: String, _ ok: Bool, _ detail: String = "") {
@@ -595,6 +623,25 @@ func selftest() -> Int32 {
         let pr = go(Job(src: pc.out, kind: .restore, format: "csv"))
         check("parquet/in-and-out", pr.state == .done && canon(pr.out) == want, pr.message + pc.message)
     }
+
+    // a Stata file: restored from its archive byte for byte, compressed whole
+    // even above the streaming size, translated with its losses named
+    let tinyArc = sc.path("tiny.dta.ppz")
+    try? Data(base64Encoded: TINY_DTA_PPZ)?.write(to: URL(fileURLWithPath: tinyArc))
+    let sr = go(Job(src: tinyArc, kind: .restore))
+    check("stata/restore", sr.state == .done && sr.out.hasSuffix("tiny.dta"), sr.out + sr.message)
+    let saved = STREAM_ABOVE
+    STREAM_ABOVE = 1
+    let sc1 = go(Job(src: sr.out, kind: .compress))
+    STREAM_ABOVE = saved
+    check("stata/compress", sc1.state == .done && !sc1.stream
+          && (sc1.details?["container"] as? String) == "original", sc1.message)
+    let back = go(Job(src: sc1.out, kind: .restore))
+    check("stata/byte-for-byte", FileManager.default.contentsEqual(atPath: back.out, andPath: sr.out), back.out)
+    let st = go(Job(src: sc1.out, kind: .restore, format: "csv"))
+    let notes = st.details?["translation"] as? [String] ?? []
+    check("stata/as-csv", st.state == .done && canon(st.out).contains("2,2,2018-05-06")
+          && notes.contains { $0.hasPrefix("value labels") }, st.message + "\(notes)")
 
     // derived columns (PPZ2): location rebuilt from lat and lon
     let geo = sc.path("geo.csv")

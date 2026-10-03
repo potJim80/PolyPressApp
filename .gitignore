@@ -11,6 +11,7 @@ work/dist/
 *.egg-info/
 work/csrc/polypress
 work/csrc/*.o
+work/csrc/.build/
 work/.tmp/
 
 *.dtz

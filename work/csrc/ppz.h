@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* ------------------------------------------------------------- containers */
 
@@ -237,6 +238,39 @@ int    drv_decimals(const char *s, size_t n);            /* digits after '.' */
 /* v (a token with a '.' and more than d decimals, at most DRV_MAX_TOK long)
  * rounded to d decimals into out (DRV_MAX_TOK + 2 bytes). Length, or 0. */
 size_t drv_round(const char *v, size_t n, int d, char *out);
+
+/* --------------------------------------------- Stata, SPSS and SAS files */
+
+/* ppz_stat.c, through the ReadStat library in readstat/. An archive of one
+ * holds the original bytes and a JSON schema of its labels, formats and
+ * notes; table formats are translations of it, and say what they drop. */
+
+/* "dta", "sav", "zsav", "por", "sas7bdat", "xpt" from the extension, else NULL */
+const char *ppz_stat_format(const char *path);
+const char *ppz_stat_name(const char *fmt);        /* "Stata", ... or NULL */
+
+/* What a text copy of the file cannot hold, counted while reading it. */
+typedef struct {
+    size_t var_labels, value_labels, user_missing, measures, notes;
+    size_t dates, other_dates;      /* columns: written as ISO / as numbers */
+    size_t tagged, tagged_cols;     /* .a-.z cells, and the columns they are in */
+    int    file_label;
+} StatLoss;
+
+/* The file in data[0..n) as a table of text cells: numbers shortest
+ * round-trip, dates as ISO text, system missing empty, tagged missing ".a".
+ * `schema` (may be NULL) receives the JSON schema, `loss` the counts. */
+int  stat_read(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+               Table *t, Buf *schema, StatLoss *loss, char *err, size_t cap);
+void stat_loss_print(FILE *f, const StatLoss *l, const char *src_fmt, const char *dst);
+
+int  ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
+                         const char *encoding, const Buf *schema, Buf *out);
+/* 1: an archive of an original file (orig filled when non-NULL, fmt set,
+ * *meta the parsed metadata when meta is non-NULL), 0: a table archive,
+ * -1: not an archive or damaged. */
+int  ppz_original(const uint8_t *blob, size_t n, Buf *orig, char *fmt, size_t fcap,
+                  Js **meta);
 
 /* --------------------------------------------------------------- decoding */
 

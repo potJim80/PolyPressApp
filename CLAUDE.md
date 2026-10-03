@@ -96,9 +96,12 @@ OUT/results/   sweep output. The .jsonl and the summary are committed; the
 work/          all code. cd here before running anything:
   csrc/        THE PROGRAM. ppz_encode.c / ppz_decode.c the codec,
                ppz_io.c table readers + writers + encodings, ppz_stream.c
-               the PPZS block container, ppz_thread.c the trial threads,
-               ppz_util.c buffers/lzma/bz2/JSON, ppz_main.c the CLI.
-               build.sh links liblzma statically so the binary runs anywhere
+               the PPZS block container, ppz_thread.c the worker threads,
+               ppz_util.c buffers/lzma/JSON, ppz_stat.c Stata/SPSS/SAS,
+               ppz_main.c the CLI. build.sh links liblzma statically so
+               the binary runs anywhere
+  csrc/readstat/  ReadStat, vendored (MIT); readstat/build.sh makes
+               csrc/.build/libreadstat.a once and on change
   csrc/tests/  the test suite, in C. run.sh builds and runs all of it
   py/          parquet.py: Parquet <-> CSV via pyarrow, the one format that
                needs Python. Pipes through `polypress ... -`
@@ -116,6 +119,42 @@ work/          all code. cd here before running anything:
                reorder/ and improve/ were Python harnesses around fast.py and
                went with it (code at c55f68f, results in OUT/results/)
 ```
+
+## Stata, SPSS and SAS -- 2026-10-02
+
+Item 4 of the 2026-09-16 goal, built in C at Mahdi's standing rule ("whatever
+can be just C"): ReadStat is C, so it is compiled in, not bridged like Parquet.
+
+- **An archive of one holds the ORIGINAL BYTES, not a table.** PPZ2 container,
+  metadata `{"original":{"format","bytes"[,"encoding"][,"layout"]},"schema":{...}}`,
+  the file as the binary stream, an empty text stream. No `"columns"` key, so
+  builds from before refuse it. `ppz_original()` reads one; `ppz_decode()`
+  turns one into a table through ReadStat, so verify/info/restore paths that
+  only know tables still work.
+- **Why not the table codec**: behind a reader it beat xz on the original by
+  only 6% (DEMO_J, 2026-09-16), and rebuilding the original bytes through
+  ReadStat's writers is not exact. Original bytes are exact by construction.
+- **Stata rows -> columns (`"layout":"dta-columns"`)**: -28.0% on 12 files vs
+  xz -9e on the original, -29.8% nhanes2. A byte permutation, undone on read;
+  every number in the layout is checked against the bytes before anything
+  moves (invariant 3). Byte planes were -13% (worse); `.xpt` -6.6% but one
+  file +4.2%, so not adopted (one pass: no trying both). Measurement scripts
+  were scratch; the numbers are in README "Stata, SPSS and SAS files".
+- **Translations name their losses** (`stat_loss_print`): labels, formats,
+  user-missing, notes. Writing .dta/.sav/... from another format is refused,
+  not built.
+- **ReadStat quirks that bit**: Stata string widths come back one byte wide
+  (room for a NUL) and a strL as width 0 -- `type_name()` undoes both, and
+  the dta layout depends on it. Stata has no time type: `%tcHH:MM:SS` is a
+  time, `%tc` a datetime. The POR *writer* (tests only) crashes if rows are
+  inserted after `readstat_begin_row` failed -- check its return. Pinned at
+  dev `835b88c8` because the Sept 2026 dev commits fix reader data loss and
+  crashes that v1.1.9 (2023) still has. To update: replace `readstat/` from
+  a new commit (src/*.c *.h, sas/, spss/, stata/ only), note the commit in
+  `readstat/build.sh`, run the tests including `SANITIZE=1`.
+- Tests: `csrc/tests/t_stat.c` (fixtures written by ReadStat's writers in all
+  six formats; hostile layouts; 600 damaged originals in children; CLI; and
+  `IN/formats/` real files when present).
 
 ## Retired forks — 2026-08-04
 
@@ -411,7 +450,7 @@ sole gateway to the planar predictor.
   invariant 1 broken where no test looked. Invariant 4's check compares the
   *parsed* table with the *decoded* one; both agreed, because the damage
   happened before either existed. **Refuse at the door — `input_refusal()` in
-  `ppz_main.c`, pinned by `tests/test_input_guard.py`.** The guard is magic
+  `ppz_main.c`, pinned by `csrc/tests/t_cli.c`.** The guard is magic
   bytes and file extensions only, deliberately **not** a content sniff: a rule
   that makes C refuse what Python accepts breaks byte-identity in the act of
   defending it.

@@ -91,6 +91,8 @@ const char *ppz_format_of(const char *path)
     if (!strcmp(e, ".jsonl") || !strcmp(e, ".ndjson")) return "jsonl";
     if (!strcmp(e, ".parquet") || !strcmp(e, ".pq")) return "parquet";
     if (!strcmp(e, ".csv")) return "csv";
+    const char *st = ppz_stat_format(path);
+    if (st) return st;               /* Stata, SPSS, SAS: ppz_stat.c */
     return "text";                   /* .txt, .dat, anything: delimiter sniffed */
 }
 
@@ -936,6 +938,21 @@ obj_done:
     return rc;
 }
 
+/* A binary file's bytes, unconverted. */
+static int read_whole(const char *path, Buf *out, char *err, size_t cap)
+{
+    buf_init(out);
+    FILE *f = fopen(path, "rb");
+    if (!f) { seterr(err, cap, "cannot read %s: %s", path, strerror(errno)); return -1; }
+    uint8_t chunk[65536];
+    size_t got;
+    while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0) buf_put(out, chunk, got);
+    int bad = ferror(f);
+    fclose(f);
+    if (bad) { buf_free(out); seterr(err, cap, "cannot read %s", path); return -1; }
+    return 0;
+}
+
 int table_read_any(Table *t, const char *path, const char *encoding,
                    char *err, size_t cap)
 {
@@ -948,6 +965,13 @@ int table_read_any(Table *t, const char *path, const char *encoding,
     }
     if (!strcmp(f, "json")) return read_json(t, path, encoding, 0, err, cap);
     if (!strcmp(f, "jsonl")) return read_json(t, path, encoding, 1, err, cap);
+    if (ppz_stat_name(f)) {
+        Buf raw;
+        if (read_whole(path, &raw, err, cap)) return -1;
+        int r = stat_read(raw.data, raw.len, f, encoding, t, NULL, NULL, err, cap);
+        buf_free(&raw);
+        return r;
+    }
 
     CsvIn *c = csv_open(path, encoding, 0, err, cap);
     if (!c) return -1;
@@ -1008,6 +1032,12 @@ Writer *writer_open(const char *path, char *const *names, size_t ncols,
     if (!strcmp(f, "parquet")) {
         seterr(err, cap, "writing Parquet needs Python:  polypress restore "
                "ARCHIVE -o - | python3 py/parquet.py from-csv - %s", path);
+        return NULL;
+    }
+    if (ppz_stat_name(f)) {
+        seterr(err, cap, "writing %s files is not built yet. An archive of one "
+               "restores to its own format, byte for byte; anything else can be "
+               "written as .csv, .tsv, .json, .jsonl or .parquet", ppz_stat_name(f));
         return NULL;
     }
     Writer *w = calloc(1, sizeof(Writer));

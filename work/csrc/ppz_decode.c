@@ -354,7 +354,7 @@ out:
     return rc;
 }
 
-int ppz_decode(const uint8_t *blob, size_t n, Table *out)
+static int decode_table(const uint8_t *blob, size_t n, Table *out)
 {
     if (n < 16 || memcmp(blob, PPZ_MAGIC, 4)) return -1;
 
@@ -901,4 +901,24 @@ fail_meta:
 fail:
     buf_free(&metab); buf_free(&rawb); buf_free(&txtb);
     return -1;
+}
+
+/* A table archive is decoded; an archive of a Stata/SPSS/SAS file has its
+ * original read back through ReadStat, as the table it holds. */
+int ppz_decode(const uint8_t *blob, size_t n, Table *out)
+{
+    char fmt[16];
+    Buf orig;
+    buf_init(&orig);
+    Js *meta = NULL;
+    int o = ppz_original(blob, n, &orig, fmt, sizeof(fmt), &meta);
+    if (o < 0) return -1;
+    if (o == 0) return decode_table(blob, n, out);
+    /* the --encoding the file was compressed with, if it needed one */
+    const Js *enc = js_get(js_get(meta, "original"), "encoding");
+    int r = stat_read(orig.data, orig.len, fmt, enc && enc->kind == JS_STR ? enc->str : NULL,
+                      out, NULL, NULL, NULL, 0);
+    js_free(meta);
+    buf_free(&orig);
+    return r ? -1 : 0;
 }
