@@ -889,6 +889,41 @@ static double cond_entropy_corrected(const int64_t *xs, const int64_t *ys,
 
 typedef struct { long *parent; size_t *order; size_t norder; } Parents;
 
+/* One dictionary parent, measured: column b's ids sorted by parent a must
+ * compress smaller than in file order. A failed allocation keeps the parent,
+ * as the serial loop did. */
+typedef struct {
+    const ColPlan *plan;
+    size_t nrows, b, a;
+    int    pays;
+} Guard;
+
+static void guard_task(void *arg)
+{
+    Guard *g = arg;
+    const ColPlan *plan = g->plan;
+    size_t nrows = g->nrows, b = g->b, a = g->a;
+    g->pays = 1;
+    size_t alen = plan[b].nalpha;
+    int wb = alen <= 256 ? 1 : (alen <= 65536 ? 2 : 4);
+    size_t *kv = argsort_ids(plan[a].ids, nrows, plan[a].nalpha);
+    if (!kv) return;
+    uint8_t *flat = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
+    uint8_t *perm = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
+    if (!flat || !perm) { free(kv); free(flat); free(perm); return; }
+    for (size_t i = 0; i < nrows; i++) {
+        uint32_t v0 = (uint32_t)plan[b].ids[i];
+        uint32_t v1 = (uint32_t)plan[b].ids[kv[i]];
+        memcpy(flat + i * (size_t)wb, &v0, (size_t)wb);
+        memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
+    }
+    free(kv);
+    size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
+    size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
+    free(flat); free(perm);
+    g->pays = cost_perm < cost_flat;
+}
+
 static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
 {
     Parents R = { NULL, NULL, 0 };
@@ -1010,30 +1045,24 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
      * asymmetry did real damage -- every experiment that moved a column out
      * of `text` traded a measured decision for an unmeasured one and lost,
      * and the loss landed on a different column than the one being changed.
-     * Entropy stays as the nominator; this checks the nomination pays. */
-    for (size_t oi = 0; oi < no; oi++) {
+     * Entropy stays as the nominator; this checks the nomination pays.
+     *
+     * It cannot be skipped where entropy is confident: on the suite
+     * (2026-10-02) it refused 71 of 360 nominees, 20 of them with a gain
+     * above 3 bits. Each check is independent of the others, so they run
+     * on the encoder's workers like the text-parent probes; the decisions,
+     * and the bytes, are the serial ones. */
+    Guard *gj = malloc((no ? no : 1) * sizeof(Guard));
+    size_t ng = 0;
+    for (size_t oi = 0; gj && oi < no; oi++) {
         size_t b = order[oi];
-        long a = parent[b];
-        if (a < 0) continue;
-        size_t alen = plan[b].nalpha;
-        int wb = alen <= 256 ? 1 : (alen <= 65536 ? 2 : 4);
-        size_t *kv = argsort_ids(plan[a].ids, nrows, plan[a].nalpha);
-        if (!kv) continue;
-        uint8_t *flat = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
-        uint8_t *perm = malloc(nrows * (size_t)wb ? nrows * (size_t)wb : 1);
-        if (!flat || !perm) { free(kv); free(flat); free(perm); continue; }
-        for (size_t i = 0; i < nrows; i++) {
-            uint32_t v0 = (uint32_t)plan[b].ids[i];
-            uint32_t v1 = (uint32_t)plan[b].ids[kv[i]];
-            memcpy(flat + i * (size_t)wb, &v0, (size_t)wb);
-            memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
-        }
-        free(kv);
-        size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
-        size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
-        free(flat); free(perm);
-        if (cost_perm >= cost_flat) parent[b] = -1;
+        if (parent[b] < 0) continue;
+        gj[ng++] = (Guard){ plan, nrows, b, (size_t)parent[b], 0 };
     }
+    if (gj) ppz_parallel(guard_task, gj, sizeof(Guard), ng);
+    for (size_t k = 0; gj && k < ng; k++)
+        if (!gj[k].pays) parent[gj[k].b] = -1;
+    free(gj);
 
     for (size_t i = 0; i < nd; i++) free(sample[i]);
     free(sample); free(base); free(distinct);

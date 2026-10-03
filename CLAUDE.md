@@ -316,6 +316,22 @@ rows 9.2 s -> 4.6 s, suite 30.7 s -> 18.9 s. Profile after: final xz -9e
 ~61%, preset-1 probes ~25% (the dictionary-parent never-worse guard and text
 parent probes), classify ~9%, verification decode ~8%.
 
+**Probes, 2026-10-02 (suite, one thread: parents 7.5 s of 24.5 s).** The
+dictionary-parent guard now runs on the encoder's workers like the text
+probes (same bytes, 39/39 cmp'd threaded and serial): suite 19.5 -> 19.2-19.4 s
+with the default 4 workers, ~3%, all of it from using workers that were idle
+in that stage, none from fewer operations. Two ways to do fewer were
+measured and are dead: (1) skipping the guard where entropy is confident --
+it refused 71 of 360 nominees, 20 of them with gains above 3 bits (one at
+10.6 bits), so no threshold is safe; (2) cheaper probe settings -- nice_len
+32/depth 4, HC3/nice 16/depth 2, a 256 KB dictionary: no faster (preset 1 is
+already LZMA's fast mode; the time is literal coding, not match finding), and
+two of the three moved bytes. What is left is a non-LZ size estimator, or
+reusing the previous block's decisions in stream mode -- both change bytes,
+so measure and ask first. NEMSIS re-timed the same day: numeric parents cost
+~1.5% per block for 8 KB; whichever build runs second on the fanless Air is
+5-10% slower from heat, so alternate runs before believing a difference.
+
 Negative results from the same session (suite, one thread): a dictionary
 sized to the input instead of 64 MB -- identical bytes, no faster (liblzma's
 setup is not the cost; a probe's setup is ~0.2 ms). xz depth 512 -> 128:
