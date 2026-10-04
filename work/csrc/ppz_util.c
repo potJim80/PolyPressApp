@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <lzma.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +179,74 @@ int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind)
  * this codec is meant for and far below "swap the machine".
  */
 #define PPZ_MAX_PLAIN ((size_t)4 << 30)
+
+/* A size estimate without a range coder (EXPERIMENT 2026-10-04, used only
+ * when PPZ_EST_MARGIN is set): greedy LZ77 over a 64K-entry hash of 4-byte
+ * windows, as LZ4 parses; a match costs about log2(distance) +
+ * 2*log2(length) bits, literals their order-1 entropy over the literals. */
+size_t ppz_size_estimate(const uint8_t *in, size_t n)
+{
+    if (n < 8) return n;
+    uint32_t *head = calloc(65536, sizeof(uint32_t));
+    uint32_t *cnt = calloc(65536, sizeof(uint32_t));
+    uint32_t ctx_tot[256] = { 0 };
+    if (!head || !cnt) { free(head); free(cnt); return n; }
+    double bits = 0;
+    size_t i = 0;
+    uint8_t prev = 0;
+    while (i < n) {
+        size_t len = 0, dist = 0;
+        if (i + 4 <= n) {
+            uint32_t w;
+            memcpy(&w, in + i, 4);
+            uint32_t h = (w * 2654435761u) >> 16;
+            uint32_t cand = head[h];
+            head[h] = (uint32_t)(i + 1);
+            if (cand) {
+                size_t c = cand - 1;
+                while (i + len < n && in[c + len] == in[i + len] && len < 65536) len++;
+                dist = i - c;
+            }
+        }
+        if (len >= 4) {
+            double lb = 0, db = 0;
+            for (size_t x = len; x > 1; x >>= 1) lb++;
+            for (size_t x = dist; x > 1; x >>= 1) db++;
+            bits += 2 * lb + db + 2;
+            for (size_t k = i + 1; k + 4 <= n && k < i + len; k += 4) {
+                uint32_t w;
+                memcpy(&w, in + k, 4);
+                head[(w * 2654435761u) >> 16] = (uint32_t)(k + 1);
+            }
+            i += len;
+            prev = in[i - 1];
+        } else {
+            cnt[(size_t)prev << 8 | in[i]]++;
+            ctx_tot[prev]++;
+            prev = in[i];
+            i++;
+        }
+    }
+    for (size_t k = 0; k < 65536; k++)
+        if (cnt[k]) bits += cnt[k] * log2((double)ctx_tot[k >> 8] / cnt[k]);
+    free(head); free(cnt);
+    return (size_t)(bits / 8) + 1;
+}
+
+/* The margin in PPZ_EST_MARGIN (percent), 0 when unset: off. */
+int ppz_est_sites(void)
+{
+    static int m = -1;
+    if (m < 0) { const char *e = getenv("PPZ_EST_SITES"); m = e && *e ? atoi(e) : 7; }
+    return m;
+}
+
+double ppz_est_margin(void)
+{
+    static double m = -1;
+    if (m < 0) { const char *e = getenv("PPZ_EST_MARGIN"); m = e && *e ? atof(e) / 100.0 : 0; }
+    return m;
+}
 
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n)
 {

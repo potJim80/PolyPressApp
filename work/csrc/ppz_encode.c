@@ -550,6 +550,7 @@ static void plan_free(ColPlan *p, size_t n)
 
 #define NUMPAR_SAMPLE 20000           /* rows a nomination looks at */
 static size_t num_probe(const int64_t *a, size_t n, const size_t *perm);
+static void num_pack(const int64_t *a, size_t n, const size_t *perm, Buf *b);
 static uint64_t num_bits(int64_t *a, size_t n, int64_t *tmp);
 
 /* Could storing this column as numbers possibly beat leaving it alone?
@@ -879,6 +880,19 @@ static double cond_entropy_corrected(const int64_t *xs, const int64_t *ys,
     return h + corr;
 }
 
+/* EXPERIMENT (PPZ_EST_MARGIN): two orderings of the same bytes, decided by
+ * the estimate when it is clear-cut, by the xz probe when not. */
+static int est_decides(const uint8_t *a, size_t an, const uint8_t *b, size_t bn, int *a_smaller)
+{
+    double m = ppz_est_margin();
+    if (m <= 0) return 0;
+    size_t ea = ppz_size_estimate(a, an), eb = ppz_size_estimate(b, bn);
+    size_t lo = ea < eb ? ea : eb, hi = ea < eb ? eb : ea;
+    if ((double)hi <= (double)lo * (1 + m)) return 0;
+    *a_smaller = ea < eb;
+    return 1;
+}
+
 typedef struct { long *parent; size_t *order; size_t norder; } Parents;
 
 /* One dictionary parent, measured: column b's ids sorted by parent a must
@@ -910,10 +924,14 @@ static void guard_task(void *arg)
         memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
     }
     free(kv);
-    size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
-    size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
+    int ps;
+    if ((ppz_est_sites() & 1) && est_decides(perm, nrows * (size_t)wb, flat, nrows * (size_t)wb, &ps)) g->pays = ps;
+    else {
+        size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
+        size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
+        g->pays = cost_perm < cost_flat;
+    }
     free(flat); free(perm);
-    g->pays = cost_perm < cost_flat;
 }
 
 static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
@@ -1082,7 +1100,7 @@ static int cand_cmp(const void *a, const void *b)
 /* Compressed length of a column under a given row order, via the cheap probe.
  * `perm` may be NULL for the original order. */
 static size_t probe_order(const Table *t, size_t col, const size_t *perm,
-                          size_t nr)
+                          size_t nr, int est)
 {
     Buf b;
     buf_init(&b);
@@ -1091,7 +1109,7 @@ static size_t probe_order(const Table *t, size_t col, const size_t *perm,
         Str s = table_at(t, perm ? perm[i] : i, col);
         buf_put(&b, s.p, s.n);
     }
-    size_t got = ppz_lzma_probe_len(b.data, b.len);
+    size_t got = est ? ppz_size_estimate(b.data, b.len) : ppz_lzma_probe_len(b.data, b.len);
     buf_free(&b);
     return got;
 }
@@ -1114,16 +1132,17 @@ typedef struct {
     size_t         nrows, tp;
     long           dp;
     size_t         cost;
+    int            est;          /* EXPERIMENT: estimate, not xz */
 } Probe;
 
 static void probe_task(void *arg)
 {
     Probe *pr = arg;
     size_t nrows = pr->nrows;
-    if (pr->dp < 0) { pr->cost = probe_order(pr->t, pr->tp, NULL, nrows); return; }
+    if (pr->dp < 0) { pr->cost = probe_order(pr->t, pr->tp, NULL, nrows, pr->est); return; }
     size_t *perm = argsort_ids(pr->plan[pr->dp].ids, nrows, pr->plan[pr->dp].nalpha);
     if (!perm) { pr->cost = (size_t)-1; return; }
-    pr->cost = probe_order(pr->t, pr->tp, perm, nrows);
+    pr->cost = probe_order(pr->t, pr->tp, perm, nrows, pr->est);
     free(perm);
 }
 
@@ -1199,13 +1218,42 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
          * order the file already had. Trusting the score alone made one
          * real dataset 66% larger. */
         size_t take = ncand < TEXT_PARENT_CANDIDATES ? ncand : TEXT_PARENT_CANDIDATES;
-        probes[nprobes++] = (Probe){ t, plan, nrows, tp, -1, 0 };
+        int est = ppz_est_margin() > 0 && (ppz_est_sites() & 2);
+        probes[nprobes++] = (Probe){ t, plan, nrows, tp, -1, 0, est };
         for (size_t c = 0; c < take; c++)
-            probes[nprobes++] = (Probe){ t, plan, nrows, tp, (long)dict_pos[cands[c].dp], 0 };
+            probes[nprobes++] = (Probe){ t, plan, nrows, tp, (long)dict_pos[cands[c].dp], 0, est };
         free(cands);
     }
 
     ppz_parallel(probe_task, probes, sizeof(Probe), nprobes);
+
+    /* EXPERIMENT: with estimates, only the candidates within the margin of
+     * the best estimate are probed with xz; the rest drop out */
+    if (ppz_est_margin() > 0 && (ppz_est_sites() & 2)) {
+        double m = ppz_est_margin();
+        size_t nre = 0;
+        for (size_t i = 0; i < nprobes; ) {
+            size_t j = i + 1, lo = probes[i].cost;
+            for (; j < nprobes && probes[j].dp >= 0 && probes[j].tp == probes[i].tp; j++)
+                if (probes[j].cost < lo) lo = probes[j].cost;
+            size_t in = 0;
+            for (size_t k = i; k < j; k++) in += (double)probes[k].cost <= lo * (1 + m);
+            for (size_t k = i; k < j; k++) {
+                int keep = (double)probes[k].cost <= lo * (1 + m);
+                if (in > 1 && keep) { probes[k].est = 0; probes[k].cost = 0; nre++; }
+                else if (!keep) probes[k].cost = (size_t)-1;
+                else probes[k].est = 2;                /* the lone winner */
+            }
+            i = j;
+        }
+        Probe *re = malloc((nre ? nre : 1) * sizeof(Probe));
+        size_t r = 0;
+        for (size_t k = 0; re && k < nprobes; k++) if (!probes[k].est && probes[k].cost == 0) re[r++] = probes[k];
+        if (re) ppz_parallel(probe_task, re, sizeof(Probe), r);
+        r = 0;
+        for (size_t k = 0; re && k < nprobes; k++) if (!probes[k].est && probes[k].cost == 0) probes[k].cost = re[r++].cost;
+        free(re);
+    }
 
     /* the serial fold: own order first, then the candidates in rank order,
      * each kept only if strictly smaller */
@@ -1270,20 +1318,26 @@ static uint64_t num_bits(int64_t *a, size_t n, int64_t *tmp)
 }
 
 /* the column packed as the payload would pack it, sorted by `perm` or not */
-static size_t num_probe(const int64_t *a, size_t n, const size_t *perm)
+/* A numeric column in a given order, differenced and packed as stored. */
+static void num_pack(const int64_t *a, size_t n, const size_t *perm, Buf *b)
 {
     int64_t *v = malloc((n ? n : 1) * sizeof(int64_t));
-    if (!v) return (size_t)-1;
+    if (!v) return;
     for (size_t i = 0; i < n; i++) v[i] = a[perm ? perm[i] : i];
     int k = diff_order(v, n);
     size_t dn = 0;
     int64_t *d = k ? diff_n(v, n, k, &dn) : NULL;
+    pack_ints(k ? d : v, k ? dn : n, b);
+    free(d); free(v);
+}
+
+static size_t num_probe(const int64_t *a, size_t n, const size_t *perm)
+{
     Buf b;
     buf_init(&b);
-    pack_ints(k ? d : v, k ? dn : n, &b);
-    size_t got = ppz_lzma_probe_len(b.data, b.len);
+    num_pack(a, n, perm, &b);
+    size_t got = b.len || !n ? ppz_lzma_probe_len(b.data, b.len) : (size_t)-1;
     buf_free(&b);
-    free(d); free(v);
     return got;
 }
 
@@ -1330,6 +1384,19 @@ static void pick_num_parents(const ColPlan *plan, size_t nc, size_t nr, long *np
         if (nparent[p] < 0) continue;
         const ColPlan *par = &plan[nparent[p]];
         size_t *perm = argsort_ids(par->ids, nr, par->nalpha);
+        if (ppz_est_margin() > 0 && (ppz_est_sites() & 4) && perm) {
+            Buf bw, bo;
+            buf_init(&bw); buf_init(&bo);
+            num_pack(plan[p].ints, nr, perm, &bw);
+            num_pack(plan[p].ints, nr, NULL, &bo);
+            int ws, ok = est_decides(bw.data, bw.len, bo.data, bo.len, &ws);
+            size_t with = ok ? 0 : ppz_lzma_probe_len(bw.data, bw.len);
+            size_t without = ok ? 0 : ppz_lzma_probe_len(bo.data, bo.len);
+            buf_free(&bw); buf_free(&bo);
+            free(perm);
+            if (ok ? !ws : with >= without) nparent[p] = -1;
+            continue;
+        }
         size_t with = perm ? num_probe(plan[p].ints, nr, perm) : (size_t)-1;
         size_t without = num_probe(plan[p].ints, nr, NULL);
         free(perm);
