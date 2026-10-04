@@ -981,7 +981,7 @@ static void original_meta(const uint8_t *data, size_t n, const char *fmt, const 
     char nb[32];
     *has_lay = 0;
     buf_init(meta);
-    put_s(meta, "{\"original\":{\"format\":");
+    put_s(meta, "{" PPZ_V_FIELD "\"original\":{\"format\":");
     ppz_json_str(meta, fmt, strlen(fmt));
     put_s(meta, ",\"bytes\":");
     buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", n));

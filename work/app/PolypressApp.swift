@@ -27,6 +27,18 @@ let BRIDGE: String = {
     return RES.appendingPathComponent("parquet.py").path
 }()
 let PYTHON = "/usr/bin/python3"
+
+// The program's own version line, "polypress 1.00 (build f258d53)" -> the
+// window shows "Polypress 1.00 · build f258d53"; each archive's details say
+// which version made it (`info` reads that from the archive itself).
+let VERSION: String = {
+    let r = run(BINARY, ["--version"])
+    let line = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard r.ok, line.hasPrefix("polypress ") else { return "" }
+    return "Polypress " + line.dropFirst(10)
+        .replacingOccurrences(of: " (build ", with: " · build ")
+        .replacingOccurrences(of: ")", with: "")
+}()
 let PAGE = RES.appendingPathComponent("page/index.html")
 
 // Above this a table is compressed a block at a time: memory stays bounded,
@@ -405,7 +417,7 @@ final class Work {
     }
 
     var stateJSON: String {
-        let d: [String: Any] = ["formats": formats, "jobs": jobs.map { $0.dict }]
+        let d: [String: Any] = ["formats": formats, "jobs": jobs.map { $0.dict }, "version": VERSION]
         let data = (try? JSONSerialization.data(withJSONObject: d)) ?? Data("{\"jobs\":[]}".utf8)
         return String(decoding: data, as: UTF8.self)
     }
@@ -603,6 +615,9 @@ func selftest() -> Int32 {
     let c = go(Job(src: src, kind: .compress))
     check("compress", c.state == .done && c.out.hasSuffix("t.csv.ppz"), c.message)
     check("compress/details", (c.details?["rows"] as? Int) == 400, "\(String(describing: c.details))")
+    check("version", VERSION.hasPrefix("Polypress ") && VERSION.contains(" · build "), VERSION)
+    check("version/made-by", (c.details?["made_by"] as? String) == VERSION.split(separator: " ")[1].description,
+          "\(String(describing: c.details?["made_by"]))")
     let c2 = go(Job(src: src, kind: .compress))
     check("compress/no-overwrite", c2.out.hasSuffix("t.csv 2.ppz"), c2.out)
     check("archive-detected", isArchive(c.out) && !isArchive(src))
@@ -630,6 +645,8 @@ func selftest() -> Int32 {
     try? Data(base64Encoded: TINY_DTA_PPZ)?.write(to: URL(fileURLWithPath: tinyArc))
     let sr = go(Job(src: tinyArc, kind: .restore))
     check("stata/restore", sr.state == .done && sr.out.hasSuffix("tiny.dta"), sr.out + sr.message)
+    check("version/pre-1.00", (sr.details?["made_by"] as? String) == "before 1.00",
+          "\(String(describing: sr.details?["made_by"]))")
     let saved = STREAM_ABOVE
     STREAM_ABOVE = 1
     let sc1 = go(Job(src: sr.out, kind: .compress))

@@ -331,7 +331,7 @@ int ppz_stream_compress(const char *src, const char *dst, double budget_gb,
     if (progress) progress(nsizes, st->rows, written, in_total ? in_total : 0, in_total);
 
     /* the index */
-    buf_put(&hdr, "{\"columns\":[", 12);
+    buf_put(&hdr, "{" PPZ_V_FIELD "\"columns\":[", strlen("{" PPZ_V_FIELD "\"columns\":["));
     for (size_t j = 0; j < ncols; j++) {
         if (j) buf_putc(&hdr, ',');
         ppz_json_str(&hdr, cols[j], strlen(cols[j]));
@@ -450,6 +450,9 @@ static int read_index(FILE *f, const char *src, StreamInfo *h, char *err, size_t
     h->nrows = (unsigned long long)nr;
     h->rows_per_block = (size_t)js_int(jr, 0);
     h->size = size;
+    const Js *jv = js_get(j, "v");
+    if (jv && jv->kind == JS_STR && jv->str)
+        snprintf(h->version, sizeof(h->version), "%s", jv->str);
     js_free(j);
     buf_free(&hb); buf_free(&hj);
     return 0;

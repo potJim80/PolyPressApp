@@ -1879,7 +1879,7 @@ static int encode_modelled(const Table *t, Buf *out, ColPlan *plan,
     /* ------------------------------------------------------- metadata */
     Buf meta;
     buf_init(&meta);
-    buf_put(&meta, "{\"columns\":[", 12);
+    buf_put(&meta, "{" PPZ_V_FIELD "\"columns\":[", strlen("{" PPZ_V_FIELD "\"columns\":["));
     for (size_t j = 0; j < nc; j++) {
         if (j) buf_putc(&meta, ',');
         json_str(&meta, t->names[j], strlen(t->names[j]));

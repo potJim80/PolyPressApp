@@ -23,6 +23,20 @@
  * them -- so builds from before then refuse these archives outright. */
 #define PPZ_MAGIC      "PPZ2"
 
+/* The version. From 1.00 on, every archive names the version that wrote it
+ * -- "v" in its metadata (single block, streamed index, and kept-original
+ * alike) -- so `polypress info` can say what made a file, and an archive
+ * from a newer version is named as such instead of called damaged. An
+ * archive without "v" was made before 1.00 ("before 1.00" stays the wording
+ * for those whatever the current version). PPZ_BUILD is the git commit
+ * the program was built from (build.sh sets it; "+" means uncommitted
+ * changes on top). */
+#define PPZ_VERSION    "1.00"
+#ifndef PPZ_BUILD
+#define PPZ_BUILD      "unknown"
+#endif
+#define PPZ_V_FIELD    "\"v\":\"" PPZ_VERSION "\","
+
 /* ------------------------------------------------------------------ bytes */
 
 typedef struct {
@@ -122,6 +136,7 @@ typedef struct {
     size_t   nblocks;
     uint64_t *blocks;        /* each block's size */
     uint64_t size;           /* the whole file */
+    char     version[16];    /* "v" from the index; empty before 1.00 */
 } StreamInfo;
 
 /* After each batch of blocks: blocks and rows so far, archive bytes written,

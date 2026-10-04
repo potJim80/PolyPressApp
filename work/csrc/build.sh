@@ -14,6 +14,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 out="$here/polypress"
 
 CFLAGS="-O2 -std=gnu99 -pthread -Wall -Wextra -Wno-unused-parameter"
+
+# The commit this binary comes from, shown by `polypress --version`; "+" when
+# the program's source has uncommitted changes. "unknown" outside git.
+BUILD=$(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [ "$BUILD" != unknown ] && ! git -C "$here" diff --quiet HEAD -- . 2>/dev/null; then
+    BUILD="$BUILD+"
+fi
+CFLAGS="$CFLAGS -DPPZ_BUILD=\"$BUILD\""
 "$here/xz/build.sh" "$here/.build" -O2
 INC="-I$here/xz/liblzma/api"
 LIB="$here/.build/liblzma.a"

@@ -397,6 +397,109 @@ static void damaged(void)
     buf_free(&good);
 }
 
+/* ------------------------------------------------------------- versions */
+
+/* `arc` with its metadata's "v" replaced by `v` (NULL: removed, as before
+ * 1.00); `break_text` also damages the text stream so it will not decode. */
+static int rewrite_version(const char *arc, const char *dst, const char *v, int break_text)
+{
+    Buf a, m, mz, o;
+    buf_init(&a); buf_init(&m); buf_init(&mz); buf_init(&o);
+    read_bytes(arc, &a);
+    int ok = 0;
+    if (a.len < 16) goto done;
+    size_t ml = ((size_t)a.data[4] << 24) | ((size_t)a.data[5] << 16) | ((size_t)a.data[6] << 8) | a.data[7];
+    if (16 + ml > a.len || ppz_lzma_decompress(a.data + 16, ml, &m)) goto done;
+    const char *tag = "\"v\":\"" PPZ_VERSION "\",";
+    char *at = memmem(m.data, m.len, tag, strlen(tag));
+    if (!at) goto done;
+    Buf nm;
+    buf_init(&nm);
+    buf_put(&nm, m.data, (size_t)((uint8_t *)at - m.data));
+    if (v) { buf_put(&nm, "\"v\":\"", 5); buf_put(&nm, v, strlen(v)); buf_put(&nm, "\",", 2); }
+    size_t rest = (size_t)((uint8_t *)at - m.data) + strlen(tag);
+    buf_put(&nm, m.data + rest, m.len - rest);
+    if (ppz_lzma_compress(nm.data, nm.len, &mz)) { buf_free(&nm); goto done; }
+    buf_free(&nm);
+    buf_put(&o, "PPZ2", 4);
+    for (int s = 24; s >= 0; s -= 8) buf_putc(&o, (char)((mz.len >> s) & 0xFF));
+    buf_put(&o, a.data + 8, 8);
+    buf_put(&o, mz.data, mz.len);
+    buf_put(&o, a.data + 16 + ml, a.len - 16 - ml);
+    if (break_text && o.len > 40) o.data[o.len - 20] ^= 0xFF;
+    write_bytes(dst, o.data, o.len);
+    ok = 1;
+done:
+    buf_free(&a); buf_free(&m); buf_free(&mz); buf_free(&o);
+    return ok;
+}
+
+static void versions(void)
+{
+    h_section("versions: --version, and every archive names its maker");
+    Buf out, err;
+    int rc = cli(&out, &err, NULL, 1, "--version");
+    buf_putc(&out, 0);
+    CHECK(rc == 0 && !strncmp((char *)out.data, "polypress " PPZ_VERSION " (build ", strlen("polypress " PPZ_VERSION " (build ")),
+          "--version: %s", out.data);
+    buf_free(&out); buf_free(&err);
+
+    char src[1280], arc[1280], st[1280];
+    snprintf(src, sizeof(src), "%s", tpath("ver.csv"));
+    snprintf(arc, sizeof(arc), "%s", tpath("ver.ppz"));
+    snprintf(st, sizeof(st), "%s", tpath("ver-stream.ppz"));
+    write_bytes(src, PLAIN, strlen(PLAIN));
+    rc = cli(NULL, &err, NULL, 4, "compress", src, "-o", arc);
+    CHECK(rc == 0, "compress: %s", err.data);
+    buf_free(&err);
+    rc = cli(NULL, &err, NULL, 6, "stream-compress", src, "-o", st, "--rows", "2");
+    CHECK(rc == 0, "stream-compress: %s", err.data);
+    buf_free(&err);
+
+    const char *mine[] = { arc, st };
+    for (int k = 0; k < 2; k++) {
+        rc = cli(&out, &err, NULL, 3, "info", mine[k], "--json");
+        Js *j = rc == 0 ? js_parse((const char *)out.data, out.len) : NULL;
+        const Js *v = js_get(j, "made_by");
+        CHECK(v && v->kind == JS_STR && !strcmp(v->str, PPZ_VERSION), "info --json made_by (%s): %s",
+              k ? "stream" : "single", out.data);
+        js_free(j);
+        buf_free(&out); buf_free(&err);
+        rc = cli(&out, &err, NULL, 2, "info", mine[k]);
+        buf_putc(&out, 0);
+        CHECK(rc == 0 && strstr((char *)out.data, "polypress " PPZ_VERSION "\n"), "info made by: %s", out.data);
+        buf_free(&out); buf_free(&err);
+    }
+
+    /* an archive from before 1.00 has no "v": it reads, and says so */
+    char old[1280], newer[1280], newer_bad[1280];
+    snprintf(old, sizeof(old), "%s", tpath("ver-old.ppz"));
+    snprintf(newer, sizeof(newer), "%s", tpath("ver-new.ppz"));
+    snprintf(newer_bad, sizeof(newer_bad), "%s", tpath("ver-new-bad.ppz"));
+    CHECK(rewrite_version(arc, old, NULL, 0), "could not make a pre-1.00 archive");
+    rc = cli(&out, &err, NULL, 2, "info", old);
+    buf_putc(&out, 0);
+    CHECK(rc == 0 && strstr((char *)out.data, "polypress before 1.00"), "info, pre-1.00: %s%s", out.data, err.data);
+    buf_free(&out); buf_free(&err);
+    rc = cli(NULL, &err, NULL, 4, "restore", old, "-o", tpath("ver-old.csv"));
+    CHECK(rc == 0, "restore pre-1.00: %s", err.data);
+    if (rc == 0) same_file_table(src, tpath("ver-old.csv"), "restore pre-1.00");
+    buf_free(&err);
+
+    /* one from a newer version is named as such, not called damaged */
+    CHECK(rewrite_version(arc, newer, "99.00", 0), "could not make a newer archive");
+    rc = cli(&out, &err, NULL, 2, "info", newer);
+    buf_putc(&out, 0);
+    CHECK(rc == 0 && strstr((char *)out.data, "polypress 99.00 -- newer than this one"),
+          "info, newer: %s%s", out.data, err.data);
+    buf_free(&out); buf_free(&err);
+    CHECK(rewrite_version(arc, newer_bad, "99.00", 1), "could not make a newer, unreadable archive");
+    rc = cli(NULL, &err, NULL, 4, "restore", newer_bad, "-o", tpath("ver-new.csv"));
+    CHECK(rc != 0 && strstr((char *)err.data, "made by polypress 99.00, which is newer")
+          && !strstr((char *)err.data, "damaged"), "restore, newer: exit %d: %s", rc, err.data);
+    buf_free(&err);
+}
+
 int main(int argc, char **argv)
 {
     h_suite = "cli";
@@ -411,6 +514,7 @@ int main(int argc, char **argv)
     happy();
     guard();
     damaged();
+    versions();
     tmpdir_remove();
     return h_done();
 }

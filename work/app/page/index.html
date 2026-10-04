@@ -76,6 +76,8 @@ body.has #list{display:flex} body.has #empty{display:none}
 
 .foot{display:flex; justify-content:space-between; padding-top:14px; font-size:11.5px; color:var(--faint)}
 .foot a{color:var(--muted)} .foot a:hover{color:var(--ink)}
+#ver{position:fixed; left:0; right:0; bottom:24px; text-align:center; font-size:11px; color:var(--faint)}
+body.has #ver{display:none}
 </style>
 
 <div id="frame"></div>
@@ -87,8 +89,9 @@ body.has #list{display:flex} body.has #empty{display:none}
 
 <div id="list">
   <div class="rows" id="rows"></div>
-  <div class="foot mono"><span>drop more, or <a id="choose2">choose</a></span><a id="clear">clear</a></div>
+  <div class="foot mono"><span>drop more, or <a id="choose2">choose</a></span><span id="ver2"></span><a id="clear">clear</a></div>
 </div>
+<div id="ver" class="mono"></div>
 
 <script>
 const post = m => { try { webkit.messageHandlers.polypress.postMessage(m) } catch (e) {} };
@@ -144,6 +147,7 @@ function detail(d) {
   if (d.container === "original")
     lines.push(d.variable_labels + " variable labels · " + d.value_labelled_columns + " columns with value labels"
       + (d.notes ? " · " + d.notes + " notes" : ""));
+  if (d.made_by) lines.push("made by Polypress " + esc(d.made_by));
   for (const t of d.translation || []) lines.push(esc(t));
   const plan = Object.entries(d.plan || {}).map(([k, v]) => v + " " + k).join(", ");
   if (plan) lines.push("plan " + esc(plan) + (d.reordered ? " · " + d.reordered + " sorted by a parent" : ""));
@@ -180,6 +184,7 @@ window.render = state => {
   last = state;
   document.body.classList.toggle("has", state.jobs.length > 0);
   $("rows").innerHTML = state.jobs.map(j => row(j, state.formats)).join("");
+  $("ver").textContent = $("ver2").textContent = state.version || "";
 };
 window.dragging = on => document.body.classList.toggle("over", !!on);
 

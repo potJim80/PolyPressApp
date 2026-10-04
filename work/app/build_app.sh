@@ -62,6 +62,7 @@ if osascript -l JavaScript "$HERE/make_icon.js" "$TMP/icon.png" >/dev/null 2>&1;
 fi
 
 VERSION="$("$ROOT/csrc/polypress" --version | awk '{print $2}')"
+BUILD="$("$ROOT/csrc/polypress" --version | sed -n 's/.*(build \(.*\)).*/\1/p')"
 # Finder hands us .ppz (and the pre-rename .tcz) on double-click, and offers
 # us in "Open With" for the tables we can compress.
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -75,7 +76,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleExecutable</key><string>Polypress</string>
 	<key>CFBundleIconFile</key><string>Polypress</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleVersion</key><string>$VERSION</string>
+	<key>CFBundleVersion</key><string>${BUILD:-$VERSION}</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>LSMinimumSystemVersion</key><string>11.0</string>
 	<key>NSHighResolutionCapable</key><true/>

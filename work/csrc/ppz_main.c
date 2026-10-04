@@ -27,7 +27,32 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PPZ_VERSION "0.4.0"
+/* Which version wrote an archive: its "v" (from 1.00 on), else NULL. */
+static const char *version_of(const Js *meta)
+{
+    const Js *v = js_get(meta, "v");
+    return v && v->kind == JS_STR && v->str && *v->str ? v->str : NULL;
+}
+
+static int newer_than_us(const char *v)
+{
+    return v && strtod(v, NULL) > strtod(PPZ_VERSION, NULL);
+}
+
+/* A file that would not decode: if a newer version wrote it, say so --
+ * "damaged" would send someone looking for a fault that is not there. */
+static void cannot_read(const char *path, const uint8_t *blob, size_t n)
+{
+    Js *m = blob ? ppz_meta(blob, n) : NULL;
+    const char *v = version_of(m);
+    if (newer_than_us(v))
+        fprintf(stderr, "polypress: %s was made by polypress %s, which is newer than "
+                "this one (%s) -- update polypress to read it.\n", path, v, PPZ_VERSION);
+    else
+        fprintf(stderr, "polypress: cannot read %s -- it is not a Polypress "
+                "archive, or it is damaged.\n", path);
+    js_free(m);
+}
 
 static double now(void)
 {
@@ -466,8 +491,7 @@ static int cmd_restore(int argc, char **argv)
     if (read_file(a.path, &blob, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
     Table t;
     if (ppz_decode(blob.data, blob.len, &t)) {
-        fprintf(stderr, "polypress: cannot read %s -- it is not a Polypress "
-                "archive, or it is damaged.\n", a.path);
+        cannot_read(a.path, blob.data, blob.len);
         buf_free(&blob);
         return 1;
     }
@@ -647,6 +671,18 @@ static void json_kv_num(Buf *b, const char *k, unsigned long long v, int *first)
     buf_put(b, n, strlen(n));
 }
 
+/* "made_by" in --json: the version, or "before 1.00" */
+static void json_made_by(Buf *b, const char *v, int *first)
+{
+    json_kv_str(b, "made_by", v ? v : "before 1.00", first);
+}
+
+static void print_made_by(const char *v, const char *pad)
+{
+    printf("made by%spolypress %s%s\n", pad, v ? v : "before 1.00",
+           newer_than_us(v) ? " -- newer than this one (" PPZ_VERSION ")" : "");
+}
+
 static int info_stream(const char *path, int as_json)
 {
     char err[1024] = "";
@@ -661,6 +697,7 @@ static int info_stream(const char *path, int as_json)
         json_kv_str(&b, "file", path, &first);
         json_kv_num(&b, "size", h.size, &first);
         json_kv_str(&b, "container", "stream", &first);
+        json_made_by(&b, h.version[0] ? h.version : NULL, &first);
         json_kv_num(&b, "rows", h.nrows, &first);
         json_kv_num(&b, "columns", h.ncols, &first);
         json_kv_num(&b, "blocks", h.nblocks, &first);
@@ -677,6 +714,7 @@ static int info_stream(const char *path, int as_json)
         printf("file          %s\n", path);
         printf("size          %s\n", human((double)h.size, h1, sizeof(h1)));
         printf("container     streamed, one block at a time\n");
+        print_made_by(h.version[0] ? h.version : NULL, "       ");
         printf("rows          %s\n", commas(h.nrows, r1, sizeof(r1)));
         printf("columns       %zu\n", h.ncols);
         printf("blocks        %zu of %s rows\n", h.nblocks, commas(h.rows_per_block, r2, sizeof(r2)));
@@ -725,6 +763,7 @@ static int info_original(const char *path, size_t size, const char *fmt, const J
         json_kv_str(&b, "file", path, &first);
         json_kv_num(&b, "size", size, &first);
         json_kv_str(&b, "container", "original", &first);
+        json_made_by(&b, version_of(meta), &first);
         json_kv_str(&b, "format", fmt, &first);
         json_kv_num(&b, "original_size", bytes, &first);
         json_kv_num(&b, "rows", rows, &first);
@@ -749,6 +788,7 @@ static int info_original(const char *path, size_t size, const char *fmt, const J
     printf("size        %s\n", human((double)size, h1, sizeof(h1)));
     printf("container   a %s file, kept byte for byte (%s)\n", ppz_stat_name(fmt),
            human((double)bytes, h2, sizeof(h2)));
+    print_made_by(version_of(meta), "     ");
     if (lab && lab->kind == JS_STR) printf("label       %s\n", lab->str);
     printf("rows        %s\n", commas(rows, r1, sizeof(r1)));
     printf("columns     %zu\n", ncols);
@@ -783,8 +823,7 @@ static int cmd_info(int argc, char **argv)
     }
     Table t;
     if (ppz_decode(blob.data, blob.len, &t)) {
-        fprintf(stderr, "polypress: cannot read %s -- it is not a Polypress "
-                "archive, or it is damaged.\n", a.path);
+        cannot_read(a.path, blob.data, blob.len);
         buf_free(&blob);
         return 1;
     }
@@ -818,6 +857,7 @@ static int cmd_info(int argc, char **argv)
         json_kv_str(&b, "file", a.path, &first);
         json_kv_num(&b, "size", blob.len, &first);
         json_kv_str(&b, "container", "modelled", &first);
+        json_made_by(&b, version_of(meta), &first);
         json_kv_num(&b, "rows", t.nrows, &first);
         json_kv_num(&b, "columns", t.ncols, &first);
         buf_put(&b, ", \"plan\": {", 11);
@@ -864,6 +904,7 @@ static int cmd_info(int argc, char **argv)
         printf("file        %s\n", a.path);
         printf("size        %s\n", human((double)blob.len, h1, sizeof(h1)));
         printf("container   single block\n");
+        print_made_by(version_of(meta), "     ");
         printf("rows        %s\n", commas(t.nrows, r1, sizeof(r1)));
         printf("columns     %zu\n", t.ncols);
         if (meta) {
@@ -927,7 +968,10 @@ int main(int argc, char **argv)
     if (argc < 2) { usage(stderr); return 2; }
     const char *c = argv[1];
     if (!strcmp(c, "-h") || !strcmp(c, "--help") || !strcmp(c, "help")) { usage(stdout); return 0; }
-    if (!strcmp(c, "--version") || !strcmp(c, "version")) { printf("polypress %s\n", PPZ_VERSION); return 0; }
+    if (!strcmp(c, "--version") || !strcmp(c, "version")) {
+        printf("polypress %s (build %s)\n", PPZ_VERSION, PPZ_BUILD);
+        return 0;
+    }
     if (!strcmp(c, "compress"))        return cmd_compress(argc - 2, argv + 2);
     if (!strcmp(c, "restore"))         return cmd_restore(argc - 2, argv + 2);
     if (!strcmp(c, "info"))            return cmd_info(argc - 2, argv + 2);
