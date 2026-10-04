@@ -272,65 +272,40 @@ static int parse_args(int argc, char **argv, Args *a, int want_two)
 /* ------------------------------------------------------------ commands */
 
 /* A Stata, SPSS or SAS file: its bytes, kept exactly, plus the schema
- * ReadStat reads from them (ppz_stat.c). Reading it whole first is the
- * check that it is the file its extension says. */
+ * ReadStat reads from them (ppz_stat.c). Reading it through first is the
+ * check that it is the file its extension says. The file is mapped and the
+ * archive streamed to disk, so its size is not bounded by memory. */
 static int compress_original(const Args *a, const char *dst)
 {
     #define STAGE(x) do { if (a->progress) { fprintf(stderr, "stage %s\n", x); fflush(stderr); } } while (0)
     double t0 = now();
     char err[1024] = "";
     const char *fmt = ppz_stat_format(a->path);
-    Buf raw, schema, blob;
-    buf_init(&schema); buf_init(&blob);
-    STAGE("reading");
-    if (read_file(a->path, &raw, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
-    Table t;
-    StatLoss loss;
-    if (stat_read(raw.data, raw.len, fmt, a->encoding, &t, &schema, &loss, err, sizeof(err))) {
-        fprintf(stderr, "polypress: %s: %s\n", a->path, err);
-        buf_free(&raw);
-        return 1;
+    if (!strcmp(a->path, "-") || !strcmp(dst, "-")) {
+        fprintf(stderr, "polypress: %s files are archived from a file to a file, not through a pipe\n",
+                ppz_stat_name(fmt));
+        return 2;
     }
     STAGE("compressing");
-    int rc = 1;
-    if (ppz_encode_original(raw.data, raw.len, fmt, a->encoding, &schema, &blob)) {
-        fprintf(stderr, "polypress: %s is too large to archive whole\n", a->path);
-        goto done;
+    StatArchived s;
+    if (ppz_stat_archive(a->path, fmt, a->encoding, dst, !a->no_verify, &s, err, sizeof(err))) {
+        fprintf(stderr, "polypress: %s: %s\n", a->path, err);
+        return 1;
     }
-    double secs = now() - t0;
-    if (!a->no_verify) {
-        STAGE("verifying");
-        Buf back;
-        buf_init(&back);
-        char f2[16];
-        int ok = ppz_original(blob.data, blob.len, &back, f2, sizeof(f2), NULL) == 1 &&
-                 back.len == raw.len && !memcmp(back.data, raw.data, raw.len) &&
-                 !strcmp(f2, fmt);
-        buf_free(&back);
-        if (!ok) {
-            fprintf(stderr, "polypress: verification FAILED -- nothing written\n");
-            goto done;
-        }
-    }
-    if (write_atomic(dst, blob.data, blob.len)) goto done;
-    char r1[32], h1[32], h2[32];
-    FILE *msg = strcmp(dst, "-") ? stdout : stderr;
-    fprintf(msg, "%s rows x %zu cols   %s %s -> %s   %.2fx   %.1f MB/s\n",
-            commas(t.nrows, r1, sizeof(r1)), t.ncols, ppz_stat_name(fmt),
-            human((double)raw.len, h1, sizeof(h1)), human((double)blob.len, h2, sizeof(h2)),
-            (double)raw.len / (blob.len ? (double)blob.len : 1.0),
-            raw.len / 1e6 / (secs > 1e-9 ? secs : 1e-9));
-    fprintf(msg, "kept byte for byte, with %zu variable label%s, %zu value-labelled column%s, "
-            "%zu note%s\n", loss.var_labels, loss.var_labels == 1 ? "" : "s",
-            loss.value_labels, loss.value_labels == 1 ? "" : "s",
-            loss.notes, loss.notes == 1 ? "" : "s");
-    fprintf(msg, "%s\n", dst);
-    rc = 0;
-done:
     #undef STAGE
-    table_free(&t);
-    buf_free(&raw); buf_free(&schema); buf_free(&blob);
-    return rc;
+    double secs = now() - t0;
+    char r1[32], h1[32], h2[32];
+    printf("%s rows x %zu cols   %s %s -> %s   %.2fx   %.1f MB/s\n",
+           commas(s.rows, r1, sizeof(r1)), s.cols, ppz_stat_name(fmt),
+           human((double)s.in_bytes, h1, sizeof(h1)), human((double)s.out_bytes, h2, sizeof(h2)),
+           (double)s.in_bytes / (s.out_bytes ? (double)s.out_bytes : 1.0),
+           s.in_bytes / 1e6 / (secs > 1e-9 ? secs : 1e-9));
+    printf("kept byte for byte, with %zu variable label%s, %zu value-labelled column%s, "
+           "%zu note%s\n", s.loss.var_labels, s.loss.var_labels == 1 ? "" : "s",
+           s.loss.value_labels, s.loss.value_labels == 1 ? "" : "s",
+           s.loss.notes, s.loss.notes == 1 ? "" : "s");
+    printf("%s\n", dst);
+    return 0;
 }
 
 /* One stats format to another (ppz_stat.c): write it, then say what moved. */
@@ -357,39 +332,6 @@ static int translate_out(const uint8_t *data, size_t n, const char *sfmt, const 
     buf_free(&out);
     buf_free(&report);
     return rc;
-}
-
-/* Restore an archive of a Stata/SPSS/SAS file: to its own format, the
- * original bytes; to a table format, a translation that names its losses. */
-static int restore_original(const Buf *orig, const char *fmt, const Js *meta,
-                            const char *dst, size_t packed)
-{
-    char err[1024] = "", r1[32], h1[32], h2[32];
-    FILE *msg = strcmp(dst, "-") ? stdout : stderr;
-    const char *want = strcmp(dst, "-") ? ppz_format_of(dst) : "csv";
-    if (!strcmp(want, fmt)) {
-        if (write_atomic(dst, orig->data, orig->len)) return 1;
-        fprintf(msg, "%s file   %s -> %s, the original bytes\n%s\n", ppz_stat_name(fmt),
-                human((double)packed, h1, sizeof(h1)), human((double)orig->len, h2, sizeof(h2)), dst);
-        return 0;
-    }
-    const Js *enc = js_get(js_get(meta, "original"), "encoding");
-    if (strcmp(dst, "-") && ppz_stat_format(dst))
-        return translate_out(orig->data, orig->len, fmt, enc && enc->kind == JS_STR ? enc->str : NULL, dst);
-    Table t;
-    StatLoss loss;
-    if (stat_read(orig->data, orig->len, fmt, enc && enc->kind == JS_STR ? enc->str : NULL,
-                  &t, NULL, &loss, err, sizeof(err))
-        || table_write_any(&t, dst, err, sizeof(err))) {
-        fprintf(stderr, "polypress: %s\n", err);
-        if (t.names) table_free(&t);
-        return 1;
-    }
-    fprintf(msg, "%s rows x %zu cols\n", commas(t.nrows, r1, sizeof(r1)), t.ncols);
-    stat_loss_print(msg, &loss, fmt, dst);
-    fprintf(msg, "%s\n", dst);
-    table_free(&t);
-    return 0;
 }
 
 static int cmd_compress(int argc, char **argv)
@@ -498,22 +440,36 @@ static int cmd_restore(int argc, char **argv)
         return 0;
     }
 
-    Buf blob;
-    if (read_file(a.path, &blob, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
     {
-        Buf orig;
-        buf_init(&orig);
-        char fmt[16];
-        Js *meta = NULL;
-        int o = ppz_original(blob.data, blob.len, &orig, fmt, sizeof(fmt), &meta);
-        if (o == 1) {
-            int rc = restore_original(&orig, fmt, meta, dst, blob.len);
-            js_free(meta);
-            buf_free(&orig);
-            buf_free(&blob);
-            return rc;
+        /* an archive of a Stata/SPSS/SAS file: streamed from disk */
+        StatRestored sr;
+        int o = ppz_stat_restore(a.path, dst, &sr, err, sizeof(err));
+        if (o == -1) {
+            fprintf(stderr, "polypress: %s\n", err);
+            if (sr.stat_dst) buf_free(&sr.report);
+            return 1;
+        }
+        if (o == 0) {
+            if (!sr.translated)
+                fprintf(msg, "%s file   %s -> %s, the original bytes\n%s\n", ppz_stat_name(sr.fmt),
+                        human((double)sr.packed, h1, sizeof(h1)), human((double)sr.bytes, h2, sizeof(h2)), dst);
+            else if (sr.stat_dst) {
+                fprintf(msg, "%s rows x %zu cols   %s -> %s\n", commas(sr.rows, r1, sizeof(r1)), sr.cols,
+                        ppz_stat_name(sr.fmt), ppz_stat_name(ppz_format_of(dst)));
+                if (sr.report.len) fwrite(sr.report.data, 1, sr.report.len, msg);
+                else fprintf(msg, "  nothing lost\n");
+                fprintf(msg, "%s\n", dst);
+                buf_free(&sr.report);
+            } else {
+                fprintf(msg, "%s rows x %zu cols\n", commas(sr.rows, r1, sizeof(r1)), sr.cols);
+                stat_loss_print(msg, &sr.loss, sr.fmt, dst);
+                fprintf(msg, "%s\n", dst);
+            }
+            return 0;
         }
     }
+    Buf blob;
+    if (read_file(a.path, &blob, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
     Table t;
     if (ppz_decode(blob.data, blob.len, &t)) {
         fprintf(stderr, "polypress: cannot read %s -- it is not a Polypress "
@@ -566,11 +522,18 @@ static int cmd_convert(int argc, char **argv)
         return r;
     }
     if (sfmt) {
-        Buf raw;
-        if (read_file(a.path, &raw, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
-        int r = stat_read(raw.data, raw.len, sfmt, a.encoding, &t, NULL, &loss, err, sizeof(err));
-        buf_free(&raw);
+        Map m;
+        if (ppz_map(a.path, &m, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
+        size_t rows = 0, cols = 0;
+        int r = stat_stream(m.p, m.n, sfmt, a.encoding, a.path2, &loss, &rows, &cols, err, sizeof(err));
+        ppz_unmap(&m);
         if (r) { fprintf(stderr, "polypress: %s: %s\n", a.path, err); return 1; }
+        char r1[32];
+        FILE *msg = strcmp(a.path2, "-") ? stdout : stderr;
+        fprintf(msg, "%s rows x %zu cols\n", commas(rows, r1, sizeof(r1)), cols);
+        stat_loss_print(msg, &loss, sfmt, a.path2);
+        fprintf(msg, "%s\n", a.path2);
+        return 0;
     } else if (table_read_any(&t, a.path, a.encoding, err, sizeof(err))) {
         fprintf(stderr, "polypress: %s\n", err);
         return 1;
@@ -583,7 +546,6 @@ static int cmd_convert(int argc, char **argv)
     char r1[32];
     FILE *msg = strcmp(a.path2, "-") ? stdout : stderr;
     fprintf(msg, "%s rows x %zu cols\n", commas(t.nrows, r1, sizeof(r1)), t.ncols);
-    if (sfmt) stat_loss_print(msg, &loss, sfmt, a.path2);
     fprintf(msg, "%s\n", a.path2);
     table_free(&t);
     return 0;

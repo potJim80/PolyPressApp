@@ -153,6 +153,11 @@ int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind);
  * far too slow to run as a decision procedure. */
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
+/* The same, a piece at a time, for data bigger than memory (ppz_util.c). */
+int ppz_xz_stream(PpzXz kind, size_t (*src)(uint8_t *, size_t, void *), void *sctx,
+                  int (*sink)(const uint8_t *, size_t, void *), void *kctx, uint64_t *out_len);
+int ppz_xz_unstream(const uint8_t *in, size_t n, uint64_t limit,
+                    int (*sink)(const uint8_t *, size_t, void *), void *kctx, uint64_t *got);
 
 /* ------------------------------------------------------------------- json */
 
@@ -271,6 +276,35 @@ void stat_loss_print(FILE *f, const StatLoss *l, const char *src_fmt, const char
 int  stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *encoding,
                     const char *dfmt, Buf *out, Buf *report, size_t *rows, size_t *cols,
                     char *err, size_t cap);
+
+/* Count and check without keeping cells; or send rows to a table file
+ * (`out`, any writer format) a block at a time. Both for files bigger than
+ * memory. */
+int  stat_scan(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+               Buf *schema, StatLoss *loss, size_t *rows, size_t *cols, char *err, size_t cap);
+int  stat_stream(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+                 const char *out, StatLoss *loss, size_t *rows, size_t *cols, char *err, size_t cap);
+
+/* A file mapped read-only (ppz_stat.c): the system pages it in and out. */
+typedef struct { const uint8_t *p; size_t n; int fd; } Map;
+int  ppz_map(const char *path, Map *m, char *err, size_t cap);
+void ppz_unmap(Map *m);
+
+/* compress / restore a stats file, mapped from disk rather than read into
+ * memory, the archive written straight to its file. */
+typedef struct { size_t rows, cols; uint64_t in_bytes, out_bytes; StatLoss loss; } StatArchived;
+typedef struct {
+    char     fmt[16];
+    uint64_t packed, bytes;
+    int      translated, stat_dst;
+    size_t   rows, cols;
+    StatLoss loss;          /* to a table format */
+    Buf      report;        /* to another stats format */
+} StatRestored;
+int  ppz_stat_archive(const char *src, const char *fmt, const char *encoding, const char *dst,
+                      int verify, StatArchived *info, char *err, size_t cap);
+/* 0 done, -1 failed, 1 not an archive of an original file */
+int  ppz_stat_restore(const char *arc, const char *dst, StatRestored *info, char *err, size_t cap);
 
 int  ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
                          const char *encoding, const Buf *schema, Buf *out);

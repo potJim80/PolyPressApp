@@ -216,6 +216,86 @@ size_t ppz_lzma_probe_len(const uint8_t *in, size_t n)
     return r == LZMA_OK ? pos : (size_t)-1;
 }
 
+/* The same raw LZMA2 9e as ppz_lzma_compress_as, for input that does not
+ * fit in memory: `src` fills a buffer (returns bytes, 0 at the end, or
+ * (size_t)-1 on error) and every piece of output goes to `sink`. */
+int ppz_xz_stream(PpzXz kind, size_t (*src)(uint8_t *, size_t, void *), void *sctx,
+                  int (*sink)(const uint8_t *, size_t, void *), void *kctx, uint64_t *out_len)
+{
+    lzma_options_lzma opt;
+    if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
+    if (kind == PPZ_XZ_INTS) { opt.lc = 0; opt.lp = 2; opt.pb = 2; }
+    else if (kind == PPZ_XZ_TEXT) { opt.lc = 4; opt.lp = 0; opt.pb = 1; }
+    lzma_filter filters[2] = { { LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL } };
+    uint8_t *in = malloc(CHUNK), *out = malloc(CHUNK);
+    lzma_stream strm = LZMA_STREAM_INIT;
+    int rc = -1;
+    uint64_t total = 0;
+    ppz_slot_take();
+    if (!in || !out || lzma_raw_encoder(&strm, filters) != LZMA_OK) goto done;
+    lzma_action act = LZMA_RUN;
+    for (;;) {
+        if (strm.avail_in == 0 && act == LZMA_RUN) {
+            size_t got = src(in, CHUNK, sctx);
+            if (got == (size_t)-1) goto done;
+            strm.next_in = in;
+            strm.avail_in = got;
+            if (!got) act = LZMA_FINISH;
+        }
+        strm.next_out = out;
+        strm.avail_out = CHUNK;
+        lzma_ret r = lzma_code(&strm, act);
+        size_t made = CHUNK - strm.avail_out;
+        if (made && sink(out, made, kctx)) goto done;
+        total += made;
+        if (r == LZMA_STREAM_END) { rc = 0; break; }
+        if (r != LZMA_OK) goto done;
+    }
+done:
+    lzma_end(&strm);
+    ppz_slot_give();
+    free(in); free(out);
+    if (out_len) *out_len = total;
+    return rc;
+}
+
+/* Decode a raw stream piece by piece into `sink`, refusing -- as
+ * ppz_lzma_decompress does -- corrupt or cut-short input, and output past
+ * `limit` bytes. */
+int ppz_xz_unstream(const uint8_t *in, size_t n, uint64_t limit,
+                    int (*sink)(const uint8_t *, size_t, void *), void *kctx, uint64_t *got)
+{
+    lzma_options_lzma opt;
+    if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
+    lzma_filter filters[2] = { { LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL } };
+    lzma_stream strm = LZMA_STREAM_INIT;
+    uint8_t *out = malloc(CHUNK);
+    uint64_t total = 0;
+    int rc = -1;
+    if (!out || lzma_raw_decoder(&strm, filters) != LZMA_OK) goto done;
+    strm.next_in = in;
+    strm.avail_in = n;
+    for (;;) {
+        strm.next_out = out;
+        strm.avail_out = CHUNK;
+        lzma_ret r = lzma_code(&strm, strm.avail_in ? LZMA_RUN : LZMA_FINISH);
+        size_t made = CHUNK - strm.avail_out;
+        if (made) {
+            if (total + made > limit) goto done;
+            if (sink(out, made, kctx)) goto done;
+            total += made;
+        }
+        if (r == LZMA_STREAM_END) { rc = 0; break; }
+        if (r != LZMA_OK) goto done;
+        if (strm.avail_in == 0 && !made) goto done;       /* cut short */
+    }
+done:
+    lzma_end(&strm);
+    free(out);
+    if (got) *got = total;
+    return rc;
+}
+
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out)
 {
     lzma_options_lzma opt;

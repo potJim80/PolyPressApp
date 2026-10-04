@@ -619,6 +619,66 @@ static void translations(void)
     }
 }
 
+/* more rows than one block of stat_stream, out to CSV, against stat_read */
+static void streaming(void)
+{
+    h_section("big files: streamed, not held");
+    const size_t N = 150001;
+    Buf file;
+    buf_init(&file);
+    readstat_writer_t *w = readstat_writer_init();
+    readstat_set_data_writer(w, to_buf);
+    readstat_writer_set_file_format_version(w, 118);
+    readstat_variable_t *a = readstat_add_variable(w, "n", READSTAT_TYPE_INT32, 0);
+    readstat_variable_t *b = readstat_add_variable(w, "s", READSTAT_TYPE_STRING, 6);
+    readstat_begin_writing_dta(w, &file, (long)N);
+    for (size_t i = 0; i < N; i++) {
+        char v[8];
+        snprintf(v, sizeof(v), "r%zu", i % 99991);
+        readstat_begin_row(w);
+        readstat_insert_int32_value(w, a, (int32_t)i);
+        readstat_insert_string_value(w, b, v);
+        readstat_end_row(w);
+    }
+    readstat_end_writing(w);
+    readstat_writer_free(w);
+    const char *src = tpath("big.dta"), *csv = tpath("big.csv"), *arc = tpath("big.dta.ppz");
+    write_bytes(src, file.data, file.len);
+
+    Table t;
+    char err[512] = "";
+    size_t rows = 0, cols = 0;
+    if (CHECK(stat_read(file.data, file.len, "dta", NULL, &t, NULL, NULL, err, sizeof(err)) == 0, "%s", err)) {
+        CHECK(stat_stream(file.data, file.len, "dta", NULL, csv, NULL, &rows, &cols, err, sizeof(err)) == 0,
+              "stat_stream: %s", err);
+        CHECK(rows == N && cols == 2, "streamed %zu x %zu", rows, cols);
+        Buf want, got;
+        CHECK(table_write_any(&t, tpath("want.csv"), err, sizeof(err)) == 0, "%s", err);
+        read_bytes(tpath("want.csv"), &want);
+        read_bytes(csv, &got);
+        CHECK(want.len == got.len && !memcmp(want.data, got.data, want.len),
+              "streamed CSV differs from the one written whole");
+        buf_free(&want); buf_free(&got);
+        table_free(&t);
+    }
+    Buf out;
+    CHECK(cli(&out, 4, "compress", src, "-o", arc) == 0, "compress big: %s", out.data);
+    buf_free(&out);
+    CHECK(cli(&out, 4, "restore", arc, "-o", tpath("big2.csv")) == 0, "restore big to csv: %s", out.data);
+    buf_free(&out);
+    Buf g1, g2;
+    read_bytes(csv, &g1); read_bytes(tpath("big2.csv"), &g2);
+    CHECK(g1.len == g2.len && !memcmp(g1.data, g2.data, g1.len), "restored CSV differs");
+    buf_free(&g1); buf_free(&g2);
+    CHECK(cli(&out, 4, "restore", arc, "-o", tpath("big2.dta")) == 0, "restore big: %s", out.data);
+    buf_free(&out);
+    read_bytes(tpath("big2.dta"), &g1);
+    CHECK(g1.len == file.len && !memcmp(g1.data, file.data, file.len), "restored .dta differs");
+    buf_free(&g1);
+    CHECK(!file_exists(tpath("big2.csv.orig")), "the temporary original was left behind");
+    buf_free(&file);
+}
+
 /* ------------------------------------------------------------ real files */
 
 static void real_files(const char *dir)
@@ -667,6 +727,7 @@ int main(int argc, char **argv)
     hostile();
     command_line();
     translations();
+    streaming();
     real_files(argc > 2 && argv[2][0] ? argv[2] : NULL);
     tmpdir_remove();
     return h_done();

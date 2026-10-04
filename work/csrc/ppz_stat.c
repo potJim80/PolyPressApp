@@ -23,6 +23,11 @@
 #include "ppz.h"
 #include "readstat/readstat.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -140,7 +145,15 @@ typedef struct {
     unsigned char *tagged_col;       /* a column held a tagged missing value */
     int         failed;              /* out of memory, or a bad value */
     char        meta[2048];          /* schema: file-level fields, JSON */
+    int         nocells;             /* count and check, keep nothing */
+    int         bad_text;            /* nocells: a string was not UTF-8 */
+    Writer     *sink;                /* rows go out a block at a time */
+    const char *sink_path;
+    size_t      base;                /* first row still held (sink) */
+    char        werr[512];
 } Rd;
+
+#define SINK_ROWS 65536
 
 static int grow_rows(Rd *r, size_t need)
 {
@@ -367,7 +380,8 @@ static int on_metadata(readstat_metadata_t *m, void *ctx)
         r->failed = 1; return READSTAT_HANDLER_ABORT;
     }
     int64_t rows = readstat_get_row_count(m);
-    if (rows > 0 && grow_rows(r, (size_t)rows < ((size_t)1 << 24) ? (size_t)rows : ((size_t)1 << 24))) {
+    if (r->sink && rows > SINK_ROWS) rows = SINK_ROWS;
+    if (rows > 0 && !r->nocells && grow_rows(r, (size_t)rows < ((size_t)1 << 24) ? (size_t)rows : ((size_t)1 << 24))) {
         r->failed = 1; return READSTAT_HANDLER_ABORT;
     }
 
@@ -466,16 +480,61 @@ static int on_variable(int index, readstat_variable_t *v, const char *val_labels
     return READSTAT_HANDLER_OK;
 }
 
+static int valid_utf8(const char *p, size_t n);
+
+/* The rows held so far, out to the sink, and forgotten. Strict UTF-8, as
+ * every reader: a block whose text did not convert stops the whole run. */
+static int flush_rows(Rd *r)
+{
+    size_t rows = r->nrows - r->base;
+    if (!valid_utf8((const char *)r->arena.data, r->arena.len)) { r->failed = 2; return -1; }
+    if (!r->sink_path) return 0;
+    if (r->sink == (Writer *)1) {
+        for (size_t j = 0; j < r->ncols; j++)
+            if (!r->names[j] || !valid_utf8(r->names[j], strlen(r->names[j]))) { r->failed = 2; return -1; }
+        r->sink = writer_open(r->sink_path, r->names, r->ncols, r->werr, sizeof(r->werr));
+        if (!r->sink) { r->failed = 3; return -1; }
+    }
+    Table t;
+    table_init(&t);
+    t.ncols = r->ncols;
+    t.nrows = rows;
+    t.names = r->names;
+    t.cells = malloc((rows * r->ncols ? rows * r->ncols : 1) * sizeof(Str));
+    if (!t.cells) { r->failed = 1; return -1; }
+    for (size_t k = 0; k < rows * r->ncols; k++)
+        t.cells[k] = (Str){ r->len[k] ? (const char *)r->arena.data + r->off[k] : "", r->len[k] };
+    int bad = writer_rows(r->sink, &t);
+    free(t.cells);
+    if (bad) { r->failed = 3; snprintf(r->werr, sizeof(r->werr), "cannot write %s", r->sink_path); return -1; }
+    memset(r->len, 0, rows * r->ncols * sizeof(size_t));
+    r->arena.len = 0;
+    r->base = r->nrows;
+    return 0;
+}
+
 static int on_value(int obs, readstat_variable_t *var, readstat_value_t v, void *ctx)
 {
     Rd *r = ctx;
     int j = readstat_variable_get_index(var);
-    if (obs < 0 || j < 0 || (size_t)j >= r->ncols) { r->failed = 1; return READSTAT_HANDLER_ABORT; }
+    if (obs < 0 || j < 0 || (size_t)j >= r->ncols || (size_t)obs < r->base) { r->failed = 1; return READSTAT_HANDLER_ABORT; }
+    if (r->nocells) {
+        if ((size_t)obs >= r->nrows) r->nrows = (size_t)obs + 1;
+        if (readstat_value_is_tagged_missing(v)) { r->loss.tagged++; r->tagged_col[j] = 1; }
+        else if (readstat_value_type_class(v) == READSTAT_TYPE_CLASS_STRING &&
+                 !readstat_value_is_system_missing(v)) {
+            const char *p = readstat_string_value(v);
+            if (p && !valid_utf8(p, strlen(p))) r->bad_text = 1;
+        }
+        return READSTAT_HANDLER_OK;
+    }
+    if (r->sink && (size_t)obs >= r->nrows && r->nrows - r->base >= SINK_ROWS && flush_rows(r))
+        return READSTAT_HANDLER_ABORT;
     if ((size_t)obs >= r->nrows) {
-        if (grow_rows(r, (size_t)obs + 1)) { r->failed = 1; return READSTAT_HANDLER_ABORT; }
+        if (grow_rows(r, (size_t)obs + 1 - r->base)) { r->failed = 1; return READSTAT_HANDLER_ABORT; }
         r->nrows = (size_t)obs + 1;
     }
-    size_t k = (size_t)obs * r->ncols + (size_t)j;
+    size_t k = ((size_t)obs - r->base) * r->ncols + (size_t)j;
     char s[96];
     size_t n = 0;
     const char *p = s;
@@ -563,14 +622,18 @@ static void rd_free(Rd *r)
     free(r->sets);
 }
 
-int stat_read(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
-              Table *t, Buf *schema, StatLoss *loss, char *err, size_t cap)
+/* Parse with the handlers above. mode 0: keep every cell (stat_read);
+ * 1: keep nothing, only count and check (stat_scan); 2: send the rows to
+ * `out` a block at a time (stat_stream). */
+static int stat_parse(Rd *r, const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+                      int mode, const char *out, char *err, size_t cap)
 {
-    table_init(t);
-    Rd r;
-    memset(&r, 0, sizeof(r));
-    r.fmt = fmt;
-    buf_init(&r.arena); buf_init(&r.cols); buf_init(&r.notes);
+    memset(r, 0, sizeof(*r));
+    r->fmt = fmt;
+    r->nocells = mode == 1;
+    if (mode == 2) { r->sink = (Writer *)1; r->sink_path = out; }
+    buf_init(&r->arena); buf_init(&r->cols); buf_init(&r->notes);
+    Rd *rp = r;
 
     readstat_parser_t *p = readstat_parser_init();
     if (!p) { seterr(err, cap, "out of memory"); return -1; }
@@ -591,42 +654,94 @@ int stat_read(const uint8_t *data, size_t n, const char *fmt, const char *encodi
 
     g_rs_err[0] = 0;
     readstat_error_t e;
-    if (!strcmp(fmt, "dta"))                               e = readstat_parse_dta(p, "", &r);
-    else if (!strcmp(fmt, "sav") || !strcmp(fmt, "zsav"))  e = readstat_parse_sav(p, "", &r);
-    else if (!strcmp(fmt, "por"))                          e = readstat_parse_por(p, "", &r);
-    else if (!strcmp(fmt, "sas7bdat"))                     e = readstat_parse_sas7bdat(p, "", &r);
-    else if (!strcmp(fmt, "xpt"))                          e = readstat_parse_xport(p, "", &r);
+    if (!strcmp(fmt, "dta"))                               e = readstat_parse_dta(p, "", rp);
+    else if (!strcmp(fmt, "sav") || !strcmp(fmt, "zsav"))  e = readstat_parse_sav(p, "", rp);
+    else if (!strcmp(fmt, "por"))                          e = readstat_parse_por(p, "", rp);
+    else if (!strcmp(fmt, "sas7bdat"))                     e = readstat_parse_sas7bdat(p, "", rp);
+    else if (!strcmp(fmt, "xpt"))                          e = readstat_parse_xport(p, "", rp);
     else { readstat_parser_free(p); seterr(err, cap, "unknown format %s", fmt); return -1; }
     readstat_parser_free(p);
 
     const char *what = ppz_stat_name(fmt);
-    if (e != READSTAT_OK || r.failed || !r.names) {
-        if (r.failed && e == READSTAT_OK) seterr(err, cap, "out of memory reading the %s file", what);
-        else seterr(err, cap, "cannot read this %s file: %s%s%s", what,
-                    readstat_error_message(e), g_rs_err[0] ? " -- " : "", g_rs_err);
-        rd_free(&r);
+    if (r->failed == 2) {
+        seterr(err, cap, "this %s file's text is not in the encoding it declares.\n"
+               "Name the right one, e.g. --encoding windows-1252", ppz_stat_name(fmt));
+        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
+        rd_free(r);
         return -1;
     }
-    for (size_t j = 0; j < r.ncols; j++)
-        if (!r.names[j]) {
+    if (r->failed == 3) {
+        seterr(err, cap, "%s", r->werr);
+        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
+        rd_free(r);
+        return -1;
+    }
+    if (e != READSTAT_OK || r->failed || !r->names) {
+        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
+        if (r->failed && e == READSTAT_OK) seterr(err, cap, "out of memory reading the %s file", what);
+        else seterr(err, cap, "cannot read this %s file: %s%s%s", what,
+                    readstat_error_message(e), g_rs_err[0] ? " -- " : "", g_rs_err);
+        rd_free(r);
+        return -1;
+    }
+    for (size_t j = 0; j < r->ncols; j++)
+        if (!r->names[j]) {
             seterr(err, cap, "cannot read this %s file: column %zu has no name", what, j + 1);
-            rd_free(&r);
+            if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
+            rd_free(r);
             return -1;
         }
 
     /* strict UTF-8 out, as every other reader: a file whose strings did not
      * convert is refused, not repaired */
     int bad = 0;
-    for (size_t j = 0; j < r.ncols && !bad; j++)
-        bad = !valid_utf8(r.names[j], strlen(r.names[j]));
-    if (!bad) bad = !valid_utf8((const char *)r.arena.data, r.arena.len);
+    for (size_t j = 0; j < r->ncols && !bad; j++)
+        bad = !valid_utf8(r->names[j], strlen(r->names[j]));
+    if (!bad) bad = r->nocells ? r->bad_text : !valid_utf8((const char *)r->arena.data, r->arena.len);
     if (bad) {
         seterr(err, cap, "this %s file's text is not in the encoding it declares.\n"
                "Name the right one, e.g. --encoding windows-1252", what);
-        rd_free(&r);
+        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
+        rd_free(r);
         return -1;
     }
 
+    for (size_t j = 0; j < r->ncols; j++) if (r->tagged_col[j]) r->loss.tagged_cols++;
+    return 0;
+}
+
+/* The schema JSON for a parsed file. */
+static void schema_put(const Rd *r, const char *fmt, Buf *schema)
+{
+    buf_init(schema);
+    char nb[32];
+    buf_put(schema, "{\"format\":", 10);
+    ppz_json_str(schema, fmt, strlen(fmt));
+    buf_putc(schema, ',');
+    buf_put(schema, r->meta, strlen(r->meta));
+    buf_put(schema, ",\"rows\":", 8);
+    buf_put(schema, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", r->nrows));
+    buf_put(schema, ",\"columns\":[", 12);
+    buf_put(schema, r->cols.data, r->cols.len);
+    buf_put(schema, "],\"label_sets\":{", 16);
+    for (size_t i = 0; i < r->nsets; i++) {
+        if (i) buf_putc(schema, ',');
+        ppz_json_str(schema, r->sets[i].name, strlen(r->sets[i].name));
+        buf_put(schema, ":[", 2);
+        buf_put(schema, r->sets[i].pairs.data, r->sets[i].pairs.len);
+        buf_putc(schema, ']');
+    }
+    buf_put(schema, "},\"notes\":[", 11);
+    buf_put(schema, r->notes.data, r->notes.len);
+    buf_put(schema, "]}", 2);
+}
+
+int stat_read(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+              Table *t, Buf *schema, StatLoss *loss, char *err, size_t cap)
+{
+    table_init(t);
+    Rd r;
+    if (stat_parse(&r, data, n, fmt, encoding, 0, NULL, err, cap)) return -1;
     t->ncols = r.ncols;
     t->nrows = r.nrows;
     t->names = r.names;
@@ -637,34 +752,43 @@ int stat_read(const uint8_t *data, size_t n, const char *fmt, const char *encodi
     if (!t->cells) { table_free(t); rd_free(&r); seterr(err, cap, "out of memory"); return -1; }
     for (size_t k = 0; k < r.nrows * r.ncols; k++)
         t->cells[k] = (Str){ r.len[k] ? (const char *)t->arena.data + r.off[k] : "", r.len[k] };
-    for (size_t j = 0; j < r.ncols; j++) if (r.tagged_col[j]) r.loss.tagged_cols++;
-
-    if (schema) {
-        buf_init(schema);
-        char nb[32];
-        buf_put(schema, "{\"format\":", 10);
-        ppz_json_str(schema, fmt, strlen(fmt));
-        buf_putc(schema, ',');
-        buf_put(schema, r.meta, strlen(r.meta));
-        buf_put(schema, ",\"rows\":", 8);
-        buf_put(schema, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", r.nrows));
-        buf_put(schema, ",\"columns\":[", 12);
-        buf_put(schema, r.cols.data, r.cols.len);
-        buf_put(schema, "],\"label_sets\":{", 16);
-        for (size_t i = 0; i < r.nsets; i++) {
-            if (i) buf_putc(schema, ',');
-            ppz_json_str(schema, r.sets[i].name, strlen(r.sets[i].name));
-            buf_put(schema, ":[", 2);
-            buf_put(schema, r.sets[i].pairs.data, r.sets[i].pairs.len);
-            buf_putc(schema, ']');
-        }
-        buf_put(schema, "},\"notes\":[", 11);
-        buf_put(schema, r.notes.data, r.notes.len);
-        buf_put(schema, "]}", 2);
-    }
+    if (schema) schema_put(&r, fmt, schema);
     if (loss) *loss = r.loss;
     rd_free(&r);
     return 0;
+}
+
+int stat_scan(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+              Buf *schema, StatLoss *loss, size_t *rows, size_t *cols, char *err, size_t cap)
+{
+    Rd r;
+    if (stat_parse(&r, data, n, fmt, encoding, 1, NULL, err, cap)) return -1;
+    if (schema) schema_put(&r, fmt, schema);
+    if (loss) *loss = r.loss;
+    if (rows) *rows = r.nrows;
+    if (cols) *cols = r.ncols;
+    rd_free(&r);
+    return 0;
+}
+
+int stat_stream(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+                const char *out, StatLoss *loss, size_t *rows, size_t *cols, char *err, size_t cap)
+{
+    Rd r;
+    if (stat_parse(&r, data, n, fmt, encoding, 2, out, err, cap)) return -1;
+    int rc = flush_rows(&r);
+    if (rc) seterr(err, cap, "%s", r.failed == 2 ? "text not in the declared encoding" : r.werr);
+    if (!rc && r.sink == (Writer *)1) rc = -1;
+    if (r.sink && r.sink != (Writer *)1) {
+        if (writer_close(r.sink, rc == 0, err, cap)) rc = -1;
+    } else if (!rc) seterr(err, cap, "nothing to write");
+    if (!rc) {
+        if (loss) *loss = r.loss;
+        if (rows) *rows = r.nrows;
+        if (cols) *cols = r.ncols;
+    }
+    rd_free(&r);
+    return rc;
 }
 
 /* What a CSV/TSV/JSON copy of this file cannot hold. Kept in the archive
@@ -767,149 +891,472 @@ static size_t dta_layout(const uint8_t *d, size_t n, const Js *sc, size_t *rows,
     return at;
 }
 
-/* rows -> columns (dir 1) or back (dir 0), over d[at .. at + rows*sum(w)) */
-static void dta_permute(const uint8_t *in, uint8_t *out, size_t at, size_t rows,
-                        const size_t *w, size_t nw, int dir)
+/* Where each byte of the stored stream lives in the original file. The
+ * stream is the file with its rows region rewritten column by column: a
+ * stored position inside that region belongs to column j, row i, byte b of
+ * the field, which sits at at + i*rw + off[j] + b in the original. Every
+ * reader and writer of these archives goes through lay_map, a piece at a
+ * time, so a file bigger than memory never has to be held whole. */
+typedef struct {
+    uint64_t  at, end, rows, rw;
+    size_t    nw, cur;
+    size_t   *w, *off;
+    uint64_t *cs;                    /* column j starts at cs[j] in the region */
+} Lay;
+
+static void lay_free(Lay *L) { if (L) { free(L->w); free(L->off); free(L->cs); memset(L, 0, sizeof(*L)); } }
+
+static int lay_make(Lay *L, uint64_t at, uint64_t rows, const size_t *w, size_t nw, uint64_t total)
 {
-    size_t rw = 0;
-    for (size_t j = 0; j < nw; j++) rw += w[j];
-    const uint8_t *src = in + at;
-    uint8_t *dst = out + at;
-    size_t off = 0, col = 0;
+    memset(L, 0, sizeof(*L));
+    if (!nw || nw > DTA_MAX_FIELDS) return -1;
+    L->w = malloc(nw * sizeof(size_t));
+    L->off = malloc(nw * sizeof(size_t));
+    L->cs = malloc((nw + 1) * sizeof(uint64_t));
+    if (!L->w || !L->off || !L->cs) { lay_free(L); return -1; }
+    uint64_t rw = 0;
     for (size_t j = 0; j < nw; j++) {
-        for (size_t i = 0; i < rows; i++) {
-            size_t r = i * rw + off, c = col + i * w[j];
-            if (dir) memcpy(dst + c, src + r, w[j]);
-            else memcpy(dst + r, src + c, w[j]);
-        }
-        off += w[j];
-        col += rows * w[j];
+        if (w[j] < 1 || w[j] > 2045) { lay_free(L); return -1; }
+        L->w[j] = w[j]; L->off[j] = (size_t)rw; rw += w[j];
     }
+    if (at > total || rows > (total - at) / rw) { lay_free(L); return -1; }
+    uint64_t c = 0;
+    for (size_t j = 0; j < nw; j++) { L->cs[j] = c; c += rows * w[j]; }
+    L->cs[nw] = c;
+    L->at = at; L->rows = rows; L->rw = rw; L->nw = nw;
+    L->end = at + rows * rw;
+    return 0;
 }
 
-int ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
-                        const char *encoding, const Buf *schema, Buf *out)
+/* mode 0: buf = stored bytes [p, p+len), gathered from the original `src`;
+ * 1: scatter buf into the original at `dst`; 2: compare buf with `src`,
+ * -1 on the first difference. L NULL: the stream is the file as it is. */
+static int lay_map(Lay *L, uint64_t p, uint8_t *buf, size_t len, const uint8_t *src, uint8_t *dst, int mode)
 {
-    Buf meta, mz, bz, tz;
-    buf_init(&meta); buf_init(&mz); buf_init(&bz); buf_init(&tz);
-    char nb[32];
-    buf_put(&meta, "{\"original\":{\"format\":", 22);
-    ppz_json_str(&meta, fmt, strlen(fmt));
-    buf_put(&meta, ",\"bytes\":", 9);
-    buf_put(&meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", n));
-    if (encoding) {
-        buf_put(&meta, ",\"encoding\":", 12);
-        ppz_json_str(&meta, encoding, strlen(encoding));
+    size_t k = 0;
+    while (k < len) {
+        uint64_t q = p + k, o;
+        size_t run = len - k;
+        if (!L || q < L->at || q >= L->end) {
+            o = q;
+            if (L && q < L->at && L->at - q < run) run = (size_t)(L->at - q);
+        } else {
+            uint64_t d = q - L->at;
+            size_t j = L->cur;
+            if (d < L->cs[j] || d >= L->cs[j + 1]) {
+                size_t lo = 0, hi = L->nw;           /* last j with cs[j] <= d */
+                while (hi - lo > 1) { size_t m = (lo + hi) / 2; if (L->cs[m] <= d) lo = m; else hi = m; }
+                j = L->cur = lo;
+            }
+            uint64_t idx = d - L->cs[j];
+            uint64_t i = idx / L->w[j];
+            size_t b = (size_t)(idx % L->w[j]);
+            o = L->at + i * L->rw + L->off[j] + b;
+            if (L->w[j] - b < run) run = L->w[j] - b;
+        }
+        if (mode == 0) memcpy(buf + k, src + o, run);
+        else if (mode == 1) memcpy(dst + o, buf + k, run);
+        else if (memcmp(buf + k, src + o, run)) return -1;
+        k += run;
     }
-    /* Stata rows stored as columns, when the layout is the expected one */
-    uint8_t *perm = NULL;
+    return 0;
+}
+
+/* The metadata for an archive of data[0..n): {"original":{...},"schema":...},
+ * and the Stata column layout when the file has the expected one. */
+static int original_meta(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+                         const Buf *schema, Buf *meta, Lay *L, int *has_lay)
+{
+    char nb[32];
+    *has_lay = 0;
+    buf_init(meta);
+    buf_put(meta, "{\"original\":{\"format\":", 22);
+    ppz_json_str(meta, fmt, strlen(fmt));
+    buf_put(meta, ",\"bytes\":", 9);
+    buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", n));
+    if (encoding) {
+        buf_put(meta, ",\"encoding\":", 12);
+        ppz_json_str(meta, encoding, strlen(encoding));
+    }
     if (!strcmp(fmt, "dta")) {
         Js *sc = js_parse((const char *)schema->data, schema->len);
         size_t rows = 0, nw = 0, *w = NULL;
         size_t at = sc ? dta_layout(data, n, sc, &rows, &w, &nw) : 0;
         js_free(sc);
-        if (at && (perm = malloc(n))) {
-            memcpy(perm, data, n);
-            dta_permute(data, perm, at, rows, w, nw, 1);
-            put_s(&meta, ",\"layout\":{\"kind\":\"dta-columns\",\"at\":");
-            buf_put(&meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", at));
-            put_s(&meta, ",\"rows\":");
-            buf_put(&meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", rows));
-            put_s(&meta, ",\"widths\":[");
+        if (at && !lay_make(L, at, rows, w, nw, n)) {
+            *has_lay = 1;
+            put_s(meta, ",\"layout\":{\"kind\":\"dta-columns\",\"at\":");
+            buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", at));
+            put_s(meta, ",\"rows\":");
+            buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", rows));
+            put_s(meta, ",\"widths\":[");
             for (size_t j = 0; j < nw; j++) {
-                if (j) buf_putc(&meta, ',');
-                buf_put(&meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", w[j]));
+                if (j) buf_putc(meta, ',');
+                buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", w[j]));
             }
-            put_s(&meta, "]}");
+            put_s(meta, "]}");
         }
         free(w);
     }
-    buf_put(&meta, "},\"schema\":", 11);
-    buf_put(&meta, schema->data, schema->len);
-    buf_putc(&meta, '}');
-    int rc = -1;
-    if (ppz_lzma_compress(meta.data, meta.len, &mz)) goto done;
-    if (ppz_lzma_compress_as(perm ? perm : data, n, &bz, PPZ_XZ_PLAIN)) goto done;
-    if (ppz_lzma_compress((const uint8_t *)"", 0, &tz)) goto done;
-    if (mz.len > 0xFFFFFFFFu || bz.len > 0xFFFFFFFFu) goto done;
-    buf_free(out);
-    buf_put(out, PPZ_MAGIC, 4);
-    size_t lens[3] = { mz.len, bz.len, tz.len };
-    for (int i = 0; i < 3; i++)
-        for (int s = 24; s >= 0; s -= 8) buf_putc(out, (char)((lens[i] >> s) & 0xFF));
-    buf_put(out, mz.data, mz.len);
-    buf_put(out, bz.data, bz.len);
-    buf_put(out, tz.data, tz.len);
-    rc = 0;
-done:
-    free(perm);
-    buf_free(&meta); buf_free(&mz); buf_free(&bz); buf_free(&tz);
-    return rc;
-}
-
-/* Put a stored layout back to the original order. The layout comes from
- * the archive, so every number in it is checked against the bytes it is
- * about to move before anything moves. */
-static int undo_layout(const Js *lay, Buf *b)
-{
-    if (!lay) return 0;
-    const Js *k = js_get(lay, "kind"), *w = js_get(lay, "widths");
-    int64_t at = js_i64(js_get(lay, "at"), -1), rows = js_i64(js_get(lay, "rows"), -1);
-    if (lay->kind != JS_OBJ || !k || k->kind != JS_STR || strcmp(k->str, "dta-columns") ||
-        !w || w->kind != JS_ARR || !w->count || w->count > DTA_MAX_FIELDS ||
-        at < 0 || rows < 0 || (uint64_t)at > b->len)
-        return -1;
-    size_t *ws = malloc(w->count * sizeof(size_t)), rw = 0;
-    if (!ws) return -1;
-    for (size_t j = 0; j < w->count; j++) {
-        int64_t x = js_i64(&w->items[j], 0);
-        if (w->items[j].kind != JS_NUM || x < 1 || x > 2045) { free(ws); return -1; }
-        ws[j] = (size_t)x;
-        rw += ws[j];
-    }
-    size_t room = b->len - (size_t)at;
-    if ((uint64_t)rows > room / rw) { free(ws); return -1; }
-    uint8_t *back = malloc(b->len ? b->len : 1);
-    if (!back) { free(ws); return -1; }
-    memcpy(back, b->data, b->len);
-    dta_permute(b->data, back, (size_t)at, (size_t)rows, ws, w->count, 0);
-    memcpy(b->data, back, b->len);
-    free(back);
-    free(ws);
+    buf_put(meta, "},\"schema\":", 11);
+    buf_put(meta, schema->data, schema->len);
+    buf_putc(meta, '}');
     return 0;
 }
 
-int ppz_original(const uint8_t *blob, size_t n, Buf *orig, char *fmt, size_t fcap, Js **meta_out)
+typedef struct { const uint8_t *d; uint64_t n, pos; Lay *L; } Gather;
+
+static size_t gather_src(uint8_t *buf, size_t cap, void *ctx)
 {
-    if (meta_out) *meta_out = NULL;
+    Gather *g = ctx;
+    size_t k = g->n - g->pos < cap ? (size_t)(g->n - g->pos) : cap;
+    lay_map(g->L, g->pos, buf, k, g->d, NULL, 0);
+    g->pos += k;
+    return k;
+}
+
+static int buf_sink(const uint8_t *p, size_t n, void *ctx) { buf_put((Buf *)ctx, p, n); return 0; }
+
+typedef struct { int fd; uint64_t at; } FileSink;
+
+static int file_sink(const uint8_t *p, size_t n, void *ctx)
+{
+    FileSink *f = ctx;
+    while (n) {
+        ssize_t w = pwrite(f->fd, p, n, (off_t)f->at);
+        if (w <= 0) return -1;
+        p += w; n -= (size_t)w; f->at += (uint64_t)w;
+    }
+    return 0;
+}
+
+static void put_header(uint8_t h[16], const uint64_t lens[3])
+{
+    memcpy(h, PPZ_MAGIC, 4);
+    for (int i = 0; i < 3; i++)
+        for (int s = 24, k = 0; s >= 0; s -= 8, k++) h[4 + i * 4 + k] = (uint8_t)((lens[i] >> s) & 0xFF);
+}
+
+/* Write an archive of data[0..n) through `sink`: 16 header bytes (zeros,
+ * for the caller to fill from lens), then the three streams. */
+static int write_original(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+                          const Buf *schema, int (*sink)(const uint8_t *, size_t, void *), void *ctx,
+                          uint64_t lens[3])
+{
+    Buf meta, mz, tz;
+    Lay L;
+    int has_lay = 0, rc = -1;
+    memset(&L, 0, sizeof(L));
+    buf_init(&mz); buf_init(&tz);
+    original_meta(data, n, fmt, encoding, schema, &meta, &L, &has_lay);
+    uint8_t zero[16] = { 0 };
+    if (ppz_lzma_compress(meta.data, meta.len, &mz) || ppz_lzma_compress((const uint8_t *)"", 0, &tz))
+        goto done;
+    if (sink(zero, 16, ctx) || sink(mz.data, mz.len, ctx)) goto done;
+    Gather g = { data, n, 0, has_lay ? &L : NULL };
+    uint64_t bl = 0;
+    if (ppz_xz_stream(PPZ_XZ_PLAIN, gather_src, &g, sink, ctx, &bl)) goto done;
+    if (sink(tz.data, tz.len, ctx)) goto done;
+    lens[0] = mz.len; lens[1] = bl; lens[2] = tz.len;
+    rc = mz.len > 0xFFFFFFFFu || bl > 0xFFFFFFFFu ? -2 : 0;
+done:
+    lay_free(&L);
+    buf_free(&meta); buf_free(&mz); buf_free(&tz);
+    return rc;
+}
+
+int ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
+                        const char *encoding, const Buf *schema, Buf *out)
+{
+    buf_free(out);
+    uint64_t lens[3];
+    if (write_original(data, n, fmt, encoding, schema, buf_sink, out, lens)) { buf_free(out); return -1; }
+    put_header(out->data, lens);
+    return 0;
+}
+
+/* An archive of an original file, opened: its format, size, layout and
+ * where the stored stream is. Every number comes from the archive, so all
+ * of it is checked against the bytes before anything is moved. */
+typedef struct {
+    char      fmt[16];
+    uint64_t  bytes;
+    const uint8_t *bin;
+    size_t    binlen;
+    Lay       L;
+    int       has_lay;
+    Js       *meta;
+} Orig;
+
+/* 1 an original archive, 0 a table archive, -1 damaged */
+static int orig_open(const uint8_t *blob, size_t n, Orig *o)
+{
+    memset(o, 0, sizeof(*o));
     Js *meta = ppz_meta(blob, n);
     if (!meta) return -1;
     size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) | ((size_t)blob[6] << 8) | blob[7];
     size_t bl = ((size_t)blob[8] << 24) | ((size_t)blob[9] << 16) | ((size_t)blob[10] << 8) | blob[11];
     if (bl > n - 16 - ml) { js_free(meta); return -1; }
-    const Js *o = js_get(meta, "original");
-    if (!o) { js_free(meta); return 0; }
-    const Js *f = js_get(o, "format");
-    const Js *nbytes = js_get(o, "bytes");
-    if (o->kind != JS_OBJ || !f || f->kind != JS_STR || !ppz_stat_name(f->str) ||
-        !nbytes || nbytes->kind != JS_NUM || !nbytes->is_int || nbytes->inum < 0 ||
-        strlen(f->str) >= fcap) {
+    const Js *og = js_get(meta, "original");
+    if (!og) { js_free(meta); return 0; }
+    const Js *f = js_get(og, "format"), *nb = js_get(og, "bytes");
+    if (og->kind != JS_OBJ || !f || f->kind != JS_STR || !ppz_stat_name(f->str) ||
+        !nb || nb->kind != JS_NUM || !nb->is_int || nb->inum < 0 || strlen(f->str) >= sizeof(o->fmt)) {
         js_free(meta);
         return -1;
     }
-    if (orig) {
-        if (ppz_lzma_decompress(blob + 16 + ml, bl, orig) ||
-            (int64_t)orig->len != nbytes->inum ||
-            undo_layout(js_get(o, "layout"), orig)) {
-            buf_free(orig);
+    snprintf(o->fmt, sizeof(o->fmt), "%s", f->str);
+    o->bytes = (uint64_t)nb->inum;
+    o->bin = blob + 16 + ml;
+    o->binlen = bl;
+    const Js *lay = js_get(og, "layout");
+    if (lay) {
+        const Js *k = js_get(lay, "kind"), *w = js_get(lay, "widths");
+        int64_t at = js_i64(js_get(lay, "at"), -1), rows = js_i64(js_get(lay, "rows"), -1);
+        if (lay->kind != JS_OBJ || !k || k->kind != JS_STR || strcmp(k->str, "dta-columns") ||
+            !w || w->kind != JS_ARR || !w->count || w->count > DTA_MAX_FIELDS || at < 0 || rows < 0) {
             js_free(meta);
             return -1;
         }
+        size_t *ws = malloc(w->count * sizeof(size_t));
+        if (!ws) { js_free(meta); return -1; }
+        for (size_t j = 0; j < w->count; j++) {
+            int64_t x = js_i64(&w->items[j], 0);
+            ws[j] = w->items[j].kind == JS_NUM && x >= 1 && x <= 2045 ? (size_t)x : 0;
+        }
+        int bad = lay_make(&o->L, (uint64_t)at, (uint64_t)rows, ws, w->count, o->bytes);
+        free(ws);
+        if (bad) { js_free(meta); return -1; }
+        o->has_lay = 1;
     }
-    snprintf(fmt, fcap, "%s", f->str);
-    if (meta_out) *meta_out = meta;
-    else js_free(meta);
+    o->meta = meta;
     return 1;
+}
+
+static void orig_close(Orig *o) { lay_free(&o->L); js_free(o->meta); o->meta = NULL; }
+
+typedef struct { Orig *o; uint64_t pos; uint8_t *dst; const uint8_t *cmp; int bad; } Emit;
+
+static int emit_sink(const uint8_t *p, size_t n, void *ctx)
+{
+    Emit *e = ctx;
+    if (e->pos + n > e->o->bytes) return -1;
+    if (lay_map(e->o->has_lay ? &e->o->L : NULL, e->pos, (uint8_t *)p, n, e->cmp, e->dst,
+                e->dst ? 1 : 2)) { e->bad = 1; return -1; }
+    e->pos += n;
+    return 0;
+}
+
+/* The stored stream decoded into dst (the original, o->bytes long), or
+ * compared with cmp. 0 only when every byte arrived and matched. */
+static int orig_emit(Orig *o, uint8_t *dst, const uint8_t *cmp)
+{
+    Emit e = { o, 0, dst, cmp, 0 };
+    uint64_t got = 0;
+    if (ppz_xz_unstream(o->bin, o->binlen, o->bytes, emit_sink, &e, &got)) return -1;
+    return got == o->bytes && !e.bad ? 0 : -1;
+}
+
+int ppz_original(const uint8_t *blob, size_t n, Buf *orig, char *fmt, size_t fcap, Js **meta_out)
+{
+    if (meta_out) *meta_out = NULL;
+    Orig o;
+    int k = orig_open(blob, n, &o);
+    if (k != 1) return k;
+    if (strlen(o.fmt) >= fcap) { orig_close(&o); return -1; }
+    if (orig) {
+        /* in memory: the same bound as every other decode */
+        buf_free(orig);
+        if (o.bytes > ((uint64_t)4 << 30)) { orig_close(&o); return -1; }
+        buf_need(orig, (size_t)o.bytes + 1);
+        if (orig_emit(&o, orig->data, NULL)) { buf_free(orig); orig_close(&o); return -1; }
+        orig->len = (size_t)o.bytes;
+    }
+    snprintf(fmt, fcap, "%s", o.fmt);
+    if (meta_out) { *meta_out = o.meta; o.meta = NULL; }
+    orig_close(&o);
+    return 1;
+}
+
+/* ----------------------------------------------- files bigger than memory */
+
+/* Files are mapped, not read: the system pages them in and out as needed,
+ * so a 30 GB .dta on a machine with 8 GB works the same as a small one. */
+
+int ppz_map(const char *path, Map *m, char *err, size_t cap)
+{
+    memset(m, 0, sizeof(*m));
+    m->fd = open(path, O_RDONLY);
+    struct stat st;
+    if (m->fd < 0 || fstat(m->fd, &st)) {
+        seterr(err, cap, "cannot read %s: %s", path, strerror(errno));
+        if (m->fd >= 0) close(m->fd);
+        return -1;
+    }
+    if (S_ISDIR(st.st_mode)) { seterr(err, cap, "%s is a directory, not a file", path); close(m->fd); return -1; }
+    m->n = (size_t)st.st_size;
+    if (m->n) {
+        void *p = mmap(NULL, m->n, PROT_READ, MAP_PRIVATE, m->fd, 0);
+        if (p == MAP_FAILED) { seterr(err, cap, "cannot map %s: %s", path, strerror(errno)); close(m->fd); return -1; }
+        m->p = p;
+    } else m->p = (const uint8_t *)"";
+    return 0;
+}
+
+void ppz_unmap(Map *m) { if (m->n) munmap((void *)m->p, m->n); if (m->fd >= 0) close(m->fd); m->fd = -1; }
+
+/* A temporary file beside dst, renamed into place by tmp_done. */
+static int tmp_open(const char *dst, char *tmp, size_t cap)
+{
+    snprintf(tmp, cap, "%s.partXXXXXX", dst);
+    int fd = mkstemp(tmp);
+    if (fd < 0) return -1;
+    ppz_tmp_register(tmp);
+    mode_t um = umask(0);
+    umask(um);
+    fchmod(fd, 0666 & ~um);
+    return fd;
+}
+
+static int tmp_done(int fd, const char *tmp, const char *dst, int ok)
+{
+    if (close(fd)) ok = 0;
+    if (ok && rename(tmp, dst)) ok = 0;
+    if (!ok) unlink(tmp);
+    ppz_tmp_forget(tmp);
+    return ok ? 0 : -1;
+}
+
+int ppz_stat_archive(const char *src, const char *fmt, const char *encoding, const char *dst,
+                     int verify, StatArchived *info, char *err, size_t cap)
+{
+    memset(info, 0, sizeof(*info));
+    Map m;
+    if (ppz_map(src, &m, err, cap)) return -1;
+    Buf schema;
+    buf_init(&schema);
+    int rc = -1, fd = -1;
+    char tmp[4200];
+    if (stat_scan(m.p, m.n, fmt, encoding, &schema, &info->loss, &info->rows, &info->cols, err, cap)) goto out;
+    if ((fd = tmp_open(dst, tmp, sizeof(tmp))) < 0) {
+        seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
+        goto out;
+    }
+    FileSink fs = { fd, 0 };
+    uint64_t lens[3];
+    int w = write_original(m.p, m.n, fmt, encoding, &schema, file_sink, &fs, lens);
+    if (w) {
+        seterr(err, cap, w == -2 ? "%s compresses to more than 4 GB, past what one archive holds"
+                                 : "cannot write %s", w == -2 ? src : dst);
+        tmp_done(fd, tmp, dst, 0);
+        goto out;
+    }
+    uint8_t h[16];
+    put_header(h, lens);
+    FileSink hs = { fd, 0 };
+    int ok = !file_sink(h, 16, &hs);
+    info->in_bytes = m.n;
+    info->out_bytes = fs.at;
+    if (ok && verify) {
+        /* the archive as written, decoded, against the source */
+        Map a;
+        ok = !ppz_map(tmp, &a, err, cap);
+        if (ok) {
+            Orig o;
+            ok = orig_open(a.p, a.n, &o) == 1 && !strcmp(o.fmt, fmt) && o.bytes == m.n &&
+                 !orig_emit(&o, NULL, m.p);
+            if (o.meta || o.L.w) orig_close(&o);
+            ppz_unmap(&a);
+        }
+        if (!ok) seterr(err, cap, "verification FAILED -- nothing written");
+    }
+    if (tmp_done(fd, tmp, dst, ok)) { if (ok) seterr(err, cap, "cannot write %s", dst); goto out; }
+    rc = 0;
+out:
+    buf_free(&schema);
+    ppz_unmap(&m);
+    return rc;
+}
+
+/* Restore an original archive to `dst`: the original bytes when dst has
+ * the archive's own format, else a translation. Returns 1 when the file is
+ * not an archive of an original (the caller decodes it as a table). */
+int ppz_stat_restore(const char *arc, const char *dst, StatRestored *info, char *err, size_t cap)
+{
+    memset(info, 0, sizeof(*info));
+    Map a;
+    if (ppz_map(arc, &a, err, cap)) return -1;
+    Orig o;
+    int k = a.n >= 16 ? orig_open(a.p, a.n, &o) : -1;
+    if (k == 0) { ppz_unmap(&a); return 1; }
+    if (k < 0) { ppz_unmap(&a); return 1; }
+    int rc = -1, fd = -1;
+    char tmp[4200], orig_tmp[4200];
+    const char *want = strcmp(dst, "-") ? ppz_format_of(dst) : "csv";
+    snprintf(info->fmt, sizeof(info->fmt), "%s", o.fmt);
+    info->packed = a.n;
+    info->bytes = o.bytes;
+    int same = !strcmp(want, o.fmt);
+    /* the original goes to dst itself, or to a temporary file to translate from */
+    const char *target = same ? dst : orig_tmp;
+    if (!same) snprintf(orig_tmp, sizeof(orig_tmp), "%s.orig", dst);
+    if (same && !strcmp(dst, "-")) { seterr(err, cap, "cannot write the original to standard output"); goto out; }
+    if ((fd = tmp_open(target, tmp, sizeof(tmp))) < 0) { seterr(err, cap, "cannot write %s: %s", target, strerror(errno)); goto out; }
+    int ok = 1;
+    uint8_t *out = NULL;
+    if (o.bytes) {
+        if (ftruncate(fd, (off_t)o.bytes)) {
+            seterr(err, cap, "no room for %s (%llu bytes)", target, (unsigned long long)o.bytes);
+            ok = 0;
+        } else {
+            void *p = mmap(NULL, (size_t)o.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (p == MAP_FAILED) { seterr(err, cap, "cannot map %s", target); ok = 0; }
+            else out = p;
+        }
+    }
+    if (ok && (o.bytes ? orig_emit(&o, out, NULL) : orig_emit(&o, (uint8_t *)"", NULL))) {
+        seterr(err, cap, "cannot read %s -- it is damaged", arc);
+        ok = 0;
+    }
+    if (out) { if (msync(out, (size_t)o.bytes, MS_SYNC)) ok = 0; munmap(out, (size_t)o.bytes); }
+    if (!same) {
+        /* translate from the restored original, then drop it */
+        if (ok && !tmp_done(fd, tmp, orig_tmp, 1)) {
+            fd = -1;
+            ppz_tmp_register(orig_tmp);
+            const Js *enc = js_get(js_get(o.meta, "original"), "encoding");
+            const char *e = enc && enc->kind == JS_STR ? enc->str : NULL;
+            Map m;
+            if (!ppz_map(orig_tmp, &m, err, cap)) {
+                info->translated = 1;
+                if (ppz_stat_name(want)) {
+                    Buf outb;
+                    info->stat_dst = 1;
+                    if (!stat_translate(m.p, m.n, o.fmt, e, want, &outb, &info->report,
+                                        &info->rows, &info->cols, err, cap)) {
+                        char t2[4200];
+                        int f2 = strcmp(dst, "-") ? tmp_open(dst, t2, sizeof(t2)) : 1;
+                        FileSink fs = { f2, 0 };
+                        int good = f2 >= 0 && !file_sink(outb.data, outb.len, &fs);
+                        if (f2 != 1 && f2 >= 0) good = !tmp_done(f2, t2, dst, good);
+                        if (good) rc = 0; else seterr(err, cap, "cannot write %s", dst);
+                        buf_free(&outb);
+                    }
+                } else if (!stat_stream(m.p, m.n, o.fmt, e, dst, &info->loss, &info->rows, &info->cols, err, cap))
+                    rc = 0;
+                ppz_unmap(&m);
+            }
+            unlink(orig_tmp);
+            ppz_tmp_forget(orig_tmp);
+        } else if (fd >= 0) { tmp_done(fd, tmp, orig_tmp, 0); fd = -1; }
+        goto out;
+    }
+    if (tmp_done(fd, tmp, dst, ok)) goto out;
+    rc = 0;
+out:
+    orig_close(&o);
+    ppz_unmap(&a);
+    return rc;
 }
 
 /* ------------------------------------- translation between stats formats */
