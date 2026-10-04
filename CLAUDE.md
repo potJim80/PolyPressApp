@@ -98,8 +98,13 @@ work/          all code. cd here before running anything:
                ppz_io.c table readers + writers + encodings, ppz_stream.c
                the PPZS block container, ppz_thread.c the worker threads,
                ppz_util.c buffers/lzma/JSON, ppz_stat.c Stata/SPSS/SAS,
-               ppz_main.c the CLI. build.sh links liblzma statically so
-               the binary runs anywhere
+               ppz_main.c the CLI. build.sh links xz and ReadStat in,
+               so the binary runs anywhere and builds with only cc
+  csrc/xz/     liblzma 5.8.3, vendored (0BSD), the 18 files raw LZMA2
+               needs; xz/build.sh makes csrc/.build/liblzma.a once and on
+               change. Its output is pinned to Homebrew's 5.8.3 by a test
+               in t_codec.c -- every archive before 2026-10-03 was made
+               with that library
   csrc/readstat/  ReadStat, vendored (MIT); readstat/build.sh makes
                csrc/.build/libreadstat.a once and on change
   csrc/tests/  the test suite, in C. run.sh builds and runs all of it
@@ -200,7 +205,7 @@ this; each one is a question already answered.
 ## Running things
 
 ```bash
-./csrc/build.sh                 # needs lzma.h: brew install xz
+./csrc/build.sh                 # needs only a C compiler (xz, ReadStat vendored)
 ./csrc/tests/run.sh             # the whole suite, C. Run after ANY change in
                                 # csrc/: round trips, never-worse, threads
                                 # vs serial byte identity, hostile and lying

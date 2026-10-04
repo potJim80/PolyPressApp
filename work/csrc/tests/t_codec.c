@@ -1094,6 +1094,52 @@ static void fuzz(int count, uint64_t seed)
     printf("   %d tables in %.1f s, %d with a failure\n", count, h_now() - t0, bad);
 }
 
+/* ------------------------------------------------- the xz in the program */
+
+/* xz is vendored (csrc/xz/). Every archive ever written must keep coming out
+ * the same, so its output is pinned here: these digests were taken from
+ * Homebrew's liblzma 5.8.3, the library every archive before 2026-10-03 was
+ * made with, and the vendored copy must match them exactly. A change here
+ * means xz changed under the codec -- find out why before updating them. */
+static uint64_t fnv64(const uint8_t *p, size_t n)
+{
+    uint64_t h = 1469598103934665603ull;
+    while (n--) { h ^= *p++; h *= 1099511628211ull; }
+    return h;
+}
+
+static void case_xz_pinned(void)
+{
+    h_section("xz output pinned to liblzma 5.8.3");
+    Buf in, o;
+    buf_init(&in); buf_init(&o);
+    uint32_t s = 7;
+    for (int i = 0; i < 200000; i++) {
+        s = s * 1103515245u + 12345u;
+        char line[64];
+        int k = snprintf(line, sizeof(line), "%u,%s,%u\n", i, (s >> 16) % 3 ? "THEFT" : "BATTERY", (s >> 8) % 1000);
+        buf_put(&in, line, (size_t)k);
+    }
+    static const struct { PpzXz kind; size_t len; uint64_t h; } W[] = {
+        { PPZ_XZ_PLAIN, 607512, 0xa9c43d126ab7ecabull },
+        { PPZ_XZ_INTS,  609145, 0x8be61af3392fbc25ull },
+        { PPZ_XZ_TEXT,  601029, 0x5863405612b88ef8ull },
+    };
+    for (size_t k = 0; k < 3; k++) {
+        CHECK(ppz_lzma_compress_as(in.data, in.len, &o, W[k].kind) == 0, "xz kind %zu failed", k);
+        CHECK(o.len == W[k].len && fnv64(o.data, o.len) == W[k].h,
+              "xz kind %zu: %zu bytes %016llx, pinned %zu %016llx", k, o.len,
+              (unsigned long long)fnv64(o.data, o.len), W[k].len, (unsigned long long)W[k].h);
+        Buf back;
+        buf_init(&back);
+        CHECK(ppz_lzma_decompress(o.data, o.len, &back) == 0 && back.len == in.len &&
+              !memcmp(back.data, in.data, in.len), "xz kind %zu does not decode back", k);
+        buf_free(&back);
+    }
+    CHECK(ppz_lzma_probe_len(in.data, in.len) == 788824, "probe %zu, pinned 788824", ppz_lzma_probe_len(in.data, in.len));
+    buf_free(&in); buf_free(&o);
+}
+
 int main(int argc, char **argv)
 {
     h_suite = "codec";
@@ -1101,6 +1147,7 @@ int main(int argc, char **argv)
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 1;
     setvbuf(stdout, NULL, _IOLBF, 0);
 
+    case_xz_pinned();
     cases_dtz();
     cases_fast();
     cases_one_pass();

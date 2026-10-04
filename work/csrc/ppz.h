@@ -1,7 +1,7 @@
 /* Polypress -- shared declarations.
  *
  * The codec, the table readers and writers, the streaming container and the
- * command line, with nothing but liblzma behind it. tests/ checks it against
+ * command line, with nothing but xz and ReadStat (both vendored) behind it. tests/ checks it against
  * its contract: every table round-trips cell for cell, hostile archives are
  * refused, and the threaded encoder writes exactly the bytes the serial one
  * does.

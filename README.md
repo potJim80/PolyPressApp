@@ -674,10 +674,10 @@ before the Python went).
 ./csrc/polypress info     data.csv.ppz       # plan, shape, what was reordered
 ```
 
-**Using it needs nothing installed.** liblzma and ReadStat are linked into
-the binary; iconv and zlib ship with macOS and every Linux. Building needs
-the liblzma headers (`brew install xz`, or `apt install liblzma-dev`) and,
-on Linux, zlib's (`apt install zlib1g-dev`).
+**Using it needs nothing installed.** xz (liblzma) and ReadStat are
+vendored C, compiled into the binary; iconv and zlib ship with macOS and
+every Linux. Building needs only a C compiler and, on Linux, zlib's headers
+(`apt install zlib1g-dev`).
 
 **What is still Python, and why:**
 

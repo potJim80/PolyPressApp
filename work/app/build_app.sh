@@ -7,7 +7,7 @@
 #
 # What goes in the bundle:
 #   Contents/MacOS/Polypress        the window (PolypressApp.swift)
-#   Contents/Resources/polypress    the program (csrc/, liblzma linked in)
+#   Contents/Resources/polypress    the program (csrc/, xz and ReadStat compiled in)
 #   Contents/Resources/page/        the page the window draws, with its fonts
 #   Contents/Resources/parquet.py   Parquet in and out, used only when the
 #                                   system Python has pyarrow

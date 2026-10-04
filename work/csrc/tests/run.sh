@@ -27,24 +27,12 @@ if [ "${SANITIZE:-0}" = "1" ]; then
     CFLAGS="-O1 -g -std=gnu99 -pthread -fsanitize=address,undefined -fno-omit-frame-pointer"
 fi
 INC=""
-LIB="-llzma"
-# the same lzma.h discovery as csrc/build.sh
-if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists liblzma 2>/dev/null; then
-    INC="$(pkg-config --cflags liblzma)"
-    LIB="$(pkg-config --libs liblzma)"
-else
-    for d in /opt/homebrew /usr/local /opt/local; do
-        if [ -f "$d/include/lzma.h" ]; then
-            INC="-I$d/include"
-            LIB="-L$d/lib -llzma"
-            break
-        fi
-    done
-fi
-if [ -z "$INC" ] && [ ! -f /usr/include/lzma.h ]; then
-    echo "run.sh: cannot find lzma.h (macOS: brew install xz)" >&2
-    exit 1
-fi
+# xz (liblzma), vendored like ReadStat and cached the same way
+cache="$src/.build/tests-$( echo "$CFLAGS" | cksum | cut -d' ' -f1)"
+# shellcheck disable=SC2086
+"$src/xz/build.sh" "$cache" $CFLAGS || { echo "BUILD FAILED: xz"; exit 1; }
+INC="-I$src/xz/liblzma/api"
+LIB="$cache/liblzma.a"
 [ "$(uname)" = "Darwin" ] && LIB="$LIB -liconv"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/ppz-tests-XXXXXX") || exit 1
