@@ -45,9 +45,8 @@ echo "building in $work"
 # ReadStat (Stata/SPSS/SAS): cached in csrc/.build, keyed on the flags, so a
 # sanitizer run builds its own copy
 # shellcheck disable=SC2086
-"$src/readstat/build.sh" "$src/.build/tests-$( echo "$CFLAGS" | cksum | cut -d' ' -f1)" $CFLAGS \
-    || { echo "BUILD FAILED: readstat"; exit 1; }
-LIB="$src/.build/tests-$( echo "$CFLAGS" | cksum | cut -d' ' -f1)/libreadstat.a $LIB -lz"
+"$src/readstat/build.sh" "$cache" $CFLAGS || { echo "BUILD FAILED: readstat"; exit 1; }
+LIB="$cache/libreadstat.a $LIB -lz"
 objs=""
 for f in $CODEC; do
     o="$work/${f%.c}.o"

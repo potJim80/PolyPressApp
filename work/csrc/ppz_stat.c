@@ -7,7 +7,9 @@
  * schema of everything ReadStat found in them. Restoring to the same format
  * gives the file back byte for byte; restoring or converting to CSV, TSV,
  * JSON or JSON Lines is a translation, and the program says what the
- * translation leaves behind (stat_loss_print).
+ * translation leaves behind (stat_loss_print). So is converting to another
+ * stats format (stat_translate, at the end of this file), which keeps far
+ * more and reports the rest the same way.
  *
  * Measured before this was built (2026-09-16 and 2026-10-01): behind a reader
  * the codec beat xz on the original by only 6% on NHANES DEMO_J.xpt -- the
@@ -153,7 +155,9 @@ typedef struct {
     char        werr[512];
 } Rd;
 
-#define SINK_ROWS 65536
+/* rows held before they go out: about 4M cells, whatever the width */
+#define SINK_CELLS ((size_t)4 << 20)
+static size_t sink_rows(const Rd *r) { return r->ncols && SINK_CELLS / r->ncols ? SINK_CELLS / r->ncols : 1; }
 
 static int grow_rows(Rd *r, size_t need)
 {
@@ -380,7 +384,7 @@ static int on_metadata(readstat_metadata_t *m, void *ctx)
         r->failed = 1; return READSTAT_HANDLER_ABORT;
     }
     int64_t rows = readstat_get_row_count(m);
-    if (r->sink && rows > SINK_ROWS) rows = SINK_ROWS;
+    if (r->sink && rows > (int64_t)sink_rows(r)) rows = (int64_t)sink_rows(r);
     if (rows > 0 && !r->nocells && grow_rows(r, (size_t)rows < ((size_t)1 << 24) ? (size_t)rows : ((size_t)1 << 24))) {
         r->failed = 1; return READSTAT_HANDLER_ABORT;
     }
@@ -488,7 +492,6 @@ static int flush_rows(Rd *r)
 {
     size_t rows = r->nrows - r->base;
     if (!valid_utf8((const char *)r->arena.data, r->arena.len)) { r->failed = 2; return -1; }
-    if (!r->sink_path) return 0;
     if (r->sink == (Writer *)1) {
         for (size_t j = 0; j < r->ncols; j++)
             if (!r->names[j] || !valid_utf8(r->names[j], strlen(r->names[j]))) { r->failed = 2; return -1; }
@@ -501,7 +504,7 @@ static int flush_rows(Rd *r)
     t.nrows = rows;
     t.names = r->names;
     t.cells = malloc((rows * r->ncols ? rows * r->ncols : 1) * sizeof(Str));
-    if (!t.cells) { r->failed = 1; return -1; }
+    if (!t.cells) { r->failed = 3; snprintf(r->werr, sizeof(r->werr), "out of memory"); return -1; }
     for (size_t k = 0; k < rows * r->ncols; k++)
         t.cells[k] = (Str){ r->len[k] ? (const char *)r->arena.data + r->off[k] : "", r->len[k] };
     int bad = writer_rows(r->sink, &t);
@@ -528,7 +531,7 @@ static int on_value(int obs, readstat_variable_t *var, readstat_value_t v, void 
         }
         return READSTAT_HANDLER_OK;
     }
-    if (r->sink && (size_t)obs >= r->nrows && r->nrows - r->base >= SINK_ROWS && flush_rows(r))
+    if (r->sink && (size_t)obs >= r->nrows && r->nrows - r->base >= sink_rows(r) && flush_rows(r))
         return READSTAT_HANDLER_ABORT;
     if ((size_t)obs >= r->nrows) {
         if (grow_rows(r, (size_t)obs + 1 - r->base)) { r->failed = 1; return READSTAT_HANDLER_ABORT; }
@@ -622,6 +625,36 @@ static void rd_free(Rd *r)
     free(r->sets);
 }
 
+/* Run ReadStat over data[0..n) with the handlers already set on p (which
+ * this frees): reading from memory, in the named encoding, errors into
+ * g_rs_err. The one place a format name picks a parser. */
+static readstat_error_t rs_run(readstat_parser_t *p, const uint8_t *data, size_t n, const char *fmt,
+                               const char *encoding, void *ctx)
+{
+    MemIo io = { data, n, 0 };
+    readstat_set_open_handler(p, mem_open);
+    readstat_set_close_handler(p, mem_close);
+    readstat_set_seek_handler(p, mem_seek);
+    readstat_set_read_handler(p, mem_read);
+    readstat_set_update_handler(p, mem_update);
+    readstat_set_io_ctx(p, &io);
+    readstat_set_error_handler(p, on_error);
+    if (encoding) readstat_set_file_character_encoding(p, encoding);
+    g_rs_err[0] = 0;
+    readstat_error_t e;
+    if (!strcmp(fmt, "dta"))                               e = readstat_parse_dta(p, "", ctx);
+    else if (!strcmp(fmt, "sav") || !strcmp(fmt, "zsav"))  e = readstat_parse_sav(p, "", ctx);
+    else if (!strcmp(fmt, "por"))                          e = readstat_parse_por(p, "", ctx);
+    else if (!strcmp(fmt, "sas7bdat"))                     e = readstat_parse_sas7bdat(p, "", ctx);
+    else if (!strcmp(fmt, "xpt"))                          e = readstat_parse_xport(p, "", ctx);
+    else e = READSTAT_ERROR_UNSUPPORTED_FILE_FORMAT_VERSION;
+    readstat_parser_free(p);
+    return e;
+}
+
+static const char ENC_MSG[] = "this %s file's text is not in the encoding it declares.\n"
+                              "Name the right one, e.g. --encoding windows-1252";
+
 /* Parse with the handlers above. mode 0: keep every cell (stat_read);
  * 1: keep nothing, only count and check (stat_scan); 2: send the rows to
  * `out` a block at a time (stat_stream). */
@@ -633,64 +666,26 @@ static int stat_parse(Rd *r, const uint8_t *data, size_t n, const char *fmt, con
     r->nocells = mode == 1;
     if (mode == 2) { r->sink = (Writer *)1; r->sink_path = out; }
     buf_init(&r->arena); buf_init(&r->cols); buf_init(&r->notes);
-    Rd *rp = r;
-
     readstat_parser_t *p = readstat_parser_init();
     if (!p) { seterr(err, cap, "out of memory"); return -1; }
-    MemIo io = { data, n, 0 };
-    readstat_set_open_handler(p, mem_open);
-    readstat_set_close_handler(p, mem_close);
-    readstat_set_seek_handler(p, mem_seek);
-    readstat_set_read_handler(p, mem_read);
-    readstat_set_update_handler(p, mem_update);
-    readstat_set_io_ctx(p, &io);
     readstat_set_metadata_handler(p, on_metadata);
     readstat_set_note_handler(p, on_note);
     readstat_set_variable_handler(p, on_variable);
     readstat_set_value_handler(p, on_value);
     readstat_set_value_label_handler(p, on_value_label);
-    readstat_set_error_handler(p, on_error);
-    if (encoding) readstat_set_file_character_encoding(p, encoding);
-
-    g_rs_err[0] = 0;
-    readstat_error_t e;
-    if (!strcmp(fmt, "dta"))                               e = readstat_parse_dta(p, "", rp);
-    else if (!strcmp(fmt, "sav") || !strcmp(fmt, "zsav"))  e = readstat_parse_sav(p, "", rp);
-    else if (!strcmp(fmt, "por"))                          e = readstat_parse_por(p, "", rp);
-    else if (!strcmp(fmt, "sas7bdat"))                     e = readstat_parse_sas7bdat(p, "", rp);
-    else if (!strcmp(fmt, "xpt"))                          e = readstat_parse_xport(p, "", rp);
-    else { readstat_parser_free(p); seterr(err, cap, "unknown format %s", fmt); return -1; }
-    readstat_parser_free(p);
+    readstat_error_t e = rs_run(p, data, n, fmt, encoding, r);
 
     const char *what = ppz_stat_name(fmt);
-    if (r->failed == 2) {
-        seterr(err, cap, "this %s file's text is not in the encoding it declares.\n"
-               "Name the right one, e.g. --encoding windows-1252", ppz_stat_name(fmt));
-        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
-        rd_free(r);
-        return -1;
-    }
-    if (r->failed == 3) {
-        seterr(err, cap, "%s", r->werr);
-        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
-        rd_free(r);
-        return -1;
-    }
+    if (r->failed == 2) { seterr(err, cap, ENC_MSG, what); goto fail; }
+    if (r->failed == 3) { seterr(err, cap, "%s", r->werr); goto fail; }
     if (e != READSTAT_OK || r->failed || !r->names) {
-        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
         if (r->failed && e == READSTAT_OK) seterr(err, cap, "out of memory reading the %s file", what);
         else seterr(err, cap, "cannot read this %s file: %s%s%s", what,
                     readstat_error_message(e), g_rs_err[0] ? " -- " : "", g_rs_err);
-        rd_free(r);
-        return -1;
+        goto fail;
     }
     for (size_t j = 0; j < r->ncols; j++)
-        if (!r->names[j]) {
-            seterr(err, cap, "cannot read this %s file: column %zu has no name", what, j + 1);
-            if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
-            rd_free(r);
-            return -1;
-        }
+        if (!r->names[j]) { seterr(err, cap, "cannot read this %s file: column %zu has no name", what, j + 1); goto fail; }
 
     /* strict UTF-8 out, as every other reader: a file whose strings did not
      * convert is refused, not repaired */
@@ -698,16 +693,15 @@ static int stat_parse(Rd *r, const uint8_t *data, size_t n, const char *fmt, con
     for (size_t j = 0; j < r->ncols && !bad; j++)
         bad = !valid_utf8(r->names[j], strlen(r->names[j]));
     if (!bad) bad = r->nocells ? r->bad_text : !valid_utf8((const char *)r->arena.data, r->arena.len);
-    if (bad) {
-        seterr(err, cap, "this %s file's text is not in the encoding it declares.\n"
-               "Name the right one, e.g. --encoding windows-1252", what);
-        if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
-        rd_free(r);
-        return -1;
-    }
+    if (bad) { seterr(err, cap, ENC_MSG, what); goto fail; }
 
     for (size_t j = 0; j < r->ncols; j++) if (r->tagged_col[j]) r->loss.tagged_cols++;
     return 0;
+fail:
+    if (r->sink && r->sink != (Writer *)1) writer_close(r->sink, 0, NULL, 0);
+    r->sink = NULL;
+    rd_free(r);
+    return -1;
 }
 
 /* The schema JSON for a parsed file. */
@@ -776,12 +770,10 @@ int stat_stream(const uint8_t *data, size_t n, const char *fmt, const char *enco
 {
     Rd r;
     if (stat_parse(&r, data, n, fmt, encoding, 2, out, err, cap)) return -1;
-    int rc = flush_rows(&r);
-    if (rc) seterr(err, cap, "%s", r.failed == 2 ? "text not in the declared encoding" : r.werr);
-    if (!rc && r.sink == (Writer *)1) rc = -1;
-    if (r.sink && r.sink != (Writer *)1) {
-        if (writer_close(r.sink, rc == 0, err, cap)) rc = -1;
-    } else if (!rc) seterr(err, cap, "nothing to write");
+    int rc = flush_rows(&r);                  /* the last rows; opens the writer if none did */
+    if (rc && r.failed == 2) seterr(err, cap, ENC_MSG, ppz_stat_name(fmt));
+    else if (rc) seterr(err, cap, "%s", r.werr);
+    if (r.sink && r.sink != (Writer *)1 && writer_close(r.sink, rc == 0, err, cap)) rc = -1;
     if (!rc) {
         if (loss) *loss = r.loss;
         if (rows) *rows = r.nrows;
@@ -821,9 +813,11 @@ void stat_loss_print(FILE *f, const StatLoss *l, const char *src_fmt, const char
 
 /* ------------------------------------------------------------- archives */
 
-/* PPZ2, with metadata {"original":{"format":F,"bytes":N[,"encoding":E]},
- * "schema":{...}}, the original file as the binary stream and an empty text stream. A build
+/* PPZ2, with metadata {"original":{"format":F,"bytes":N[,"encoding":E]
+ * [,"layout":{...}]},"schema":{...}}, the original file (or a permutation
+ * of it, the layout) as the binary stream and an empty text stream. A build
  * from before this refuses such an archive: it has no "columns". */
+
 /* ------------------------------------------- Stata data, column by column */
 
 /* A Stata 117-119 file stores its observations as fixed-width rows between
@@ -896,34 +890,43 @@ static size_t dta_layout(const uint8_t *d, size_t n, const Js *sc, size_t *rows,
  * stored position inside that region belongs to column j, row i, byte b of
  * the field, which sits at at + i*rw + off[j] + b in the original. Every
  * reader and writer of these archives goes through lay_map, a piece at a
- * time, so a file bigger than memory never has to be held whole. */
+ * time, so a file bigger than memory never has to be held whole.
+ *
+ * Column by column over the WHOLE region reads it once per column -- fine
+ * from memory, one disk pass per column for a file bigger than it. So a
+ * region over 1 GB is rewritten in blocks of rows (about 64 MB each), every
+ * block column by column on its own; a block fits in memory and is read
+ * once. That is a different layout kind ("dta-column-blocks"), which builds
+ * from before it refuse rather than misread. The limits are constants, not
+ * the machine's memory, so the same file always gives the same archive. */
+uint64_t ppz_lay_whole_max = (uint64_t)1 << 30;     /* variables only so the tests */
+uint64_t ppz_lay_block_bytes = (uint64_t)64 << 20;  /* can reach blocks on small files */
+
 typedef struct {
     uint64_t  at, end, rows, rw;
-    size_t    nw, cur;
+    uint64_t  block;                 /* rows per block; == rows when whole */
+    size_t    nw;
     size_t   *w, *off;
-    uint64_t *cs;                    /* column j starts at cs[j] in the region */
 } Lay;
 
-static void lay_free(Lay *L) { if (L) { free(L->w); free(L->off); free(L->cs); memset(L, 0, sizeof(*L)); } }
+static void lay_free(Lay *L) { if (L) { free(L->w); free(L->off); memset(L, 0, sizeof(*L)); } }
 
-static int lay_make(Lay *L, uint64_t at, uint64_t rows, const size_t *w, size_t nw, uint64_t total)
+static int lay_make(Lay *L, uint64_t at, uint64_t rows, uint64_t block, const size_t *w, size_t nw,
+                    uint64_t total)
 {
     memset(L, 0, sizeof(*L));
     if (!nw || nw > DTA_MAX_FIELDS) return -1;
     L->w = malloc(nw * sizeof(size_t));
     L->off = malloc(nw * sizeof(size_t));
-    L->cs = malloc((nw + 1) * sizeof(uint64_t));
-    if (!L->w || !L->off || !L->cs) { lay_free(L); return -1; }
+    if (!L->w || !L->off) { lay_free(L); return -1; }
     uint64_t rw = 0;
     for (size_t j = 0; j < nw; j++) {
         if (w[j] < 1 || w[j] > 2045) { lay_free(L); return -1; }
         L->w[j] = w[j]; L->off[j] = (size_t)rw; rw += w[j];
     }
-    if (at > total || rows > (total - at) / rw) { lay_free(L); return -1; }
-    uint64_t c = 0;
-    for (size_t j = 0; j < nw; j++) { L->cs[j] = c; c += rows * w[j]; }
-    L->cs[nw] = c;
+    if (at > total || rows > (total - at) / rw || !block || block > rows + !rows) { lay_free(L); return -1; }
     L->at = at; L->rows = rows; L->rw = rw; L->nw = nw;
+    L->block = block;
     L->end = at + rows * rw;
     return 0;
 }
@@ -931,51 +934,59 @@ static int lay_make(Lay *L, uint64_t at, uint64_t rows, const size_t *w, size_t 
 /* mode 0: buf = stored bytes [p, p+len), gathered from the original `src`;
  * 1: scatter buf into the original at `dst`; 2: compare buf with `src`,
  * -1 on the first difference. L NULL: the stream is the file as it is. */
-static int lay_map(Lay *L, uint64_t p, uint8_t *buf, size_t len, const uint8_t *src, uint8_t *dst, int mode)
+static int lay_map(const Lay *L, uint64_t p, uint8_t *buf, size_t len, const uint8_t *src, uint8_t *dst, int mode)
 {
     size_t k = 0;
     while (k < len) {
-        uint64_t q = p + k, o;
-        size_t run = len - k;
+        uint64_t q = p + k;
         if (!L || q < L->at || q >= L->end) {
-            o = q;
+            size_t run = len - k;
             if (L && q < L->at && L->at - q < run) run = (size_t)(L->at - q);
-        } else {
-            uint64_t d = q - L->at;
-            size_t j = L->cur;
-            if (d < L->cs[j] || d >= L->cs[j + 1]) {
-                size_t lo = 0, hi = L->nw;           /* last j with cs[j] <= d */
-                while (hi - lo > 1) { size_t m = (lo + hi) / 2; if (L->cs[m] <= d) lo = m; else hi = m; }
-                j = L->cur = lo;
-            }
-            uint64_t idx = d - L->cs[j];
-            uint64_t i = idx / L->w[j];
-            size_t b = (size_t)(idx % L->w[j]);
-            o = L->at + i * L->rw + L->off[j] + b;
-            if (L->w[j] - b < run) run = L->w[j] - b;
+            if (mode == 0) memcpy(buf + k, src + q, run);
+            else if (mode == 1) memcpy(dst + q, buf + k, run);
+            else if (memcmp(buf + k, src + q, run)) return -1;
+            k += run;
+            continue;
         }
-        if (mode == 0) memcpy(buf + k, src + o, run);
-        else if (mode == 1) memcpy(dst + o, buf + k, run);
-        else if (memcmp(buf + k, src + o, run)) return -1;
-        k += run;
+        /* which block, which column of it, which row and byte */
+        uint64_t d = q - L->at, bspan = L->block * L->rw;
+        uint64_t b = d / bspan, in = d - b * bspan;
+        uint64_t nb = L->rows - b * L->block < L->block ? L->rows - b * L->block : L->block;
+        size_t lo = 0, hi = L->nw;              /* last j with nb*off[j] <= in */
+        while (hi - lo > 1) { size_t m = (lo + hi) / 2; if (nb * L->off[m] <= in) lo = m; else hi = m; }
+        size_t j = lo, w = L->w[j];
+        uint64_t idx = in - nb * L->off[j], i = idx / w;
+        size_t bb = (size_t)(idx % w);
+        uint64_t base = L->at + b * bspan + L->off[j];
+        /* then field by field down the column, stepping a row at a time */
+        while (k < len && i < nb) {
+            size_t run = w - bb < len - k ? w - bb : len - k;
+            uint64_t o = base + i * L->rw + bb;
+            if (mode == 0) memcpy(buf + k, src + o, run);
+            else if (mode == 1) memcpy(dst + o, buf + k, run);
+            else if (memcmp(buf + k, src + o, run)) return -1;
+            k += run;
+            bb = 0;
+            i++;
+        }
     }
     return 0;
 }
 
 /* The metadata for an archive of data[0..n): {"original":{...},"schema":...},
  * and the Stata column layout when the file has the expected one. */
-static int original_meta(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
-                         const Buf *schema, Buf *meta, Lay *L, int *has_lay)
+static void original_meta(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
+                          const Buf *schema, Buf *meta, Lay *L, int *has_lay)
 {
     char nb[32];
     *has_lay = 0;
     buf_init(meta);
-    buf_put(meta, "{\"original\":{\"format\":", 22);
+    put_s(meta, "{\"original\":{\"format\":");
     ppz_json_str(meta, fmt, strlen(fmt));
-    buf_put(meta, ",\"bytes\":", 9);
+    put_s(meta, ",\"bytes\":");
     buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", n));
     if (encoding) {
-        buf_put(meta, ",\"encoding\":", 12);
+        put_s(meta, ",\"encoding\":");
         ppz_json_str(meta, encoding, strlen(encoding));
     }
     if (!strcmp(fmt, "dta")) {
@@ -983,12 +994,22 @@ static int original_meta(const uint8_t *data, size_t n, const char *fmt, const c
         size_t rows = 0, nw = 0, *w = NULL;
         size_t at = sc ? dta_layout(data, n, sc, &rows, &w, &nw) : 0;
         js_free(sc);
-        if (at && !lay_make(L, at, rows, w, nw, n)) {
+        uint64_t rw = 0;
+        for (size_t j = 0; j < nw; j++) rw += w[j];
+        uint64_t block = rows;
+        if (rw && (uint64_t)rows * rw > ppz_lay_whole_max)
+            block = ppz_lay_block_bytes / rw ? ppz_lay_block_bytes / rw : 1;
+        if (at && !lay_make(L, at, rows, block, w, nw, n)) {
             *has_lay = 1;
-            put_s(meta, ",\"layout\":{\"kind\":\"dta-columns\",\"at\":");
+            put_s(meta, block == rows ? ",\"layout\":{\"kind\":\"dta-columns\",\"at\":"
+                                      : ",\"layout\":{\"kind\":\"dta-column-blocks\",\"at\":");
             buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", at));
             put_s(meta, ",\"rows\":");
             buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%zu", rows));
+            if (block != rows) {
+                put_s(meta, ",\"block\":");
+                buf_put(meta, nb, (size_t)snprintf(nb, sizeof(nb), "%llu", (unsigned long long)block));
+            }
             put_s(meta, ",\"widths\":[");
             for (size_t j = 0; j < nw; j++) {
                 if (j) buf_putc(meta, ',');
@@ -998,13 +1019,12 @@ static int original_meta(const uint8_t *data, size_t n, const char *fmt, const c
         }
         free(w);
     }
-    buf_put(meta, "},\"schema\":", 11);
+    put_s(meta, "},\"schema\":");
     buf_put(meta, schema->data, schema->len);
     buf_putc(meta, '}');
-    return 0;
 }
 
-typedef struct { const uint8_t *d; uint64_t n, pos; Lay *L; } Gather;
+typedef struct { const uint8_t *d; uint64_t n, pos; const Lay *L; } Gather;
 
 static size_t gather_src(uint8_t *buf, size_t cap, void *ctx)
 {
@@ -1014,8 +1034,6 @@ static size_t gather_src(uint8_t *buf, size_t cap, void *ctx)
     g->pos += k;
     return k;
 }
-
-static int buf_sink(const uint8_t *p, size_t n, void *ctx) { buf_put((Buf *)ctx, p, n); return 0; }
 
 typedef struct { int fd; uint64_t at; } FileSink;
 
@@ -1038,7 +1056,8 @@ static void put_header(uint8_t h[16], const uint64_t lens[3])
 }
 
 /* Write an archive of data[0..n) through `sink`: 16 header bytes (zeros,
- * for the caller to fill from lens), then the three streams. */
+ * for the caller to fill from lens), then the three streams. -2 when a
+ * stream is past the 32-bit length the header holds. */
 static int write_original(const uint8_t *data, size_t n, const char *fmt, const char *encoding,
                           const Buf *schema, int (*sink)(const uint8_t *, size_t, void *), void *ctx,
                           uint64_t lens[3])
@@ -1065,6 +1084,9 @@ done:
     return rc;
 }
 
+static int buf_sink(const uint8_t *p, size_t n, void *ctx) { buf_put((Buf *)ctx, p, n); return 0; }
+
+/* The archive in memory -- for the tests; the program streams to disk. */
 int ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
                         const char *encoding, const Buf *schema, Buf *out)
 {
@@ -1085,26 +1107,25 @@ typedef struct {
     size_t    binlen;
     Lay       L;
     int       has_lay;
+    int       is_original;     /* says it is one, whether or not it checks out */
     Js       *meta;
 } Orig;
 
-/* 1 an original archive, 0 a table archive, -1 damaged */
+/* 1 an original archive, 0 a table archive, -1 not an archive or damaged */
 static int orig_open(const uint8_t *blob, size_t n, Orig *o)
 {
     memset(o, 0, sizeof(*o));
     Js *meta = ppz_meta(blob, n);
     if (!meta) return -1;
-    size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) | ((size_t)blob[6] << 8) | blob[7];
-    size_t bl = ((size_t)blob[8] << 24) | ((size_t)blob[9] << 16) | ((size_t)blob[10] << 8) | blob[11];
-    if (bl > n - 16 - ml) { js_free(meta); return -1; }
     const Js *og = js_get(meta, "original");
     if (!og) { js_free(meta); return 0; }
+    o->is_original = 1;
+    size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) | ((size_t)blob[6] << 8) | blob[7];
+    size_t bl = ((size_t)blob[8] << 24) | ((size_t)blob[9] << 16) | ((size_t)blob[10] << 8) | blob[11];
     const Js *f = js_get(og, "format"), *nb = js_get(og, "bytes");
-    if (og->kind != JS_OBJ || !f || f->kind != JS_STR || !ppz_stat_name(f->str) ||
-        !nb || nb->kind != JS_NUM || !nb->is_int || nb->inum < 0 || strlen(f->str) >= sizeof(o->fmt)) {
-        js_free(meta);
-        return -1;
-    }
+    if (bl > n - 16 - ml || og->kind != JS_OBJ || !f || f->kind != JS_STR || !ppz_stat_name(f->str) ||
+        !nb || nb->kind != JS_NUM || !nb->is_int || nb->inum < 0 || strlen(f->str) >= sizeof(o->fmt))
+        goto bad;
     snprintf(o->fmt, sizeof(o->fmt), "%s", f->str);
     o->bytes = (uint64_t)nb->inum;
     o->bin = blob + 16 + ml;
@@ -1113,48 +1134,53 @@ static int orig_open(const uint8_t *blob, size_t n, Orig *o)
     if (lay) {
         const Js *k = js_get(lay, "kind"), *w = js_get(lay, "widths");
         int64_t at = js_i64(js_get(lay, "at"), -1), rows = js_i64(js_get(lay, "rows"), -1);
-        if (lay->kind != JS_OBJ || !k || k->kind != JS_STR || strcmp(k->str, "dta-columns") ||
-            !w || w->kind != JS_ARR || !w->count || w->count > DTA_MAX_FIELDS || at < 0 || rows < 0) {
-            js_free(meta);
-            return -1;
-        }
+        int blocks = k && k->kind == JS_STR && !strcmp(k->str, "dta-column-blocks");
+        int64_t block = blocks ? js_i64(js_get(lay, "block"), -1) : rows;
+        if (lay->kind != JS_OBJ || !k || k->kind != JS_STR ||
+            (strcmp(k->str, "dta-columns") && !blocks) ||
+            !w || w->kind != JS_ARR || !w->count || w->count > DTA_MAX_FIELDS || at < 0 || rows < 0 ||
+            block < (rows ? 1 : 0))
+            goto bad;
         size_t *ws = malloc(w->count * sizeof(size_t));
-        if (!ws) { js_free(meta); return -1; }
+        if (!ws) goto bad;
         for (size_t j = 0; j < w->count; j++) {
             int64_t x = js_i64(&w->items[j], 0);
             ws[j] = w->items[j].kind == JS_NUM && x >= 1 && x <= 2045 ? (size_t)x : 0;
         }
-        int bad = lay_make(&o->L, (uint64_t)at, (uint64_t)rows, ws, w->count, o->bytes);
+        int no = lay_make(&o->L, (uint64_t)at, (uint64_t)rows, rows ? (uint64_t)block : 1, ws, w->count, o->bytes);
         free(ws);
-        if (bad) { js_free(meta); return -1; }
+        if (no) goto bad;
         o->has_lay = 1;
     }
     o->meta = meta;
     return 1;
+bad:
+    js_free(meta);
+    return -1;
 }
 
 static void orig_close(Orig *o) { lay_free(&o->L); js_free(o->meta); o->meta = NULL; }
 
-typedef struct { Orig *o; uint64_t pos; uint8_t *dst; const uint8_t *cmp; int bad; } Emit;
+typedef struct { const Orig *o; uint64_t pos; uint8_t *dst; const uint8_t *cmp; } Emit;
 
 static int emit_sink(const uint8_t *p, size_t n, void *ctx)
 {
     Emit *e = ctx;
-    if (e->pos + n > e->o->bytes) return -1;
-    if (lay_map(e->o->has_lay ? &e->o->L : NULL, e->pos, (uint8_t *)p, n, e->cmp, e->dst,
-                e->dst ? 1 : 2)) { e->bad = 1; return -1; }
+    if (lay_map(e->o->has_lay ? &e->o->L : NULL, e->pos, (uint8_t *)p, n, e->cmp, e->dst, e->dst ? 1 : 2))
+        return -1;
     e->pos += n;
     return 0;
 }
 
 /* The stored stream decoded into dst (the original, o->bytes long), or
- * compared with cmp. 0 only when every byte arrived and matched. */
-static int orig_emit(Orig *o, uint8_t *dst, const uint8_t *cmp)
+ * compared with cmp. 0 only when every byte arrived and matched; the
+ * decoder's limit keeps every write inside the o->bytes the caller sized. */
+static int orig_emit(const Orig *o, uint8_t *dst, const uint8_t *cmp)
 {
-    Emit e = { o, 0, dst, cmp, 0 };
+    Emit e = { o, 0, dst, cmp };
     uint64_t got = 0;
     if (ppz_xz_unstream(o->bin, o->binlen, o->bytes, emit_sink, &e, &got)) return -1;
-    return got == o->bytes && !e.bad ? 0 : -1;
+    return got == o->bytes ? 0 : -1;
 }
 
 int ppz_original(const uint8_t *blob, size_t n, Buf *orig, char *fmt, size_t fcap, Js **meta_out)
@@ -1191,22 +1217,25 @@ int ppz_map(const char *path, Map *m, char *err, size_t cap)
     if (m->fd < 0 || fstat(m->fd, &st)) {
         seterr(err, cap, "cannot read %s: %s", path, strerror(errno));
         if (m->fd >= 0) close(m->fd);
+        m->fd = -1;
         return -1;
     }
-    if (S_ISDIR(st.st_mode)) { seterr(err, cap, "%s is a directory, not a file", path); close(m->fd); return -1; }
+    if (S_ISDIR(st.st_mode)) { seterr(err, cap, "%s is a directory, not a file", path); close(m->fd); m->fd = -1; return -1; }
     m->n = (size_t)st.st_size;
     if (m->n) {
         void *p = mmap(NULL, m->n, PROT_READ, MAP_PRIVATE, m->fd, 0);
-        if (p == MAP_FAILED) { seterr(err, cap, "cannot map %s: %s", path, strerror(errno)); close(m->fd); return -1; }
+        if (p == MAP_FAILED) { seterr(err, cap, "cannot map %s: %s", path, strerror(errno)); close(m->fd); m->fd = -1; return -1; }
         m->p = p;
     } else m->p = (const uint8_t *)"";
     return 0;
 }
 
-void ppz_unmap(Map *m) { if (m->n) munmap((void *)m->p, m->n); if (m->fd >= 0) close(m->fd); m->fd = -1; }
+void ppz_unmap(Map *m) { if (m->n) munmap((void *)m->p, m->n); if (m->fd >= 0) close(m->fd); m->fd = -1; m->n = 0; }
 
-/* A temporary file beside dst, renamed into place by tmp_done. */
-static int tmp_open(const char *dst, char *tmp, size_t cap)
+/* A temporary file named after dst (dst.partXXXXXX, so it never clobbers
+ * anything), registered so an interrupt removes it. ppz_tmp_done renames it
+ * to dst when ok, else removes it. */
+int ppz_tmp_open(const char *dst, char *tmp, size_t cap)
 {
     snprintf(tmp, cap, "%s.partXXXXXX", dst);
     int fd = mkstemp(tmp);
@@ -1218,11 +1247,11 @@ static int tmp_open(const char *dst, char *tmp, size_t cap)
     return fd;
 }
 
-static int tmp_done(int fd, const char *tmp, const char *dst, int ok)
+int ppz_tmp_done(int fd, const char *tmp, const char *dst, int ok)
 {
     if (close(fd)) ok = 0;
-    if (ok && rename(tmp, dst)) ok = 0;
-    if (!ok) unlink(tmp);
+    if (ok && dst && rename(tmp, dst)) ok = 0;
+    if (!ok || !dst) unlink(tmp);
     ppz_tmp_forget(tmp);
     return ok ? 0 : -1;
 }
@@ -1235,42 +1264,44 @@ int ppz_stat_archive(const char *src, const char *fmt, const char *encoding, con
     if (ppz_map(src, &m, err, cap)) return -1;
     Buf schema;
     buf_init(&schema);
-    int rc = -1, fd = -1;
+    int rc = -1, fd;
     char tmp[4200];
     if (stat_scan(m.p, m.n, fmt, encoding, &schema, &info->loss, &info->rows, &info->cols, err, cap)) goto out;
-    if ((fd = tmp_open(dst, tmp, sizeof(tmp))) < 0) {
+    if ((fd = ppz_tmp_open(dst, tmp, sizeof(tmp))) < 0) {
         seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
         goto out;
     }
     FileSink fs = { fd, 0 };
     uint64_t lens[3];
     int w = write_original(m.p, m.n, fmt, encoding, &schema, file_sink, &fs, lens);
-    if (w) {
-        seterr(err, cap, w == -2 ? "%s compresses to more than 4 GB, past what one archive holds"
-                                 : "cannot write %s", w == -2 ? src : dst);
-        tmp_done(fd, tmp, dst, 0);
-        goto out;
-    }
+    if (w == -2) seterr(err, cap, "it compresses to more than 4 GB, past what one archive holds");
+    else if (w) seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
     uint8_t h[16];
-    put_header(h, lens);
     FileSink hs = { fd, 0 };
-    int ok = !file_sink(h, 16, &hs);
+    int ok = !w;
+    if (ok) {
+        put_header(h, lens);
+        if (file_sink(h, 16, &hs)) { seterr(err, cap, "cannot write %s: %s", dst, strerror(errno)); ok = 0; }
+    }
     info->in_bytes = m.n;
     info->out_bytes = fs.at;
     if (ok && verify) {
         /* the archive as written, decoded, against the source */
         Map a;
+        Orig o;
         ok = !ppz_map(tmp, &a, err, cap);
         if (ok) {
-            Orig o;
             ok = orig_open(a.p, a.n, &o) == 1 && !strcmp(o.fmt, fmt) && o.bytes == m.n &&
                  !orig_emit(&o, NULL, m.p);
-            if (o.meta || o.L.w) orig_close(&o);
+            orig_close(&o);
             ppz_unmap(&a);
         }
         if (!ok) seterr(err, cap, "verification FAILED -- nothing written");
     }
-    if (tmp_done(fd, tmp, dst, ok)) { if (ok) seterr(err, cap, "cannot write %s", dst); goto out; }
+    if (ppz_tmp_done(fd, tmp, dst, ok)) {
+        if (ok) seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
+        goto out;
+    }
     rc = 0;
 out:
     buf_free(&schema);
@@ -1278,82 +1309,85 @@ out:
     return rc;
 }
 
-/* Restore an original archive to `dst`: the original bytes when dst has
- * the archive's own format, else a translation. Returns 1 when the file is
- * not an archive of an original (the caller decodes it as a table). */
+/* Restore an original archive to `dst`: the original bytes when dst has the
+ * archive's own format; otherwise the original is decoded into a temporary
+ * file, translated from its mapping, and removed. A translation to another
+ * stats format comes back in info->out for the caller to write; one to a
+ * table format is written to dst here, a block of rows at a time. Returns
+ * 1 when the file is not an archive of an original at all (the caller
+ * decodes it as a table), -1 with err set when it is one and fails. */
 int ppz_stat_restore(const char *arc, const char *dst, StatRestored *info, char *err, size_t cap)
 {
     memset(info, 0, sizeof(*info));
+    buf_init(&info->out);
+    buf_init(&info->report);
     Map a;
-    if (ppz_map(arc, &a, err, cap)) return -1;
+    if (ppz_map(arc, &a, err, cap)) return 1;
     Orig o;
+    memset(&o, 0, sizeof(o));
     int k = a.n >= 16 ? orig_open(a.p, a.n, &o) : -1;
-    if (k == 0) { ppz_unmap(&a); return 1; }
-    if (k < 0) { ppz_unmap(&a); return 1; }
-    int rc = -1, fd = -1;
-    char tmp[4200], orig_tmp[4200];
-    const char *want = strcmp(dst, "-") ? ppz_format_of(dst) : "csv";
+    if (k != 1) {
+        int was = k < 0 && o.is_original;
+        ppz_unmap(&a);
+        if (!was) return 1;
+        seterr(err, cap, "cannot read %s -- it is damaged", arc);
+        return -1;
+    }
+    int rc = -1, fd;
+    char tmp[4200];
+    const char *want = ppz_format_of(dst);
     snprintf(info->fmt, sizeof(info->fmt), "%s", o.fmt);
     info->packed = a.n;
     info->bytes = o.bytes;
     int same = !strcmp(want, o.fmt);
-    /* the original goes to dst itself, or to a temporary file to translate from */
-    const char *target = same ? dst : orig_tmp;
-    if (!same) snprintf(orig_tmp, sizeof(orig_tmp), "%s.orig", dst);
-    if (same && !strcmp(dst, "-")) { seterr(err, cap, "cannot write the original to standard output"); goto out; }
-    if ((fd = tmp_open(target, tmp, sizeof(tmp))) < 0) { seterr(err, cap, "cannot write %s: %s", target, strerror(errno)); goto out; }
-    int ok = 1;
+    char base[4096];
+    const char *td = getenv("TMPDIR");
+    snprintf(base, sizeof(base), "%s/polypress-restore", td && *td ? td : "/tmp");
+    if ((fd = ppz_tmp_open(strcmp(dst, "-") ? dst : base, tmp, sizeof(tmp))) < 0) {
+        seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
+        goto out;
+    }
     uint8_t *out = NULL;
+    int ok = 1;
     if (o.bytes) {
         if (ftruncate(fd, (off_t)o.bytes)) {
-            seterr(err, cap, "no room for %s (%llu bytes)", target, (unsigned long long)o.bytes);
+            seterr(err, cap, "no room for %s (%llu bytes)", dst, (unsigned long long)o.bytes);
             ok = 0;
         } else {
             void *p = mmap(NULL, (size_t)o.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if (p == MAP_FAILED) { seterr(err, cap, "cannot map %s", target); ok = 0; }
+            if (p == MAP_FAILED) { seterr(err, cap, "cannot map %s: %s", tmp, strerror(errno)); ok = 0; }
             else out = p;
         }
     }
-    if (ok && (o.bytes ? orig_emit(&o, out, NULL) : orig_emit(&o, (uint8_t *)"", NULL))) {
+    if (ok && orig_emit(&o, out ? out : (uint8_t *)"", NULL)) {
         seterr(err, cap, "cannot read %s -- it is damaged", arc);
         ok = 0;
     }
-    if (out) { if (msync(out, (size_t)o.bytes, MS_SYNC)) ok = 0; munmap(out, (size_t)o.bytes); }
-    if (!same) {
-        /* translate from the restored original, then drop it */
-        if (ok && !tmp_done(fd, tmp, orig_tmp, 1)) {
-            fd = -1;
-            ppz_tmp_register(orig_tmp);
-            const Js *enc = js_get(js_get(o.meta, "original"), "encoding");
-            const char *e = enc && enc->kind == JS_STR ? enc->str : NULL;
-            Map m;
-            if (!ppz_map(orig_tmp, &m, err, cap)) {
-                info->translated = 1;
-                if (ppz_stat_name(want)) {
-                    Buf outb;
-                    info->stat_dst = 1;
-                    if (!stat_translate(m.p, m.n, o.fmt, e, want, &outb, &info->report,
-                                        &info->rows, &info->cols, err, cap)) {
-                        char t2[4200];
-                        int f2 = strcmp(dst, "-") ? tmp_open(dst, t2, sizeof(t2)) : 1;
-                        FileSink fs = { f2, 0 };
-                        int good = f2 >= 0 && !file_sink(outb.data, outb.len, &fs);
-                        if (f2 != 1 && f2 >= 0) good = !tmp_done(f2, t2, dst, good);
-                        if (good) rc = 0; else seterr(err, cap, "cannot write %s", dst);
-                        buf_free(&outb);
-                    }
-                } else if (!stat_stream(m.p, m.n, o.fmt, e, dst, &info->loss, &info->rows, &info->cols, err, cap))
-                    rc = 0;
-                ppz_unmap(&m);
-            }
-            unlink(orig_tmp);
-            ppz_tmp_forget(orig_tmp);
-        } else if (fd >= 0) { tmp_done(fd, tmp, orig_tmp, 0); fd = -1; }
-        goto out;
+    if (ok && !same) {
+        /* translate straight from the decoded original, then drop it */
+        const Js *enc = js_get(js_get(o.meta, "original"), "encoding");
+        const char *e = enc && enc->kind == JS_STR ? enc->str : NULL;
+        const uint8_t *src = out ? out : (const uint8_t *)"";
+        info->translated = 1;
+        if (ppz_stat_name(want)) {
+            info->stat_dst = 1;
+            ok = !stat_translate(src, (size_t)o.bytes, o.fmt, e, want, &info->out, &info->report,
+                                 &info->rows, &info->cols, err, cap);
+        } else
+            ok = !stat_stream(src, (size_t)o.bytes, o.fmt, e, dst, &info->loss, &info->rows, &info->cols, err, cap);
     }
-    if (tmp_done(fd, tmp, dst, ok)) goto out;
-    rc = 0;
+    if (out) {
+        if (same && ok && msync(out, (size_t)o.bytes, MS_SYNC)) {
+            seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
+            ok = 0;
+        }
+        munmap(out, (size_t)o.bytes);
+    }
+    int bad = ppz_tmp_done(fd, tmp, same ? dst : NULL, ok);
+    if (bad && ok) seterr(err, cap, "cannot write %s: %s", dst, strerror(errno));
+    rc = ok && !bad ? 0 : -1;
 out:
+    if (rc) { buf_free(&info->out); buf_free(&info->report); }
     orig_close(&o);
     ppz_unmap(&a);
     return rc;
@@ -1552,6 +1586,7 @@ static int s_value(int obs, readstat_variable_t *var, readstat_value_t v, void *
         c->off[obs] = f->arena.len;
         c->len[obs] = n;
         if (n) buf_put(&f->arena, s, n);
+        buf_putc(&f->arena, 0);           /* so a cell can go to ReadStat as it is */
     } else if (readstat_value_is_tagged_missing(v)) {
         c->tag[obs] = readstat_value_tag(v);
         if (c->tag[obs] < 2) c->tag[obs] = 1;
@@ -1597,29 +1632,12 @@ static int sfile_read(const uint8_t *data, size_t n, const char *fmt, const char
     buf_init(&f->arena);
     readstat_parser_t *p = readstat_parser_init();
     if (!p) { seterr(err, cap, "out of memory"); return -1; }
-    MemIo io = { data, n, 0 };
-    readstat_set_open_handler(p, mem_open);
-    readstat_set_close_handler(p, mem_close);
-    readstat_set_seek_handler(p, mem_seek);
-    readstat_set_read_handler(p, mem_read);
-    readstat_set_update_handler(p, mem_update);
-    readstat_set_io_ctx(p, &io);
     readstat_set_metadata_handler(p, s_meta);
     readstat_set_note_handler(p, s_note);
     readstat_set_variable_handler(p, s_var);
     readstat_set_value_handler(p, s_value);
     readstat_set_value_label_handler(p, s_label);
-    readstat_set_error_handler(p, on_error);
-    if (encoding) readstat_set_file_character_encoding(p, encoding);
-    g_rs_err[0] = 0;
-    readstat_error_t e;
-    if (!strcmp(fmt, "dta"))                               e = readstat_parse_dta(p, "", f);
-    else if (!strcmp(fmt, "sav") || !strcmp(fmt, "zsav"))  e = readstat_parse_sav(p, "", f);
-    else if (!strcmp(fmt, "por"))                          e = readstat_parse_por(p, "", f);
-    else if (!strcmp(fmt, "sas7bdat"))                     e = readstat_parse_sas7bdat(p, "", f);
-    else if (!strcmp(fmt, "xpt"))                          e = readstat_parse_xport(p, "", f);
-    else e = READSTAT_ERROR_UNSUPPORTED_FILE_FORMAT_VERSION;
-    readstat_parser_free(p);
+    readstat_error_t e = rs_run(p, data, n, fmt, encoding, f);
     if (e == READSTAT_OK && !f->failed && f->c && sgrow(f, 1)) f->failed = 1;
     if (e != READSTAT_OK || f->failed || !f->c) {
         if (f->failed && e == READSTAT_OK) seterr(err, cap, "out of memory reading the %s file", ppz_stat_name(fmt));
@@ -1628,6 +1646,22 @@ static int sfile_read(const uint8_t *data, size_t n, const char *fmt, const char
         sfile_free(f);
         return -1;
     }
+    /* strict UTF-8, as stat_read: every piece of text that will be written */
+    int ok = valid_utf8((const char *)f->arena.data, f->arena.len) &&
+             (!f->file_label || valid_utf8(f->file_label, strlen(f->file_label)));
+    for (size_t j = 0; ok && j < f->ncols; j++) {
+        const SCol *c = &f->c[j];
+        ok = valid_utf8(c->name, strlen(c->name)) && (!c->label || valid_utf8(c->label, strlen(c->label)));
+        for (int i = 0; ok && i < c->nmiss; i++)
+            ok = (c->mlo[i].k != SV_STR || valid_utf8(c->mlo[i].s, strlen(c->mlo[i].s))) &&
+                 (c->mhi[i].k != SV_STR || valid_utf8(c->mhi[i].s, strlen(c->mhi[i].s)));
+    }
+    for (size_t i = 0; ok && i < f->nsets; i++)
+        for (size_t k = 0; ok && k < f->sets[i].n; k++)
+            ok = valid_utf8(f->sets[i].p[k].label, strlen(f->sets[i].p[k].label)) &&
+                 (f->sets[i].p[k].v.k != SV_STR || valid_utf8(f->sets[i].p[k].v.s, strlen(f->sets[i].p[k].v.s)));
+    for (size_t i = 0; ok && i < f->nnotes; i++) ok = valid_utf8(f->notes[i], strlen(f->notes[i]));
+    if (!ok) { seterr(err, cap, ENC_MSG, ppz_stat_name(fmt)); sfile_free(f); return -1; }
     return 0;
 }
 
@@ -1822,8 +1856,6 @@ typedef struct {
 
 typedef struct { char *name; int string; SvPair *p; size_t n; } PSet;
 
-typedef struct { Buf b; } Rep;
-
 static void rep(Buf *r, const char *fmt, ...)
 {
     char s[512];
@@ -1941,11 +1973,7 @@ static readstat_error_t write_plan(const char *dfmt, PCol *pc, size_t ncols, siz
             if (!(refs[j] = calloc(nrows ? nrows : 1, sizeof(**refs)))) { e = READSTAT_ERROR_MALLOC; goto done; }
             for (size_t r = 0; r < nrows; r++) {
                 if (!c->len[r]) continue;
-                char *tmp = malloc(c->len[r] + 1);
-                if (!tmp) { e = READSTAT_ERROR_MALLOC; goto done; }
-                memcpy(tmp, c->s[r], c->len[r]); tmp[c->len[r]] = 0;
-                refs[j][r] = readstat_add_string_ref(w, tmp);
-                free(tmp);
+                refs[j][r] = readstat_add_string_ref(w, c->s[r]);     /* NUL-ended in the arena */
                 if (!refs[j][r]) { e = READSTAT_ERROR_MALLOC; goto done; }
             }
         }
@@ -1974,10 +2002,14 @@ static readstat_error_t write_plan(const char *dfmt, PCol *pc, size_t ncols, siz
                                   : readstat_insert_missing_value(w, vv[j]);
                     continue;
                 }
-                tmp.len = 0;
-                buf_put(&tmp, c->s[r], c->len[r]);
-                buf_putc(&tmp, 0);
-                e = readstat_insert_string_value(w, vv[j], (const char *)tmp.data);
+                const char *v = c->s[r];
+                if (v[c->len[r]]) {               /* cut short: needs its own end */
+                    tmp.len = 0;
+                    buf_put(&tmp, v, c->len[r]);
+                    buf_putc(&tmp, 0);
+                    v = (const char *)tmp.data;
+                }
+                e = readstat_insert_string_value(w, vv[j], v);
             } else if (c->tag[r] == 1) e = readstat_insert_missing_value(w, vv[j]);
             else if (c->tag[r]) e = readstat_insert_tagged_missing_value(w, vv[j], c->tag[r]);
             else switch (c->type) {
@@ -2041,12 +2073,12 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
                    const char *dfmt, Buf *out, Buf *report, size_t *rows, size_t *cols,
                    char *err, size_t cap)
 {
+    buf_init(report);
+    buf_init(out);
     Dest d;
     if (dest_of(dfmt, &d)) { seterr(err, cap, "cannot write %s files", dfmt); return -1; }
     SFile f;
     if (sfile_read(data, n, sfmt, encoding, &f, err, cap)) return -1;
-    buf_init(report);
-    buf_init(out);
     int sfam = family_of(sfmt), same = sfam == d.family;
     size_t nr = f.nrows, nc = f.ncols;
     PCol *pc = calloc(nc ? nc : 1, sizeof(PCol));
@@ -2137,11 +2169,8 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
             p->string = 0;
             /* Stata keeps its own integer types; everything else is a double */
             p->type = (!strcmp(dfmt, "dta") && !strcmp(sfmt, "dta")) ? c->type : READSTAT_TYPE_DOUBLE;
-            p->num = malloc((nr ? nr : 1) * sizeof(double));
-            p->tag = malloc(nr ? nr : 1);
-            if (!p->num || !p->tag) { seterr(err, cap, "out of memory"); goto done; }
-            memcpy(p->num, c->num, nr * sizeof(double));
-            memcpy(p->tag, c->tag, nr);
+            p->num = c->num; c->num = NULL;        /* taken over, not copied */
+            p->tag = c->tag; c->tag = NULL;
             if (c->type == READSTAT_TYPE_FLOAT && p->type == READSTAT_TYPE_DOUBLE) widened++;
 
             /* dates, re-counted */
@@ -2223,7 +2252,6 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
             } else um_lost++;
         }
     }
-    for (size_t j = 0; j < nc; j++) taken[j] = NULL;
 
     /* value labels */
     for (size_t j = 0; j < nc; j++) {
@@ -2238,7 +2266,7 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
          * so the codes' labels can follow them */
         int own = c->nmiss && !d.user_missing && d.tags && !p->string;
         int at = -1;
-        if (!own) for (size_t i = 0; i < nps; i++) if (!strcmp(ps[i].name, s->name) || (ps[i].name[0] == '#' && 0)) { at = (int)i; break; }
+        if (!own) for (size_t i = 0; i < nps; i++) if (!strcmp(ps[i].name, s->name)) { at = (int)i; break; }
         if (at < 0) {
             PSet *nps2 = realloc(ps, (nps + 1) * sizeof(PSet));
             if (!nps2) { seterr(err, cap, "out of memory"); goto done; }
@@ -2250,9 +2278,7 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
             char **tk = calloc(nps + 1, sizeof(char *));
             if (!tk) { seterr(err, cap, "out of memory"); goto done; }
             for (size_t i = 0; i < nps; i++) tk[i] = ps[i].name;
-            Dest dl = d;
-            if (d.family == 0 && reserved(&d, want)) dl.family = 0;
-            q->name = legal_name(&dl, want, tk, nps);
+            q->name = legal_name(&d, want, tk, nps);
             free(tk);
             q->string = p->string;
             q->p = calloc(s->n ? s->n : 1, sizeof(SvPair));
@@ -2301,6 +2327,7 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
             size_t len = strlen(s);
             do {
                 size_t k = d.notes == 80 ? u8_cut(s, 80, 80) : len;
+                if (!k) k = len;              /* valid UTF-8 never gets here */
                 char **nn = realloc(notes, (nnotes + 1) * sizeof(char *));
                 if (!nn) { seterr(err, cap, "out of memory"); goto done; }
                 notes = nn;
@@ -2329,7 +2356,7 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
     if (um_tagged) rep(report, "user-defined missing values on %zu column%s became extended missing "
                        "values (%s, ...)", um_tagged, plural(um_tagged), d.tags == 'a' ? ".a, .b" : ".A, .B");
     if (um_kept && sfam != 1) rep(report, "missing codes on %zu column%s kept", um_kept, plural(um_kept));
-    if (um_lost) rep(report, "user-defined missing values on %zu column%s written as their numbers",
+    if (um_lost) rep(report, "user-defined missing values on %zu column%s written as plain values",
                      um_lost, plural(um_lost));
     if (tag_lost) rep(report, "%zu extended missing value%s (.a to .z) written as system missing, in %zu column%s",
                       tag_lost, plural(tag_lost), tag_lost_cols, plural(tag_lost_cols));
@@ -2370,7 +2397,7 @@ int stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *
     if (cols) *cols = nc;
     rc = 0;
 done:
-    if (rc) buf_free(out);
+    if (rc) { buf_free(out); buf_free(report); }
     if (pc) for (size_t j = 0; j < nc; j++) {
         free(pc[j].name); free(pc[j].label); free(pc[j].format);
         free(pc[j].num); free(pc[j].tag); free((void *)pc[j].s); free(pc[j].len);

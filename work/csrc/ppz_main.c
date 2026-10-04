@@ -204,30 +204,24 @@ static int tables_equal(const Table *a, const Table *b)
  * user asked for. */
 static int write_atomic(const char *dst, const uint8_t *data, size_t len)
 {
-    char tmp[4200];
-    FILE *f = stdout;
-    if (strcmp(dst, "-")) {
-        snprintf(tmp, sizeof(tmp), "%s.partXXXXXX", dst);
-        int fd = mkstemp(tmp);
-        if (fd >= 0) {
-            ppz_tmp_register(tmp);
-            mode_t um = umask(0);
-            umask(um);
-            fchmod(fd, 0666 & ~um);
-        }
-        f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+    if (!strcmp(dst, "-")) {
+        if (fwrite(data, 1, len, stdout) == len && !fflush(stdout)) return 0;
+        fprintf(stderr, "polypress: cannot write to standard output\n");
+        return -1;
     }
-    if (!f) {
+    char tmp[4200];
+    int fd = ppz_tmp_open(dst, tmp, sizeof(tmp));
+    if (fd < 0) {
         fprintf(stderr, "polypress: cannot write %s: %s\n", dst, strerror(errno));
         return -1;
     }
-    size_t w = fwrite(data, 1, len, f);
-    int bad = (f == stdout) ? fflush(f) : fclose(f);
-    if (f != stdout && !bad && w == len && rename(tmp, dst)) bad = 1;
-    if (f != stdout) ppz_tmp_forget(tmp);
-    if (w != len || bad) {
+    int ok = 1;
+    for (size_t at = 0; ok && at < len; ) {
+        ssize_t w = write(fd, data + at, len - at);
+        if (w <= 0) ok = 0; else at += (size_t)w;
+    }
+    if (ppz_tmp_done(fd, tmp, dst, ok)) {
         fprintf(stderr, "polypress: cannot write %s\n", dst);
-        if (f != stdout) unlink(tmp);
         return -1;
     }
     return 0;
@@ -308,27 +302,32 @@ static int compress_original(const Args *a, const char *dst)
     return 0;
 }
 
-/* One stats format to another (ppz_stat.c): write it, then say what moved. */
-static int translate_out(const uint8_t *data, size_t n, const char *sfmt, const char *enc,
-                         const char *dst)
+/* What a stats-to-stats translation changed, after it is written. */
+static void print_translation(FILE *msg, size_t rows, size_t cols, const char *sfmt,
+                              const char *dfmt, const Buf *report, const char *dst)
 {
-    char err[1024] = "", r1[32];
+    char r1[32];
+    fprintf(msg, "%s rows x %zu cols   %s -> %s\n", commas(rows, r1, sizeof(r1)), cols,
+            ppz_stat_name(sfmt), ppz_stat_name(dfmt));
+    if (report->len) fwrite(report->data, 1, report->len, msg);
+    else fprintf(msg, "  nothing lost\n");
+    fprintf(msg, "%s\n", dst);
+}
+
+/* One stats format to another (ppz_stat.c): write it, then say what moved. */
+static int translate_out(const char *src, const char *sfmt, const char *enc, const char *dst)
+{
+    char err[1024] = "";
     const char *dfmt = ppz_stat_format(dst);
+    Map m;
     Buf out, report;
     size_t rows = 0, cols = 0;
-    if (stat_translate(data, n, sfmt, enc, dfmt, &out, &report, &rows, &cols, err, sizeof(err))) {
-        fprintf(stderr, "polypress: %s\n", err);
-        return 1;
-    }
+    if (ppz_map(src, &m, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
+    int bad = stat_translate(m.p, m.n, sfmt, enc, dfmt, &out, &report, &rows, &cols, err, sizeof(err));
+    ppz_unmap(&m);
+    if (bad) { fprintf(stderr, "polypress: %s: %s\n", src, err); return 1; }
     int rc = write_atomic(dst, out.data, out.len) ? 1 : 0;
-    if (!rc) {
-        FILE *msg = strcmp(dst, "-") ? stdout : stderr;
-        fprintf(msg, "%s rows x %zu cols   %s -> %s\n", commas(rows, r1, sizeof(r1)), cols,
-                ppz_stat_name(sfmt), ppz_stat_name(dfmt));
-        if (report.len) fwrite(report.data, 1, report.len, msg);
-        else fprintf(msg, "  nothing lost\n");
-        fprintf(msg, "%s\n", dst);
-    }
+    if (!rc) print_translation(stdout, rows, cols, sfmt, dfmt, &report, dst);
     buf_free(&out);
     buf_free(&report);
     return rc;
@@ -444,22 +443,17 @@ static int cmd_restore(int argc, char **argv)
         /* an archive of a Stata/SPSS/SAS file: streamed from disk */
         StatRestored sr;
         int o = ppz_stat_restore(a.path, dst, &sr, err, sizeof(err));
-        if (o == -1) {
-            fprintf(stderr, "polypress: %s\n", err);
-            if (sr.stat_dst) buf_free(&sr.report);
-            return 1;
-        }
+        if (o == -1) { fprintf(stderr, "polypress: %s\n", err); return 1; }
         if (o == 0) {
             if (!sr.translated)
                 fprintf(msg, "%s file   %s -> %s, the original bytes\n%s\n", ppz_stat_name(sr.fmt),
                         human((double)sr.packed, h1, sizeof(h1)), human((double)sr.bytes, h2, sizeof(h2)), dst);
             else if (sr.stat_dst) {
-                fprintf(msg, "%s rows x %zu cols   %s -> %s\n", commas(sr.rows, r1, sizeof(r1)), sr.cols,
-                        ppz_stat_name(sr.fmt), ppz_stat_name(ppz_format_of(dst)));
-                if (sr.report.len) fwrite(sr.report.data, 1, sr.report.len, msg);
-                else fprintf(msg, "  nothing lost\n");
-                fprintf(msg, "%s\n", dst);
+                int bad = write_atomic(dst, sr.out.data, sr.out.len);
+                if (!bad) print_translation(msg, sr.rows, sr.cols, sr.fmt, ppz_format_of(dst), &sr.report, dst);
+                buf_free(&sr.out);
                 buf_free(&sr.report);
+                if (bad) return 1;
             } else {
                 fprintf(msg, "%s rows x %zu cols\n", commas(sr.rows, r1, sizeof(r1)), sr.cols);
                 stat_loss_print(msg, &sr.loss, sr.fmt, dst);
@@ -515,11 +509,7 @@ static int cmd_convert(int argc, char **argv)
                     ppz_stat_name(ppz_stat_format(a.path2)), ppz_format_of(a.path));
             return 1;
         }
-        Buf raw;
-        if (read_file(a.path, &raw, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
-        int r = translate_out(raw.data, raw.len, sfmt, a.encoding, a.path2);
-        buf_free(&raw);
-        return r;
+        return translate_out(a.path, sfmt, a.encoding, a.path2);
     }
     if (sfmt) {
         Map m;

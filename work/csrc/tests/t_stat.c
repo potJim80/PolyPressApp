@@ -547,7 +547,7 @@ static void translations(void)
         static const struct { const char *to, *cells[4], *say; } UM[] = {
             { "dta",      { "1", ".b", ".a", "" }, "extended missing" },
             { "xpt",      { "1", ".B", ".A", "" }, "extended missing" },
-            { "sas7bdat", { "1", "-9", "95", "" }, "as their numbers" },
+            { "sas7bdat", { "1", "-9", "95", "" }, "as plain values" },
             { "por",      { "1", "-9", "95", "" }, NULL },
         };
         for (size_t u = 0; u < 4; u++) {
@@ -676,6 +676,78 @@ static void streaming(void)
     CHECK(g1.len == file.len && !memcmp(g1.data, file.data, file.len), "restored .dta differs");
     buf_free(&g1);
     CHECK(!file_exists(tpath("big2.csv.orig")), "the temporary original was left behind");
+
+    /* a file of the user's that happens to share a name is never touched */
+    write_bytes(tpath("mine.csv.orig"), (const uint8_t *)"keep me", 7);
+    CHECK(cli(&out, 4, "restore", arc, "-o", tpath("mine.csv")) == 0, "restore beside a .orig: %s", out.data);
+    buf_free(&out);
+    read_bytes(tpath("mine.csv.orig"), &g1);
+    CHECK(g1.len == 7 && !memcmp(g1.data, "keep me", 7), "restore clobbered mine.csv.orig");
+    buf_free(&g1);
+
+    /* the same file, its rows stored in blocks: what a region over 1 GB gets */
+    uint64_t wm = ppz_lay_whole_max, bb = ppz_lay_block_bytes;
+    ppz_lay_whole_max = 1 << 20;
+    ppz_lay_block_bytes = 100000;                    /* not a multiple of the row width */
+    {
+        Buf schema, arc2, back;
+        buf_init(&arc2); buf_init(&back);
+        char f2[16];
+        Js *meta = NULL;
+        CHECK(stat_scan(file.data, file.len, "dta", NULL, &schema, NULL, NULL, NULL, err, sizeof(err)) == 0, "%s", err);
+        CHECK(ppz_encode_original(file.data, file.len, "dta", NULL, &schema, &arc2) == 0, "blocked encode");
+        CHECK(ppz_original(arc2.data, arc2.len, &back, f2, sizeof(f2), &meta) == 1 &&
+              back.len == file.len && !memcmp(back.data, file.data, file.len), "blocked layout not undone exactly");
+        const Js *k = js_get(js_get(js_get(meta, "original"), "layout"), "kind");
+        CHECK(k && k->kind == JS_STR && !strcmp(k->str, "dta-column-blocks"), "no blocked layout written");
+        js_free(meta);
+        /* a forged block size of 0, or bigger than the rows, is refused */
+        static const char *BADB[] = { "\"block\":0", "\"block\":-3", "\"block\":99999999" };
+        for (size_t q = 0; q < 3; q++) {
+            Buf mb, fake, b2;
+            buf_init(&mb); buf_init(&fake); buf_init(&b2);
+            CHECK(ppz_lzma_decompress(arc2.data + 16, ((size_t)arc2.data[4] << 24 | (size_t)arc2.data[5] << 16 |
+                  (size_t)arc2.data[6] << 8 | arc2.data[7]), &mb) == 0, "meta");
+            buf_putc(&mb, 0);
+            char *at = strstr((char *)mb.data, "\"block\":");
+            if (CHECK(at != NULL, "block key")) {
+                char *e = at + 8;
+                while (*e >= '0' && *e <= '9') e++;
+                Buf m2;
+                buf_init(&m2);
+                buf_put(&m2, mb.data, (size_t)(at - (char *)mb.data));
+                buf_put(&m2, BADB[q], strlen(BADB[q]));
+                buf_put(&m2, e, strlen(e));
+                buf_putc(&m2, 0);
+                size_t ml = ((size_t)arc2.data[4] << 24 | (size_t)arc2.data[5] << 16 | (size_t)arc2.data[6] << 8 | arc2.data[7]);
+                size_t bl = ((size_t)arc2.data[8] << 24 | (size_t)arc2.data[9] << 16 | (size_t)arc2.data[10] << 8 | arc2.data[11]);
+                Buf sb;
+                buf_init(&sb);
+                CHECK(ppz_lzma_decompress(arc2.data + 16 + ml, bl, &sb) == 0, "stored stream");
+                forge((char *)m2.data, sb.data, sb.len, &fake);
+                buf_free(&sb);
+                CHECK(ppz_original(fake.data, fake.len, &b2, f2, sizeof(f2), NULL) == -1, "forged %s accepted", BADB[q]);
+                buf_free(&m2);
+            }
+            buf_free(&mb); buf_free(&fake); buf_free(&b2);
+        }
+        buf_free(&schema); buf_free(&arc2); buf_free(&back);
+    }
+    ppz_lay_whole_max = wm;
+    ppz_lay_block_bytes = bb;
+
+    /* a damaged archive of an original says so, without being read whole */
+    Buf dam;
+    read_bytes(arc, &dam);
+    if (dam.len > 40) {
+        dam.data[dam.len - 20] ^= 0x55;
+        write_bytes(tpath("dam.ppz"), dam.data, dam.len);
+        CHECK(cli(&out, 4, "restore", tpath("dam.ppz"), "-o", tpath("dam.dta")) == 1 &&
+              strstr((char *)out.data, "damaged"), "damaged archive: %s", out.data);
+        CHECK(!file_exists(tpath("dam.dta")), "a damaged restore left a file");
+        buf_free(&out);
+    }
+    buf_free(&dam);
     buf_free(&file);
 }
 

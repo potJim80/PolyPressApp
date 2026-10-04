@@ -287,6 +287,10 @@ int  stat_stream(const uint8_t *data, size_t n, const char *fmt, const char *enc
 
 /* A file mapped read-only (ppz_stat.c): the system pages it in and out. */
 typedef struct { const uint8_t *p; size_t n; int fd; } Map;
+/* A temporary file beside dst (dst.partXXXXXX), removed on interrupt;
+ * ppz_tmp_done closes it and renames it to dst when ok (dst NULL: removes). */
+int  ppz_tmp_open(const char *dst, char *tmp, size_t cap);
+int  ppz_tmp_done(int fd, const char *tmp, const char *dst, int ok);
 int  ppz_map(const char *path, Map *m, char *err, size_t cap);
 void ppz_unmap(Map *m);
 
@@ -298,14 +302,18 @@ typedef struct {
     uint64_t packed, bytes;
     int      translated, stat_dst;
     size_t   rows, cols;
-    StatLoss loss;          /* to a table format */
-    Buf      report;        /* to another stats format */
+    StatLoss loss;          /* to a table format (written to dst) */
+    Buf      out, report;   /* to another stats format: the file, for the caller to write */
 } StatRestored;
 int  ppz_stat_archive(const char *src, const char *fmt, const char *encoding, const char *dst,
                       int verify, StatArchived *info, char *err, size_t cap);
 /* 0 done, -1 failed, 1 not an archive of an original file */
 int  ppz_stat_restore(const char *arc, const char *dst, StatRestored *info, char *err, size_t cap);
 
+/* Stata rows regions past ppz_lay_whole_max bytes are stored column by
+ * column in blocks of about ppz_lay_block_bytes (ppz_stat.c). Constants in
+ * the program; the tests lower them. */
+extern uint64_t ppz_lay_whole_max, ppz_lay_block_bytes;
 int  ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
                          const char *encoding, const Buf *schema, Buf *out);
 /* 1: an archive of an original file (orig filled when non-NULL, fmt set,

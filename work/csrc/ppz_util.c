@@ -144,45 +144,25 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out)
  * than the previous byte (lc). Best per table instead would add only 0.6%
  * on the numbers and needs a trial encode; splitting dictionary ids from
  * packed integers into two streams, 0.4%. Neither was worth it. */
+typedef struct { const uint8_t *p; size_t n, pos; } MemSrc;
+
+static size_t mem_src(uint8_t *buf, size_t cap, void *ctx)
+{
+    MemSrc *m = ctx;
+    size_t k = m->n - m->pos < cap ? m->n - m->pos : cap;
+    memcpy(buf, m->p + m->pos, k);
+    m->pos += k;
+    return k;
+}
+
+static int buf_sink(const uint8_t *p, size_t n, void *ctx) { buf_put((Buf *)ctx, p, n); return 0; }
+
 int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind)
 {
-    lzma_options_lzma opt;
-    if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
-    if (kind == PPZ_XZ_INTS) { opt.lc = 0; opt.lp = 2; opt.pb = 2; }
-    else if (kind == PPZ_XZ_TEXT) { opt.lc = 4; opt.lp = 0; opt.pb = 1; }
-    lzma_filter filters[2] = {
-        { LZMA_FILTER_LZMA2, &opt },
-        { LZMA_VLI_UNKNOWN, NULL },
-    };
     buf_free(out);
-    ppz_slot_take();
-    lzma_stream strm = LZMA_STREAM_INIT;
-    int rc = -1;
-    if (lzma_raw_encoder(&strm, filters) != LZMA_OK) goto done;
-    size_t fed = 0;
-    for (;;) {
-        size_t piece = n - fed < CHUNK ? n - fed : CHUNK;
-        strm.next_in = in + fed;
-        strm.avail_in = piece;
-        fed += piece;
-        lzma_action act = fed < n ? LZMA_RUN : LZMA_FINISH;
-        for (;;) {
-            buf_need(out, CHUNK);
-            strm.next_out = out->data + out->len;
-            strm.avail_out = out->cap - out->len;
-            size_t before = strm.avail_out;
-            lzma_ret r = lzma_code(&strm, act);
-            out->len += before - strm.avail_out;
-            if (r == LZMA_STREAM_END) { rc = 0; goto done; }
-            if (r != LZMA_OK) goto done;
-            if (act == LZMA_RUN && strm.avail_in == 0) break;
-        }
-    }
-done:
-    lzma_end(&strm);
-    ppz_slot_give();
-    if (rc) buf_free(out);
-    return rc;
+    MemSrc m = { in, n, 0 };
+    if (ppz_xz_stream(kind, mem_src, &m, buf_sink, out, NULL)) { buf_free(out); return -1; }
+    return 0;
 }
 
 /* A decoder reads files other people made, so both of these treat their input
@@ -298,44 +278,9 @@ done:
 
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out)
 {
-    lzma_options_lzma opt;
-    if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
-    lzma_filter filters[2] = {
-        { LZMA_FILTER_LZMA2, &opt },
-        { LZMA_VLI_UNKNOWN, NULL },
-    };
-    lzma_stream strm = LZMA_STREAM_INIT;
-    if (lzma_raw_decoder(&strm, filters) != LZMA_OK) return -1;
-
     buf_free(out);
-    size_t chunk = n * 2 + 65536;
-    if (chunk > (size_t)8 << 20) chunk = (size_t)8 << 20;
-
-    strm.next_in = in;
-    strm.avail_in = n;
-    int rc = -1;
-    for (;;) {
-        if (out->len + chunk > PPZ_MAX_PLAIN) goto done;
-        buf_need(out, chunk);
-        strm.next_out = out->data + out->len;
-        strm.avail_out = chunk;
-        size_t before = strm.avail_out;
-        lzma_ret r = lzma_code(&strm, strm.avail_in ? LZMA_RUN : LZMA_FINISH);
-        out->len += before - strm.avail_out;
-        if (r == LZMA_STREAM_END) { rc = 0; goto done; }
-        if (r != LZMA_OK) goto done;          /* corrupt: do not grow, stop */
-        if (strm.avail_in == 0 && before == strm.avail_out) {
-            /* Input exhausted and nothing more coming out, but no end marker:
-             * the stream was cut short. Every stream this program writes ends
-             * with one, so this is a truncated file -- and treating it as
-             * complete restored half a table and exited 0. */
-            goto done;
-        }
-    }
-done:
-    lzma_end(&strm);
-    if (rc) buf_free(out);
-    return rc;
+    if (ppz_xz_unstream(in, n, PPZ_MAX_PLAIN, buf_sink, out, NULL)) { buf_free(out); return -1; }
+    return 0;
 }
 
 /* ------------------------------------------------------------------- json */
