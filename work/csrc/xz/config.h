@@ -19,6 +19,9 @@
 #define HAVE___BUILTIN_BSWAPXX 1
 #define HAVE___BUILTIN_ASSUME_ALIGNED 1
 #define TUKLIB_SYMBOL_PREFIX lzma_
+/* as every release build of xz: its internal assert()s are off. Measured
+ * 2026-10-03: left on, they cost 8% more instructions in the encoder. */
+#define NDEBUG 1
 /* unaligned loads are fast (and legal) on these two only */
 #if defined(__x86_64__) || defined(__aarch64__) || defined(__arm64__)
 #  define TUKLIB_FAST_UNALIGNED_ACCESS 1
