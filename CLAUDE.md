@@ -337,6 +337,23 @@ so measure and ask first. NEMSIS re-timed the same day: numeric parents cost
 ~1.5% per block for 8 KB; whichever build runs second on the fanless Air is
 5-10% slower from heat, so alternate runs before believing a difference.
 
+**Estimate first, 2026-10-04 (Mahdi: "go for it"; bytes changed).** Text-
+and numeric-parent probes rank orders with `ppz_size_estimate` (LZ4-style
+parse + order-1 literal entropy, no range coder) and send only orders within
+2% of the best estimate to the preset-1 probe. Suite (1 thread) 22.7 s ->
+19.7 s, 75 bytes smaller in all, no table larger; Socrata 100 83.8 s ->
+78.6 s, 29 bytes smaller, 5 tables moved (worst +0.58%). The dictionary
+guard stays on the probe (estimated: nndss_full +1.7%). Estimating every
+decision instead was 20% faster but m_ecommerce +7%, s_multilingual +12%.
+
+**Column-aware xz, measured properly 2026-10-04 -- dead.** With xz vendored,
+one LZMA2 stream can switch lc/lp/pb at column boundaries (LZMA_SYNC_FLUSH +
+lzma_filters_update; any decoder reads it; the dictionary is shared). Best
+settings per column, picked by trial: numbers -0.38%, text -0.30% over the
+suite, big tables between -1.5% and +0.5%, and it needs trial encodes. The
+state reset at each switch throws away statistics worth about what the
+better settings win.
+
 Negative results from the same session (suite, one thread): a dictionary
 sized to the input instead of 64 MB -- identical bytes, no faster (liblzma's
 setup is not the cost; a probe's setup is ~0.2 ms). xz depth 512 -> 128:

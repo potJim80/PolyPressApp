@@ -152,11 +152,8 @@ int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind);
  * the same column. Nothing it produces is stored; the real preset-9 stage is
  * far too slow to run as a decision procedure. */
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
-/* EXPERIMENT: an LZ-style size estimate, and the margin (PPZ_EST_MARGIN)
- * past which two estimates decide without the xz probe; 0 = off. */
+/* An LZ-style size estimate, no range coder: for ranking orders only. */
 size_t ppz_size_estimate(const uint8_t *in, size_t n);
-double ppz_est_margin(void);
-int    ppz_est_sites(void);   /* 1 dict guard, 2 text, 4 numeric */
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
 /* The same, a piece at a time, for data bigger than memory (ppz_util.c). */
 int ppz_xz_stream(PpzXz kind, size_t (*src)(uint8_t *, size_t, void *), void *sctx,

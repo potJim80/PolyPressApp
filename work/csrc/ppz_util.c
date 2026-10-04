@@ -180,10 +180,12 @@ int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind)
  */
 #define PPZ_MAX_PLAIN ((size_t)4 << 30)
 
-/* A size estimate without a range coder (EXPERIMENT 2026-10-04, used only
- * when PPZ_EST_MARGIN is set): greedy LZ77 over a 64K-entry hash of 4-byte
- * windows, as LZ4 parses; a match costs about log2(distance) +
- * 2*log2(length) bits, literals their order-1 entropy over the literals. */
+/* A size estimate without a range coder, for choosing between two orders
+ * of the same bytes (ppz_encode.c, est_first): greedy LZ77 over a 64K-entry
+ * hash of 4-byte windows, as LZ4 parses; a match costs about log2(distance)
+ * + 2*log2(length) bits, literals their order-1 entropy over the literals.
+ * Several times cheaper than the preset-1 probe, and off by more than a few
+ * percent only on the close calls, which est_first sends to the probe. */
 size_t ppz_size_estimate(const uint8_t *in, size_t n)
 {
     if (n < 8) return n;
@@ -231,21 +233,6 @@ size_t ppz_size_estimate(const uint8_t *in, size_t n)
         if (cnt[k]) bits += cnt[k] * log2((double)ctx_tot[k >> 8] / cnt[k]);
     free(head); free(cnt);
     return (size_t)(bits / 8) + 1;
-}
-
-/* The margin in PPZ_EST_MARGIN (percent), 0 when unset: off. */
-int ppz_est_sites(void)
-{
-    static int m = -1;
-    if (m < 0) { const char *e = getenv("PPZ_EST_SITES"); m = e && *e ? atoi(e) : 7; }
-    return m;
-}
-
-double ppz_est_margin(void)
-{
-    static double m = -1;
-    if (m < 0) { const char *e = getenv("PPZ_EST_MARGIN"); m = e && *e ? atof(e) / 100.0 : 0; }
-    return m;
 }
 
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n)

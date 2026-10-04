@@ -880,17 +880,21 @@ static double cond_entropy_corrected(const int64_t *xs, const int64_t *ys,
     return h + corr;
 }
 
-/* EXPERIMENT (PPZ_EST_MARGIN): two orderings of the same bytes, decided by
- * the estimate when it is clear-cut, by the xz probe when not. */
-static int est_decides(const uint8_t *a, size_t an, const uint8_t *b, size_t bn, int *a_smaller)
+/* Estimate first (2026-10-04, Mahdi: "go for it"). Text- and numeric-parent
+ * choices compare one column in two or more orders. ppz_size_estimate
+ * decides when the orders differ by more than EST_MARGIN; only the close
+ * calls get the preset-1 xz probe. Measured against probing everything:
+ * suite (1 thread) 22.7 s -> 19.7 s, 75 bytes smaller in total, no table
+ * larger; Socrata 100 83.8 s -> 78.6 s, 29 bytes smaller, 5 tables moved,
+ * the worst +0.58%. Margins of 5-20% were no better. The dictionary-parent
+ * guard stays on the probe: estimated, it made nndss_full 1.7% larger --
+ * small-alphabet ids are where the estimate is weakest. */
+#define EST_MARGIN 0.02
+
+static int clear_cut(size_t ea, size_t eb)
 {
-    double m = ppz_est_margin();
-    if (m <= 0) return 0;
-    size_t ea = ppz_size_estimate(a, an), eb = ppz_size_estimate(b, bn);
     size_t lo = ea < eb ? ea : eb, hi = ea < eb ? eb : ea;
-    if ((double)hi <= (double)lo * (1 + m)) return 0;
-    *a_smaller = ea < eb;
-    return 1;
+    return (double)hi > (double)lo * (1 + EST_MARGIN);
 }
 
 typedef struct { long *parent; size_t *order; size_t norder; } Parents;
@@ -924,14 +928,10 @@ static void guard_task(void *arg)
         memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
     }
     free(kv);
-    int ps;
-    if ((ppz_est_sites() & 1) && est_decides(perm, nrows * (size_t)wb, flat, nrows * (size_t)wb, &ps)) g->pays = ps;
-    else {
-        size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
-        size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
-        g->pays = cost_perm < cost_flat;
-    }
+    size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
+    size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
     free(flat); free(perm);
+    g->pays = cost_perm < cost_flat;
 }
 
 static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
@@ -1132,7 +1132,7 @@ typedef struct {
     size_t         nrows, tp;
     long           dp;
     size_t         cost;
-    int            est;          /* EXPERIMENT: estimate, not xz */
+    int            est;          /* 1 estimate, 0 xz probe, 2 decided */
 } Probe;
 
 static void probe_task(void *arg)
@@ -1218,19 +1218,18 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
          * order the file already had. Trusting the score alone made one
          * real dataset 66% larger. */
         size_t take = ncand < TEXT_PARENT_CANDIDATES ? ncand : TEXT_PARENT_CANDIDATES;
-        int est = ppz_est_margin() > 0 && (ppz_est_sites() & 2);
-        probes[nprobes++] = (Probe){ t, plan, nrows, tp, -1, 0, est };
+        probes[nprobes++] = (Probe){ t, plan, nrows, tp, -1, 0, 1 };
         for (size_t c = 0; c < take; c++)
-            probes[nprobes++] = (Probe){ t, plan, nrows, tp, (long)dict_pos[cands[c].dp], 0, est };
+            probes[nprobes++] = (Probe){ t, plan, nrows, tp, (long)dict_pos[cands[c].dp], 0, 1 };
         free(cands);
     }
 
     ppz_parallel(probe_task, probes, sizeof(Probe), nprobes);
 
-    /* EXPERIMENT: with estimates, only the candidates within the margin of
-     * the best estimate are probed with xz; the rest drop out */
-    if (ppz_est_margin() > 0 && (ppz_est_sites() & 2)) {
-        double m = ppz_est_margin();
+    /* estimate first: only the orders within EST_MARGIN of the best
+     * estimate are probed with xz; the rest drop out */
+    {
+        const double m = EST_MARGIN;
         size_t nre = 0;
         for (size_t i = 0; i < nprobes; ) {
             size_t j = i + 1, lo = probes[i].cost;
@@ -1384,22 +1383,18 @@ static void pick_num_parents(const ColPlan *plan, size_t nc, size_t nr, long *np
         if (nparent[p] < 0) continue;
         const ColPlan *par = &plan[nparent[p]];
         size_t *perm = argsort_ids(par->ids, nr, par->nalpha);
-        if (ppz_est_margin() > 0 && (ppz_est_sites() & 4) && perm) {
-            Buf bw, bo;
-            buf_init(&bw); buf_init(&bo);
-            num_pack(plan[p].ints, nr, perm, &bw);
-            num_pack(plan[p].ints, nr, NULL, &bo);
-            int ws, ok = est_decides(bw.data, bw.len, bo.data, bo.len, &ws);
-            size_t with = ok ? 0 : ppz_lzma_probe_len(bw.data, bw.len);
-            size_t without = ok ? 0 : ppz_lzma_probe_len(bo.data, bo.len);
-            buf_free(&bw); buf_free(&bo);
-            free(perm);
-            if (ok ? !ws : with >= without) nparent[p] = -1;
-            continue;
-        }
-        size_t with = perm ? num_probe(plan[p].ints, nr, perm) : (size_t)-1;
-        size_t without = num_probe(plan[p].ints, nr, NULL);
+        if (!perm) { nparent[p] = -1; continue; }
+        Buf bw, bo;
+        buf_init(&bw); buf_init(&bo);
+        num_pack(plan[p].ints, nr, perm, &bw);
+        num_pack(plan[p].ints, nr, NULL, &bo);
         free(perm);
+        size_t with = ppz_size_estimate(bw.data, bw.len), without = ppz_size_estimate(bo.data, bo.len);
+        if (!clear_cut(with, without)) {
+            with = ppz_lzma_probe_len(bw.data, bw.len);
+            without = ppz_lzma_probe_len(bo.data, bo.len);
+        }
+        buf_free(&bw); buf_free(&bo);
         if (with >= without) nparent[p] = -1;
     }
 out:

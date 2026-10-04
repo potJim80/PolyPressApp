@@ -177,8 +177,8 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
 <ul>
   <li><b>Choosing parents.</b> On a sample of up to 40,000 rows, PolyPress measures how much each column tells you about each other column (conditional entropy). It builds a tree: the most predictable column is the root, and each other column hangs under the parent that helps it most.</li>
   <li><b>Then it checks.</b> A quick trial compression of the column in its new order against its original order. If reordering doesn't actually make it smaller, the parent is dropped. The score only nominates; the trial decides.</li>
-  <li><b>Text columns</b> can have a parent too. Up to 5 candidates are nominated, each one is tried, and the smallest result wins.</li>
-  <li><b>Numeric columns</b> can have a parent too. This is new on 2 October, and it's for tables where many places are each measured over time: sorted by county, a county's daily counts sit next to each other and their differences shrink. The candidate is picked by counting the bits its differences would need in each order (no compression involved), then confirmed with a quick trial. Numeric parents are chosen before the 2D groups form, because a group keeps file order.</li>
+  <li><b>Text columns</b> can have a parent too. Up to 5 candidates are nominated and the smallest result wins. Since 4 October the candidates are first sized with a quick estimate (an LZ4-style pass, no real compression); only the ones within 2% of the best estimate get the real trial. That made compression 13% faster on the test tables with no table getting bigger.</li>
+  <li><b>Numeric columns</b> can have a parent too. This is new on 2 October, and it's for tables where many places are each measured over time: sorted by county, a county's daily counts sit next to each other and their differences shrink. The candidate is picked by counting the bits its differences would need in each order (no compression involved), then confirmed: by the quick estimate when the two orders differ by more than 2%, by a real trial when it's close. Numeric parents are chosen before the 2D groups form, because a group keeps file order.</li>
   <li>The sorts are counting sorts on the dictionary positions: one pass over the rows, no comparisons.</li>
 </ul>
 <p class="why"><b>Measured:</b> numeric parents took a CDC vaccination table (3,300 counties × dates) from 2.73 MB to 1.69 MB, 25% under plain xz, and the 100 open-data tables down 5.3% overall. Trusting the score without the check once made a real table 66% larger. Adding the check took 19.7% off the CDC disease-surveillance table, the one PolyPress was already best at. The same idea was published by AT&amp;T in 2012 (US 8,312,026, now expired); PolyPress arrived at it independently.</p>
@@ -278,7 +278,7 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
   <tr><td>vs Parquet (any setting)</td><td>40–63% smaller, on every table it can read</td></tr>
   <tr><td>where it loses</td><td>small and narrow tables, to 7-Zip PPMd</td></tr>
 </table></div>
-<p class="note">The program is about 7,800 lines of C with liblzma and ReadStat built in, 10,761 test checks, and a Swift Mac app on top. Numbers are from the 3 October 2026 re-run and include the per-column decision in step 3 and numeric parents in step 5.</p>
+<p class="note">The program is about 8,000 lines of C, with xz (liblzma) and ReadStat built in from source, so it builds with nothing but a C compiler; 11,082 test checks, and a Swift Mac app on top. Speed figures since 4 October are about 15% better than this table (the estimate-first step above and a faster xz build); sizes are the same within a few bytes. Numbers are from the 3 October 2026 re-run and include the per-column decision in step 3 and numeric parents in step 5.</p>
 </section>
 </main>
 </div>

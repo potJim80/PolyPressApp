@@ -1140,6 +1140,28 @@ static void case_xz_pinned(void)
     buf_free(&in); buf_free(&o);
 }
 
+/* ppz_size_estimate ranks orders for the parent choices: a column in runs
+ * must estimate far smaller than the same bytes scattered, every time. */
+static void case_estimate(void)
+{
+    h_section("size estimate ranks orders");
+    enum { N = 60000 };
+    uint8_t *runs = malloc(N), *mixed = malloc(N);
+    uint32_t s = 3;
+    for (size_t i = 0; i < N; i++) runs[i] = (uint8_t)('a' + i * 7 / N);
+    memcpy(mixed, runs, N);
+    for (size_t i = N - 1; i > 0; i--) {                 /* the same bytes, shuffled */
+        s = s * 1103515245u + 12345u;
+        size_t j = (s >> 8) % (i + 1);
+        uint8_t x = mixed[i]; mixed[i] = mixed[j]; mixed[j] = x;
+    }
+    size_t er = ppz_size_estimate(runs, N), em = ppz_size_estimate(mixed, N);
+    CHECK(er * 20 < em, "runs %zu vs shuffled %zu", er, em);
+    CHECK(ppz_size_estimate(runs, N) == er, "estimate not deterministic");
+    CHECK(ppz_size_estimate(runs, 3) == 3 && ppz_size_estimate(runs, 0) == 0, "tiny inputs");
+    free(runs); free(mixed);
+}
+
 int main(int argc, char **argv)
 {
     h_suite = "codec";
@@ -1148,6 +1170,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     case_xz_pinned();
+    case_estimate();
     cases_dtz();
     cases_fast();
     cases_one_pass();
