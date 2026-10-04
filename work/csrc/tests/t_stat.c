@@ -411,8 +411,15 @@ static void command_line(void)
     CHECK(strstr((char *)got.data, "1960-01-02 01:01:01") != NULL, "the csv has no ISO datetime: %s", got.data);
     buf_free(&got);
 
-    CHECK(cli(&out, 4, "restore", arc, "-o", sav) == 1, "a .dta archive restored as .sav");
-    CHECK(!file_exists(sav), "the refused .sav was written");
+    CHECK(cli(&out, 4, "restore", arc, "-o", sav) == 0 && strstr((char *)out.data, "Stata -> SPSS"),
+          "a .dta archive restored as .sav: %s", out.data);
+    CHECK(file_exists(sav), "the .sav was not written");
+    buf_free(&out);
+    CHECK(cli(&out, 3, "convert", src, tpath("t2.xpt")) == 0 && strstr((char *)out.data, "SAS transport"),
+          "convert .dta -> .xpt: %s", out.data);
+    buf_free(&out);
+    CHECK(cli(&out, 3, "convert", csv, tpath("t3.dta")) == 1 && !file_exists(tpath("t3.dta")),
+          "convert .csv -> .dta was not refused: %s", out.data);
     buf_free(&out);
     CHECK(cli(&out, 3, "convert", src, csv) == 0 && strstr((char *)out.data, "translation"),
           "convert .dta -> .csv: %s", out.data);
@@ -425,6 +432,191 @@ static void command_line(void)
     CHECK(cli(&out, 4, "stream-compress", src, "-o", tpath("s.ppz")) == 1, "stream-compress took a .dta");
     buf_free(&out);
     buf_free(&file);
+}
+
+
+/* ------------------------------------------------- one format to another */
+
+/* x: 1, -9, 95, system missing; -9 and 90-99 are SPSS user-missing, and -9
+ * and 1 have value labels */
+static int make_user_missing_sav(Buf *out)
+{
+    buf_init(out);
+    readstat_writer_t *w = readstat_writer_init();
+    readstat_set_data_writer(w, to_buf);
+    readstat_label_set_t *ls = readstat_add_label_set(w, READSTAT_TYPE_DOUBLE, "xl");
+    readstat_label_double_value(ls, 1, "one");
+    readstat_label_double_value(ls, -9, "refused");
+    readstat_variable_t *x = readstat_add_variable(w, "x", READSTAT_TYPE_DOUBLE, 0);
+    readstat_variable_set_label_set(x, ls);
+    readstat_variable_add_missing_double_range(x, 90, 99);
+    readstat_variable_add_missing_double_value(x, -9);
+    readstat_variable_t *by = readstat_add_variable(w, "BY_ok", READSTAT_TYPE_DOUBLE, 0);
+    readstat_error_t e = readstat_begin_writing_sav(w, out, 4);
+    static const double X[4] = { 1, -9, 95, 0 };
+    for (int i = 0; i < 4 && e == READSTAT_OK; i++) {
+        readstat_begin_row(w);
+        if (i == 3) readstat_insert_missing_value(w, x);
+        else readstat_insert_double_value(w, x, X[i]);
+        readstat_insert_double_value(w, by, i);
+        e = readstat_end_row(w);
+    }
+    if (e == READSTAT_OK) e = readstat_end_writing(w);
+    readstat_writer_free(w);
+    return e == READSTAT_OK ? 0 : -1;
+}
+
+/* a Stata file with awkward names and one long text value */
+static int make_awkward_dta(Buf *out, size_t longlen)
+{
+    buf_init(out);
+    readstat_writer_t *w = readstat_writer_init();
+    readstat_set_data_writer(w, to_buf);
+    readstat_writer_set_file_format_version(w, 118);
+    readstat_variable_t *a = readstat_add_variable(w, "with_a_rather_long_name", READSTAT_TYPE_DOUBLE, 0);
+    readstat_variable_t *b = readstat_add_variable(w, "txt", READSTAT_TYPE_STRING, longlen);
+    readstat_error_t e = readstat_begin_writing_dta(w, out, 2);
+    char *big = malloc(longlen + 1);
+    memset(big, 'x', longlen); big[longlen] = 0;
+    readstat_begin_row(w); readstat_insert_double_value(w, a, 1); readstat_insert_string_value(w, b, big); readstat_end_row(w);
+    readstat_begin_row(w); readstat_insert_double_value(w, a, 2); readstat_insert_string_value(w, b, "short"); readstat_end_row(w);
+    free(big);
+    if (e == READSTAT_OK) e = readstat_end_writing(w);
+    readstat_writer_free(w);
+    return e == READSTAT_OK ? 0 : -1;
+}
+
+static int translate_to(const Buf *in, const char *sf, const char *df, Table *t, Buf *schema, Buf *report)
+{
+    Buf out;
+    char err[1024] = "";
+    size_t r, c;
+    if (stat_translate(in->data, in->len, sf, NULL, df, &out, report, &r, &c, err, sizeof(err))) {
+        printf("  %s -> %s: %s\n", sf, df, err);
+        return -1;
+    }
+    int rc = stat_read(out.data, out.len, df, NULL, t, schema, NULL, err, sizeof(err));
+    if (rc) printf("  %s -> %s: reading it back: %s\n", sf, df, err);
+    buf_free(&out);
+    return rc;
+}
+
+static int has(const Buf *b, const char *s) { return b->len && memmem(b->data, b->len, s, strlen(s)) != NULL; }
+
+static void translations(void)
+{
+    h_section("translation between formats");
+    size_t pairs = 0;
+    for (size_t i = 0; i < sizeof(FORMATS) / sizeof(FORMATS[0]); i++) {
+        const char *f = FORMATS[i];
+        Buf file;
+        if (make_fixture(f, &file)) { buf_free(&file); continue; }
+        for (size_t k = 0; k < sizeof(FORMATS) / sizeof(FORMATS[0]); k++) {
+            const char *g = FORMATS[k];
+            Table t;
+            Buf schema, report;
+            if (!CHECK(translate_to(&file, f, g, &t, &schema, &report) == 0, "%s -> %s failed", f, g)) continue;
+            int ok = t.nrows == NROWS && t.ncols == NCOLS;
+            for (size_t r = 0; ok && r < NROWS; r++)
+                for (size_t j = 0; ok && j < NCOLS; j++)
+                    if (!str_is(table_at(&t, r, j), CELLS[r][j])) {
+                        Str c = table_at(&t, r, j);
+                        printf("  %s -> %s: row %zu %s = \"%.*s\", want \"%s\"\n", f, g, r, NAMES[j],
+                               (int)c.n, c.p, CELLS[r][j]);
+                        ok = 0;
+                    }
+            for (size_t j = 0; ok && j < NCOLS; j++) ok = !strcasecmp(t.names[j], NAMES[j]);
+            CHECK(ok, "%s -> %s: cells or names differ", f, g);
+            CHECK(has(&schema, "\"a number\""), "%s -> %s: variable label lost", f, g);
+            if (has_labels(f) && has_labels(g))
+                CHECK(has(&schema, "\"one\""), "%s -> %s: value labels lost", f, g);
+            if (has_labels(f) && !has_labels(g))
+                CHECK(has(&report, "value labels"), "%s -> %s: dropped labels not reported: %s", f, g,
+                      report.len ? (char *)report.data : "");
+            table_free(&t);
+            buf_free(&schema); buf_free(&report);
+            pairs++;
+        }
+        buf_free(&file);
+    }
+    printf("  %zu format pairs\n", pairs);
+
+    /* SPSS user-missing codes: letters in Stata and SAS transport, codes in SPSS */
+    Buf um;
+    if (CHECK(make_user_missing_sav(&um) == 0, "user-missing fixture")) {
+        static const struct { const char *to, *cells[4], *say; } UM[] = {
+            { "dta",      { "1", ".b", ".a", "" }, "extended missing" },
+            { "xpt",      { "1", ".B", ".A", "" }, "extended missing" },
+            { "sas7bdat", { "1", "-9", "95", "" }, "as their numbers" },
+            { "por",      { "1", "-9", "95", "" }, NULL },
+        };
+        for (size_t u = 0; u < 4; u++) {
+            Table t; Buf schema, report;
+            if (!CHECK(translate_to(&um, "sav", UM[u].to, &t, &schema, &report) == 0, "user missing -> %s", UM[u].to)) continue;
+            int ok = t.nrows == 4;
+            for (size_t r = 0; ok && r < 4; r++) ok = str_is(table_at(&t, r, 0), UM[u].cells[r]);
+            if (!ok) for (size_t r = 0; r < t.nrows; r++) { Str c = table_at(&t, r, 0); printf("    [%zu] %.*s\n", r, (int)c.n, c.p); }
+            if (!ok) printf("    %.*s\n", (int)schema.len, (char *)schema.data);
+            CHECK(ok, "user missing -> %s: cells differ", UM[u].to);
+            if (UM[u].say) CHECK(has(&report, UM[u].say), "user missing -> %s: not reported: %s", UM[u].to,
+                                 report.len ? (char *)report.data : "");
+            if (!strcmp(UM[u].to, "dta")) {
+                CHECK(has(&schema, "[\".b\",\"refused\"]"), "the -9 label did not follow it to .b");
+                CHECK(has(&report, "x: 90 to 99 -> .a, -9 -> .b"), "the mapping is not reported: %s", (char *)report.data);
+                CHECK(has(&schema, "[1,\"one\"]"), "the ordinary label was lost");
+            }
+            if (!strcmp(UM[u].to, "por")) CHECK(has(&schema, "\"missing\""), "missing codes not kept in .por");
+            table_free(&t); buf_free(&schema); buf_free(&report);
+        }
+        buf_free(&um);
+    }
+
+    /* Stata's .a has no SPSS equivalent */
+    Buf tg;
+    if (CHECK(make_tagged_dta(&tg) == 0, "tagged fixture")) {
+        Table t; Buf schema, report;
+        if (CHECK(translate_to(&tg, "dta", "sav", &t, &schema, &report) == 0, "tagged -> sav")) {
+            CHECK(str_is(table_at(&t, 0, 0), "7") && str_is(table_at(&t, 1, 0), "") &&
+                  str_is(table_at(&t, 2, 0), ""), "tagged -> sav cells");
+            CHECK(has(&report, "1 extended missing value"), "tagged loss not reported: %s",
+                  report.len ? (char *)report.data : "");
+            table_free(&t); buf_free(&schema); buf_free(&report);
+        }
+        buf_free(&tg);
+    }
+
+    /* names and long text */
+    Buf aw;
+    if (CHECK(make_awkward_dta(&aw, 300) == 0, "awkward fixture")) {
+        Table t; Buf schema, report;
+        if (CHECK(translate_to(&aw, "dta", "por", &t, &schema, &report) == 0, "awkward -> por")) {
+            CHECK(!strcmp(t.names[0], "WITH_A_R"), "por name %s", t.names[0]);
+            CHECK(table_at(&t, 0, 1).n == 255 && has(&report, "CUT to 255"), "long text -> por: %zu, %s",
+                  table_at(&t, 0, 1).n, report.len ? (char *)report.data : "");
+            table_free(&t); buf_free(&schema); buf_free(&report);
+        }
+        if (CHECK(translate_to(&aw, "dta", "xpt", &t, &schema, &report) == 0, "awkward -> xpt")) {
+            CHECK(table_at(&t, 0, 1).n == 300 && !strcmp(t.names[0], "with_a_rather_long_name") &&
+                  has(&report, "version 8"), "xpt did not move to version 8");
+            table_free(&t); buf_free(&schema); buf_free(&report);
+        }
+        buf_free(&aw);
+    }
+    Buf lg;
+    if (CHECK(make_awkward_dta(&lg, 2000) == 0, "long fixture")) {
+        /* sav -> dta with text over 2045 bytes becomes a strL */
+        Buf sav, rep2; char err[512]; size_t r, c;
+        if (CHECK(stat_translate(lg.data, lg.len, "dta", NULL, "sav", &sav, &rep2, &r, &c, err, sizeof(err)) == 0, "-> sav: %s", err)) {
+            buf_free(&rep2);
+            Table t; Buf schema, report;
+            if (CHECK(translate_to(&sav, "sav", "dta", &t, &schema, &report) == 0, "sav -> dta")) {
+                CHECK(table_at(&t, 0, 1).n == 2000, "2000-byte text came back %zu", table_at(&t, 0, 1).n);
+                table_free(&t); buf_free(&schema); buf_free(&report);
+            }
+            buf_free(&sav);
+        }
+        buf_free(&lg);
+    }
 }
 
 /* ------------------------------------------------------------ real files */
@@ -474,6 +666,7 @@ int main(int argc, char **argv)
     formats();
     hostile();
     command_line();
+    translations();
     real_files(argc > 2 && argv[2][0] ? argv[2] : NULL);
     tmpdir_remove();
     return h_done();

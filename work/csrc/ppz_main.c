@@ -333,6 +333,32 @@ done:
     return rc;
 }
 
+/* One stats format to another (ppz_stat.c): write it, then say what moved. */
+static int translate_out(const uint8_t *data, size_t n, const char *sfmt, const char *enc,
+                         const char *dst)
+{
+    char err[1024] = "", r1[32];
+    const char *dfmt = ppz_stat_format(dst);
+    Buf out, report;
+    size_t rows = 0, cols = 0;
+    if (stat_translate(data, n, sfmt, enc, dfmt, &out, &report, &rows, &cols, err, sizeof(err))) {
+        fprintf(stderr, "polypress: %s\n", err);
+        return 1;
+    }
+    int rc = write_atomic(dst, out.data, out.len) ? 1 : 0;
+    if (!rc) {
+        FILE *msg = strcmp(dst, "-") ? stdout : stderr;
+        fprintf(msg, "%s rows x %zu cols   %s -> %s\n", commas(rows, r1, sizeof(r1)), cols,
+                ppz_stat_name(sfmt), ppz_stat_name(dfmt));
+        if (report.len) fwrite(report.data, 1, report.len, msg);
+        else fprintf(msg, "  nothing lost\n");
+        fprintf(msg, "%s\n", dst);
+    }
+    buf_free(&out);
+    buf_free(&report);
+    return rc;
+}
+
 /* Restore an archive of a Stata/SPSS/SAS file: to its own format, the
  * original bytes; to a table format, a translation that names its losses. */
 static int restore_original(const Buf *orig, const char *fmt, const Js *meta,
@@ -348,6 +374,8 @@ static int restore_original(const Buf *orig, const char *fmt, const Js *meta,
         return 0;
     }
     const Js *enc = js_get(js_get(meta, "original"), "encoding");
+    if (strcmp(dst, "-") && ppz_stat_format(dst))
+        return translate_out(orig->data, orig->len, fmt, enc && enc->kind == JS_STR ? enc->str : NULL, dst);
     Table t;
     StatLoss loss;
     if (stat_read(orig->data, orig->len, fmt, enc && enc->kind == JS_STR ? enc->str : NULL,
@@ -524,6 +552,19 @@ static int cmd_convert(int argc, char **argv)
     Table t;
     const char *sfmt = ppz_stat_format(a.path);
     StatLoss loss;
+    if (ppz_stat_format(a.path2) && strcmp(a.path2, "-")) {
+        if (!sfmt) {
+            fprintf(stderr, "polypress: writing %s files from a %s file is not built yet; "
+                    "only Stata, SPSS and SAS files convert to each other\n",
+                    ppz_stat_name(ppz_stat_format(a.path2)), ppz_format_of(a.path));
+            return 1;
+        }
+        Buf raw;
+        if (read_file(a.path, &raw, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }
+        int r = translate_out(raw.data, raw.len, sfmt, a.encoding, a.path2);
+        buf_free(&raw);
+        return r;
+    }
     if (sfmt) {
         Buf raw;
         if (read_file(a.path, &raw, err, sizeof(err))) { fprintf(stderr, "polypress: %s\n", err); return 1; }

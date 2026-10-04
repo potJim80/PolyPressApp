@@ -71,13 +71,14 @@ pre.box { background: var(--panel); border-radius: 4px; padding: 12px 14px; font
     <li><a href="#check"><span>8</span>Check, then write</a></li>
     <li><a href="#big"><span>9</span>Big files</a></li>
     <li><a href="#restore"><span>10</span>Restoring</a></li>
+    <li><a href="#stats"><span>11</span>Stata, SPSS, SAS</a></li>
     <li><a href="#numbers-now"><span></span>Where it stands</a></li>
   </ol>
 </nav>
 
 <main>
 <h1>How PolyPress works</h1>
-<p class="lede">PolyPress compresses data tables (CSV, TSV, JSON, Parquet) without losing a single character. It doesn't compress the table as one block of text. It works out what each column is, rearranges the data so the patterns line up, and only then hands it to xz. This page follows one small table through every step, as the code stands on 2 October 2026.</p>
+<p class="lede">PolyPress compresses data tables (CSV, TSV, JSON, Parquet, and Stata, SPSS and SAS files) without losing a single character. It doesn't compress the table as one block of text. It works out what each column is, rearranges the data so the patterns line up, and only then hands it to xz. This page follows one small table through every step, as the code stands on 3 October 2026.</p>
 
 <div class="flow" aria-label="The steps in order">
   <a href="#read">Read</a><span class="arrow">→</span>
@@ -107,7 +108,7 @@ pre.box { background: var(--panel); border-radius: 4px; padding: 12px 14px; font
 <ul>
   <li>Text must be valid UTF-8 (or the encoding you name with <code>--encoding</code>). A bad byte is refused, never guessed at.</li>
   <li>A row wider than the header is refused unless the extra cells are empty.</li>
-  <li>Excel, Stata, SPSS, SQLite and already-compressed files are recognised at the door and refused with a plain message.</li>
+  <li>Stata, SPSS and SAS files take their own route (step 11). Excel, SQLite and already-compressed files are recognised at the door and refused with a plain message.</li>
 </ul>
 <p class="why"><b>Why so strict:</b> a check that runs after the damage can't see the damage. An early version read every file leniently, turned bad bytes into "?" before the table existed, and then "verified" the corrupted table against itself.</p>
 </section>
@@ -253,6 +254,18 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
 <p class="why"><b>Speed:</b> all 100 benchmark tables restore in about 5 seconds. Restoring needs no trial compressions and no choices.</p>
 </section>
 
+<section id="stats">
+<h2><span class="n">11</span>Stata, SPSS and SAS files</h2>
+<p>A <code>.dta</code>, <code>.sav</code>, <code>.por</code>, <code>.sas7bdat</code> or <code>.xpt</code> file holds more than a table: variable labels ("age at interview"), value labels (1 = "male", 2 = "female"), display formats, dates counted from the format's own day zero, notes, and special missing values like <code>.a</code>. No CSV can carry all of that back. So these files skip steps 2–7.</p>
+<ul>
+  <li>The archive keeps the <b>original bytes</b>, plus a JSON description of everything inside them, read with ReadStat (an open-source C library built into the program).</li>
+  <li>Restoring to the same format gives the file back byte for byte.</li>
+  <li>Restoring to CSV, TSV or JSON is a translation, and PolyPress prints exactly what that copy leaves behind: labels, missing-value codes, notes.</li>
+  <li>For newer Stata files, the rows are rewritten column by column before xz (every row's first value, then every row's second). Values that are alike end up next to each other. It's only a reshuffle, so it's undone exactly on restore.</li>
+</ul>
+<p class="why"><b>Measured:</b> rebuilding the table through the codec beat plain xz by only 6% on a NHANES file. These formats store 8 bytes per number, which every compressor already squeezes well. Original bytes are exact by construction. The column-by-column reshuffle is what made the real gain: 28% smaller than xz -9e across 12 public Stata files. The same trick on SAS transport files gained only 6.6% and made one file bigger, so those are stored as they are.</p>
+</section>
+
 <section id="numbers-now">
 <h2><span class="n"></span>Where it stands</h2>
 <div class="scroll"><table>
@@ -260,11 +273,12 @@ POINT (-87.627902 41.88119)    →   POINT (⟨source 1⟩ ⟨source 0, rounded 
   <tr><td>100 open-data tables, vs 22 other tools</td><td>smallest on 71/100; 14.3% smaller than the best rival per table, in total; beats xz -9e on 99/100</td></tr>
   <tr><td>same, tables over 1 MB</td><td>smallest on 61/74; typical margin 15–16%</td></tr>
   <tr><td>vs PolyPress in July, same inputs</td><td>8.2% smaller and about 5.5× faster</td></tr>
-  <tr><td>speed vs xz -9e</td><td>about 2.5× faster to compress (10.7 vs 4.0 MB/s), and smaller</td></tr>
+  <tr><td>speed</td><td>14.7 MB/s to compress over the 100 tables (xz -9e runs at about 4 MB/s), and smaller</td></tr>
+  <tr><td>12 public Stata files</td><td>28% smaller than xz -9e on the original, 11 of 12 smaller</td></tr>
   <tr><td>vs Parquet (any setting)</td><td>40–63% smaller, on every table it can read</td></tr>
   <tr><td>where it loses</td><td>small and narrow tables, to 7-Zip PPMd</td></tr>
 </table></div>
-<p class="note">The program is 6,391 lines of C with liblzma, about 10,000 tests, and a Swift Mac app on top. Numbers are from 2 October 2026 and include the per-column decision in step 3 and numeric parents in step 5.</p>
+<p class="note">The program is about 7,800 lines of C with liblzma and ReadStat built in, 10,761 test checks, and a Swift Mac app on top. Numbers are from the 3 October 2026 re-run and include the per-column decision in step 3 and numeric parents in step 5.</p>
 </section>
 </main>
 </div>

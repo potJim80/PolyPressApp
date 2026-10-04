@@ -264,6 +264,14 @@ int  stat_read(const uint8_t *data, size_t n, const char *fmt, const char *encod
                Table *t, Buf *schema, StatLoss *loss, char *err, size_t cap);
 void stat_loss_print(FILE *f, const StatLoss *l, const char *src_fmt, const char *dst);
 
+/* The file rewritten as another stats format (dfmt: "dta", "sav", "zsav",
+ * "por", "xpt", "sas7bdat"), keeping labels, dates, missing values and notes
+ * where the destination can hold them. `report` gets one line ("  ...\n")
+ * per change or loss; the new file is read back and checked before return. */
+int  stat_translate(const uint8_t *data, size_t n, const char *sfmt, const char *encoding,
+                    const char *dfmt, Buf *out, Buf *report, size_t *rows, size_t *cols,
+                    char *err, size_t cap);
+
 int  ppz_encode_original(const uint8_t *data, size_t n, const char *fmt,
                          const char *encoding, const Buf *schema, Buf *out);
 /* 1: an archive of an original file (orig filled when non-NULL, fmt set,
