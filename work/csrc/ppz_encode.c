@@ -806,77 +806,138 @@ static int64_t score_of(double x)
     return (int64_t)floor(x * SCORE_SCALE + 0.5);
 }
 
-static double counts_entropy(const int64_t *counts, size_t nc, size_t n)
-{
-    double s = 0.0;
-    for (size_t i = 0; i < nc; i++) {
-        double p = (double)counts[i] / (double)n;
-        s += p * log2(p);
-    }
-    return -s;
-}
-
-/* Counts of each distinct value in `v`, ascending by value -- a fixed order,
- * because it is the summation order of the entropy. */
+/* One sampled column, prepared once for every pair it is scored in. Rows
+ * get their value's dense rank (0..d-1, ascending by value); `by_val` lists
+ * the rows by rank, ties in row order; rank g's rows begin at start[g].
+ *
+ * Scoring every pair used to sort the n joint values x*ny+y afresh -- an
+ * allocation, a 64-bit radix sort and a second allocation per pair, 7% of
+ * all compression time and a quarter of l_chicago_permits. With the columns
+ * prepared, a pair is one counting-sort pass: Y's rows, already in value
+ * order, scattered into X's buckets come out ordered by (x, y), the same
+ * ascending joint order the sort produced, so every count -- and so every
+ * score -- is the same double as before. */
 static int i64_cmp(const void *a, const void *b)
 {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
     return x < y ? -1 : (x > y ? 1 : 0);
 }
 
-static int64_t *value_counts(const int64_t *v, size_t n, size_t *out_n)
+typedef struct {
+    uint32_t *rank, *by_val, *start;
+    size_t    d;
+} ColStat;
+
+static void colstat_free(ColStat *c)
 {
-    int64_t *s = malloc((n ? n : 1) * sizeof(int64_t));
-    if (!s) return NULL;
-    memcpy(s, v, n * sizeof(int64_t));
-    if (sort_nonneg(s, n)) qsort(s, n, sizeof(int64_t), i64_cmp);
-    int64_t *c = malloc((n ? n : 1) * sizeof(int64_t));
-    if (!c) { free(s); return NULL; }
-    size_t k = 0;
-    for (size_t i = 0; i < n; ) {
-        size_t j = i;
-        while (j < n && s[j] == s[i]) j++;
-        c[k++] = (int64_t)(j - i);
-        i = j;
+    free(c->rank); free(c->by_val); free(c->start);
+    c->rank = c->by_val = c->start = NULL;
+}
+
+/* `v` holds non-negative ids. Returns 0, or -1 out of memory. */
+static int colstat_build(ColStat *c, const int64_t *v, size_t n)
+{
+    c->d = 0;
+    c->rank = malloc((n ? n : 1) * sizeof(uint32_t));
+    c->by_val = malloc((n ? n : 1) * sizeof(uint32_t));
+    c->start = NULL;
+    if (!c->rank || !c->by_val) goto fail;
+    uint64_t mx = 0;
+    for (size_t i = 0; i < n; i++) if ((uint64_t)v[i] > mx) mx = (uint64_t)v[i];
+    if (mx < 4 * (uint64_t)n + 4096) {
+        /* ids into a sample: a direct table, present -> rank */
+        uint32_t *map = calloc((size_t)mx + 1, sizeof(uint32_t));
+        if (!map) goto fail;
+        for (size_t i = 0; i < n; i++) map[v[i]] = 1;
+        uint32_t d = 0;
+        for (uint64_t x = 0; x <= mx; x++) if (map[x]) map[x] = ++d;
+        for (size_t i = 0; i < n; i++) c->rank[i] = map[v[i]] - 1;
+        free(map);
+        c->d = d;
+    } else {
+        /* sparse: sorted distinct values, each row found by bisection */
+        int64_t *u = malloc((n ? n : 1) * sizeof(int64_t));
+        if (!u) goto fail;
+        memcpy(u, v, n * sizeof(int64_t));
+        if (sort_nonneg(u, n)) qsort(u, n, sizeof(int64_t), i64_cmp);
+        size_t d = 0;
+        for (size_t i = 0; i < n; i++) if (!d || u[d - 1] != u[i]) u[d++] = u[i];
+        for (size_t i = 0; i < n; i++) {
+            size_t lo = 0, hi = d;
+            while (hi - lo > 1) { size_t m = (lo + hi) / 2; if (u[m] <= v[i]) lo = m; else hi = m; }
+            c->rank[i] = (uint32_t)lo;
+        }
+        free(u);
+        c->d = d;
     }
-    free(s);
-    *out_n = k;
-    return c;
+    c->start = calloc(c->d + 1, sizeof(uint32_t));
+    if (!c->start) goto fail;
+    for (size_t i = 0; i < n; i++) c->start[c->rank[i] + 1]++;
+    for (size_t g = 0; g < c->d; g++) c->start[g + 1] += c->start[g];
+    uint32_t *pos = malloc((c->d ? c->d : 1) * sizeof(uint32_t));
+    if (!pos) goto fail;
+    memcpy(pos, c->start, c->d * sizeof(uint32_t));
+    for (size_t i = 0; i < n; i++) c->by_val[pos[c->rank[i]]++] = (uint32_t)i;
+    free(pos);
+    return 0;
+fail:
+    colstat_free(c);
+    c->d = 0;
+    return -1;
 }
 
-/* H(Y) and the distinct count from one pass -- both are needed per column. */
-static double entropy_of(const int64_t *ys, size_t n, size_t *distinct)
-{
-    if (n == 0) { if (distinct) *distinct = 0; return 0.0; }
-    size_t nc = 0;
-    int64_t *c = value_counts(ys, n, &nc);
-    if (!c) { if (distinct) *distinct = 0; return 0.0; }
-    double h = counts_entropy(c, nc, n);
-    free(c);
-    if (distinct) *distinct = nc;
-    return h;
-}
-
-/* `hx` and `mx` describe X alone and are hoisted by the caller -- they used
- * to be recomputed for every Y, which on 421 columns meant 420 identical
- * recomputations per column. The arithmetic keeps the same shape so the
- * result is the same double, not merely the same number. */
-static double cond_entropy_corrected(const int64_t *xs, const int64_t *ys,
-                                     size_t n, int64_t ny,
-                                     double hx, size_t mx)
+/* H(Y), summed over the counts in ascending value order */
+static double colstat_entropy(const ColStat *c, size_t n)
 {
     if (n == 0) return 0.0;
-    int64_t *joint = malloc(n * sizeof(int64_t));
-    if (!joint) return 0.0;
-    for (size_t i = 0; i < n; i++) joint[i] = xs[i] * ny + ys[i];
+    double s = 0.0;
+    for (size_t g = 0; g < c->d; g++) {
+        double p = (double)(int64_t)(c->start[g + 1] - c->start[g]) / (double)n;
+        s += p * log2(p);
+    }
+    return -s;
+}
+
+/* plogp[c] = p*log2(p) for p = c/n, c = 0..n: the very term the sums add,
+ * computed once instead of once per joint count. */
+static double *plogp_table(size_t n)
+{
+    double *t = malloc((n + 1) * sizeof(double));
+    if (!t) return NULL;
+    t[0] = 0.0;
+    for (size_t c = 1; c <= n; c++) {
+        double p = (double)(int64_t)c / (double)n;
+        t[c] = p * log2(p);
+    }
+    return t;
+}
+
+/* H(Y|X) with the Miller-Madow correction. `hx` is H(X); `pos` and `out`
+ * are scratch of x->d and n entries; `plogp` is plogp_table(n). */
+static double cond_entropy_corrected(const ColStat *x, const ColStat *y, size_t n,
+                                     double hx, uint32_t *pos, uint32_t *out,
+                                     const double *plogp)
+{
+    if (n == 0) return 0.0;
+    memcpy(pos, x->start, x->d * sizeof(uint32_t));
+    for (size_t k = 0; k < n; k++) {
+        uint32_t r = y->by_val[k];
+        out[pos[x->rank[r]]++] = y->rank[r];
+    }
+    double s = 0.0;
     size_t jn = 0;
-    int64_t *jc = value_counts(joint, n, &jn);
-    free(joint);
-    if (!jc) return 0.0;
-    double h = counts_entropy(jc, jn, n) - hx;
-    double corr = (double)((int64_t)jn - (int64_t)mx)
+    for (size_t g = 0; g < x->d; g++) {
+        for (size_t i = x->start[g], e = x->start[g + 1]; i < e; ) {
+            size_t j = i + 1;
+            while (j < e && out[j] == out[i]) j++;
+            s += plogp[j - i];
+            jn++;
+            i = j;
+        }
+    }
+    double h = -s - hx;
+    double corr = (double)((int64_t)jn - (int64_t)x->d)
                 / (2.0 * (double)n * log(2.0));
-    free(jc);
     return h + corr;
 }
 
@@ -965,24 +1026,26 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
     if (step < 1) step = 1;
     size_t sn = (nrows + step - 1) / step;
 
-    int64_t **sample = calloc(nd, sizeof(int64_t *));
+    ColStat *st      = calloc(nd, sizeof(ColStat));
     double  *base    = calloc(nd, sizeof(double));
-    size_t  *distinct = calloc(nd, sizeof(size_t));
-    if (!sample || !base || !distinct) {
-        free(sample); free(base); free(distinct); free(dict_pos);
-        free(parent); free(order); return R; }
-    for (size_t i = 0; i < nd; i++) {
-        sample[i] = malloc((sn ? sn : 1) * sizeof(int64_t));
+    int64_t *vals    = malloc((sn ? sn : 1) * sizeof(int64_t));
+    uint32_t *pos    = malloc((sn ? sn : 1) * sizeof(uint32_t));
+    uint32_t *joint  = malloc((sn ? sn : 1) * sizeof(uint32_t));
+    double  *plogp   = plogp_table(sn);
+    int bad = !st || !base || !vals || !pos || !joint || !plogp;
+    for (size_t i = 0; !bad && i < nd; i++) {
         size_t k = 0;
-        for (size_t r = 0; r < nrows; r += step) sample[i][k++] = plan[dict_pos[i]].ids[r];
-        base[i] = entropy_of(sample[i], sn, &distinct[i]);
+        for (size_t r = 0; r < nrows; r += step) vals[k++] = plan[dict_pos[i]].ids[r];
+        bad = colstat_build(&st[i], vals, sn);
+        base[i] = colstat_entropy(&st[i], sn);
     }
+    free(vals);
 
     /* gain[b][a] for a != b, stored dense as a QUANTISED score; -1 means
      * "no usable gain". See score_of(). */
-    int64_t *gain = malloc(nd * nd * sizeof(int64_t));
-    if (!gain) { for (size_t i = 0; i < nd; i++) free(sample[i]);
-                 free(sample); free(base); free(distinct); free(dict_pos);
+    int64_t *gain = bad ? NULL : malloc(nd * nd * sizeof(int64_t));
+    if (!gain) { for (size_t i = 0; st && i < nd; i++) colstat_free(&st[i]);
+                 free(st); free(base); free(pos); free(joint); free(plogp); free(dict_pos);
                  free(parent); free(order); return R; }
     for (size_t i = 0; i < nd * nd; i++) gain[i] = -1;
     const int64_t min_gain = score_of(0.05);
@@ -990,8 +1053,7 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
         for (size_t bi = 0; bi < nd; bi++) {
             if (ai == bi) continue;
             int64_t g = score_of(base[bi] - cond_entropy_corrected(
-                sample[ai], sample[bi], sn,
-                (int64_t)plan[dict_pos[bi]].nalpha, base[ai], distinct[ai]));
+                &st[ai], &st[bi], sn, base[ai], pos, joint, plogp));
             if (g > min_gain) gain[bi * nd + ai] = g;
         }
     }
@@ -1074,8 +1136,8 @@ static Parents pick_parents(ColPlan *plan, size_t nc, size_t nrows)
         if (!gj[k].pays) parent[gj[k].b] = -1;
     free(gj);
 
-    for (size_t i = 0; i < nd; i++) free(sample[i]);
-    free(sample); free(base); free(distinct);
+    for (size_t i = 0; i < nd; i++) colstat_free(&st[i]);
+    free(st); free(base); free(pos); free(joint); free(plogp);
     free(gain); free(placed); free(remaining);
     free(dict_pos);
     R.parent = parent; R.order = order; R.norder = no;
@@ -1176,16 +1238,19 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
     /* the shortlist: per text column, up to TEXT_PARENT_CANDIDATES parents */
     Probe *probes = malloc(nt * (TEXT_PARENT_CANDIDATES + 1) * sizeof(Probe));
     size_t nprobes = 0;
-    int64_t **dsample = calloc(nd, sizeof(int64_t *));
+    ColStat *dst = calloc(nd, sizeof(ColStat));
     double  *dbase = calloc(nd, sizeof(double));
-    size_t  *ddist = calloc(nd, sizeof(size_t));
-    if (!probes || !dsample || !dbase || !ddist) goto done;
+    uint32_t *pos = malloc((sn ? sn : 1) * sizeof(uint32_t));
+    uint32_t *joint = malloc((sn ? sn : 1) * sizeof(uint32_t));
+    int64_t *vals = malloc((sn ? sn : 1) * sizeof(int64_t));
+    double *plogp = plogp_table(sn);
+    if (!probes || !dst || !dbase || !pos || !joint || !vals || !plogp) goto done;
     for (size_t i = 0; i < nd; i++) {
-        dsample[i] = malloc((sn ? sn : 1) * sizeof(int64_t));
         size_t k = 0;
         for (size_t r = 0; r < nrows; r += step)
-            dsample[i][k++] = plan[dict_pos[i]].ids[r];
-        dbase[i] = entropy_of(dsample[i], sn, &ddist[i]);
+            vals[k++] = plan[dict_pos[i]].ids[r];
+        if (colstat_build(&dst[i], vals, sn)) goto done;
+        dbase[i] = colstat_entropy(&dst[i], sn);
     }
 
     for (size_t ti = 0; ti < nt; ti++) {
@@ -1197,18 +1262,19 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
         size_t u = 0;
         if (build_dict(t->cells + tp, t->ncols * step, sn, SIZE_MAX, &srt, &u, &ids) != 1)
             break;
-        size_t tdist = 0;
-        double base_t = entropy_of(ids, sn, &tdist);
+        ColStat ts;
+        if (colstat_build(&ts, ids, sn)) { free(srt); free(ids); break; }
+        double base_t = colstat_entropy(&ts, sn);
 
         Cand *cands = malloc(nd * sizeof(Cand));
         size_t ncand = 0;
         const int64_t min_gain_t = score_of(0.05);
         for (size_t di = 0; di < nd; di++) {
             int64_t g = score_of(base_t - cond_entropy_corrected(
-                dsample[di], ids, sn, (int64_t)u, dbase[di], ddist[di]));
+                &dst[di], &ts, sn, dbase[di], pos, joint, plogp));
             if (g > min_gain_t) { cands[ncand].g = g; cands[ncand].dp = di; ncand++; }
         }
-        free(srt); free(ids);
+        free(srt); free(ids); colstat_free(&ts);
         if (!ncand) { free(cands); continue; }
         qsort(cands, ncand, sizeof(Cand), cand_cmp);
 
@@ -1267,8 +1333,8 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
     }
 
 done:
-    if (dsample) for (size_t i = 0; i < nd; i++) free(dsample[i]);
-    free(dsample); free(dbase); free(ddist); free(probes);
+    if (dst) for (size_t i = 0; i < nd; i++) colstat_free(&dst[i]);
+    free(dst); free(dbase); free(pos); free(joint); free(vals); free(plogp); free(probes);
     free(dict_pos); free(text_pos);
 }
 
