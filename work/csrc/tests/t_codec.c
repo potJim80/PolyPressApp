@@ -1136,7 +1136,10 @@ static void case_xz_pinned(void)
               !memcmp(back.data, in.data, in.len), "xz kind %zu does not decode back", k);
         buf_free(&back);
     }
-    CHECK(ppz_lzma_probe_len(in.data, in.len) == 788824, "probe %zu, pinned 788824", ppz_lzma_probe_len(in.data, in.len));
+    /* a whole probe (256 KB, the cap) and a sampled one (the 3.6 MB input) */
+    size_t pw = ppz_lzma_probe_len(in.data, (size_t)256 << 10), ps = ppz_lzma_probe_len(in.data, in.len);
+    CHECK(pw == 65539, "whole probe %zu, pinned 65539", pw);
+    CHECK(ps == 814445, "sampled probe %zu, pinned 814445", ps);
     buf_free(&in); buf_free(&o);
 }
 

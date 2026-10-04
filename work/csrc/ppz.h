@@ -149,8 +149,9 @@ int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);   /* PLAIN */
 int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind);
 
 /* Compressed length at preset 1, used only to choose between two orderings of
- * the same column. Nothing it produces is stored; the real preset-9 stage is
- * far too slow to run as a decision procedure. */
+ * the same column; past 256 KB, measured on spread-out slices and scaled.
+ * Nothing it produces is stored; the real preset-9 stage is far too slow to
+ * run as a decision procedure. */
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 /* An LZ-style size estimate, no range coder: for ranking orders only. */
 size_t ppz_size_estimate(const uint8_t *in, size_t n);

@@ -235,7 +235,33 @@ size_t ppz_size_estimate(const uint8_t *in, size_t n)
     return (size_t)(bits / 8) + 1;
 }
 
+static size_t probe_whole(const uint8_t *in, size_t n);
+
+/* A probe longer than PROBE_CAP measures PROBE_SLICES evenly spaced slices
+ * of it, scaled to the whole. Every probe ranks two orders of the same
+ * bytes, and preset 1's dictionary is 1 MB, so the probe was already blind
+ * past a megabyte; what ranks orders is local, and a quarter-megabyte of
+ * spread-out samples sees it. Measured 2026-10-04 against whole probes:
+ * suite -0.001% bytes, -2.5% instructions, no table larger; Socrata 100
+ * -0.07% bytes, -4.9% instructions, worst table +0.34%. 128 KB made
+ * l_nndss_full 3.3% larger (its dictionary guard needs the room). */
+#define PROBE_CAP    ((size_t)256 << 10)
+#define PROBE_SLICES 4
+
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n)
+{
+    if (n <= PROBE_CAP) return probe_whole(in, n);
+    const size_t cs = PROBE_CAP / PROBE_SLICES;
+    uint8_t *t = malloc(PROBE_CAP);
+    if (!t) return (size_t)-1;
+    for (size_t j = 0; j < PROBE_SLICES; j++)
+        memcpy(t + j * cs, in + (n - cs) * j / (PROBE_SLICES - 1), cs);
+    size_t got = probe_whole(t, PROBE_CAP);
+    free(t);
+    return got == (size_t)-1 ? got : (size_t)((double)got * n / PROBE_CAP);
+}
+
+static size_t probe_whole(const uint8_t *in, size_t n)
 {
     lzma_options_lzma opt;
     if (lzma_lzma_preset(&opt, 1)) return (size_t)-1;
