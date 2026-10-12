@@ -1,0 +1,76 @@
+__pycache__/
+*.pyc
+*.so
+*.o
+.DS_Store
+
+# Build artifacts. These regenerate next to pyproject.toml, which lives in
+# work/ since the 2026-08-04 restructure, so that is where they appear.
+work/build/
+work/dist/
+*.egg-info/
+work/csrc/polypress
+work/csrc/*.o
+work/csrc/.build/
+work/.tmp/
+
+*.dtz
+*.tcz
+
+# Downloaded benchmark data, now under IN/. Roughly 5.4 GB across the corpora,
+# all of it re-fetchable: work/benchmarks/fetch_socrata100.py, fetch_corpus.py,
+# fetch_matrix.py and make_hostile.py rebuild every one of these from public
+# sources. What is committed instead is the *manifest* --
+# work/benchmarks/socrata100-manifest.json -- which pins exactly which datasets
+# were used and why each rejection was rejected. The data is reproducible; the
+# selection is the thing that has to be on the record.
+IN/corpus/
+IN/corpus100/
+IN/corpus500/
+IN/corpus_matrix/
+IN/corpus_hostile/
+# Stata/SPSS/SAS test files: re-fetch with work/benchmarks/fetch_formats.py
+IN/formats/
+
+# The standard benchmark suite (IN/suite/) is 267 MB rebuilt in 25 seconds by
+# work/benchmarks/make_suite.py from the corpora above -- so the DATA is not
+# committed, but the MANIFEST is. The manifest carries a sha256 per file and
+# is what makes a number traceable: if a result moves and the hash moved with
+# it, the input changed, not the codec.
+IN/suite/*
+!IN/suite/MANIFEST.json
+
+# Sweep working files, now under OUT/. The JSONL, the summary and the CSV under
+# OUT/results/ are committed on purpose -- they are the evidence -- but the
+# truncated copies and the progress logs are not.
+OUT/results/truncated/
+OUT/results/*.log
+work/benchmarks/*-fetch.log
+work/benchmarks/*-gen.log
+work/benchmarks/cross-column.log
+work/benchmarks/overnight.log
+
+# The demo tables shipped with the app docs -- re-fetchable, and IN/ is data,
+# which does not go in git. Named explicitly because they do not live under one
+# of the corpus directories above.
+IN/polypress-demo.csv
+IN/polypress-demo-hard.csv
+
+# Written by the website session and kept in sync from the private website repo
+# (github.com/potJim80/PolyPressWebsite). It names the host and its IP, and this
+# repo is public, so the copy here stays local.
+HANDOFF.md
+
+# The Handrail brief -- a different project's document, dropped here by hand.
+PROJECT-BRIEF.md
+
+# Credentials never belong here. A PyPI recovery-codes file sat untracked in
+# the repo root for a week -- one `git add -A` from being published, since this
+# repo has a public remote. The file was moved out; this rule is the second
+# line of defence, not the first. Keep secrets outside the working tree.
+*Recovery-Codes*
+*recovery-codes*
+.pypirc
+
+# per-machine Claude Code settings
+.claude/settings.local.json
