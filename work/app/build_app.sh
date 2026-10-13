@@ -127,29 +127,32 @@ if [ "$ACTION" = "dmg" ]; then
 Polypress
 =========
 
-Drag Polypress.app onto the Applications folder shown here.
+Installation
+------------
+Drag Polypress.app to the Applications folder shown in this window.
 
-THE FIRST TIME YOU OPEN IT, macOS WILL REFUSE.
-It will say Polypress "cannot be opened because it is from an unidentified
-developer", or that it is damaged. That is macOS Gatekeeper, and it says this
-about every app not signed with a paid Apple Developer certificate.
+Polypress is not signed with an Apple Developer ID, so macOS blocks it the
+first time it is opened. To open it:
 
-To open it anyway:
+  macOS 15 or later: open Polypress once, then open System Settings,
+  choose Privacy & Security, and select Open Anyway.
 
-  Right-click (or Control-click) Polypress.app  ->  Open  ->  Open
+  macOS 14 or earlier: Control-click Polypress.app, choose Open, and
+  choose Open again.
 
-You only have to do this once.
+This is needed only once.
 
-Using it
---------
-Drop a table on the window (CSV, TSV, JSON, JSON Lines, or Parquet if your
-Python has pyarrow) and it is compressed into a .ppz next to the original.
-Drop a .ppz and it is restored next to itself. Hover over a line for "show"
-and for "as csv / tsv / json / jsonl / parquet", which writes the same table
-in another format. Double-clicking a .ppz in Finder works too.
+Use
+---
+Drop a table on the window (CSV, TSV, JSON or JSON Lines, or Parquet if the
+system Python has pyarrow) to compress it into a .ppz file next to the
+original. Drop a .ppz file to restore the table next to it. A .ppz file can
+also be opened by double-clicking it in the Finder.
 
-Nothing is written until the compressed file has been decompressed again and
-compared with the original, cell for cell.
+Before an archive is written, it is decompressed and compared with the
+original, cell by cell.
+
+Documentation: https://www.polypressapp.com/docs/
 NOTE
   rm -f "$OUT/Polypress.dmg"
   hdiutil create -volname "Polypress" -srcfolder "$STAGE" -ov -format UDZO \

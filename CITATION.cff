@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use Polypress in published work, please cite it as below."
+type: software
+title: Polypress
+abstract: "Lossless compression for tabular data: delimited text, JSON, and Stata, SPSS and SAS files."
+authors:
+  - family-names: Akbarin
+    given-names: Mahdi
+version: 1.0.0
+date-released: 2026-10-12
+license: MIT
+repository-code: "https://github.com/potJim80/PolyPressApp"
+url: "https://www.polypressapp.com"
+keywords:
+  - compression
+  - tabular data
+  - CSV
+  - Stata
+  - SPSS
+  - SAS

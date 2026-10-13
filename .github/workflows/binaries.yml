@@ -1,0 +1,145 @@
+# Build the downloadable programs for a release and attach them to it:
+#
+#   polypress-X.Y.Z-macos-universal.tar.gz   command-line program, Apple silicon + Intel
+#   Polypress-X.Y.Z-macos.dmg                the macOS application (Apple silicon)
+#   polypress-X.Y.Z-linux-x86_64.tar.gz      command-line program, glibc 2.28 or later
+#   polypress-X.Y.Z-linux-arm64.tar.gz
+#   SHA256SUMS.txt
+#
+# Runs on every published release. Run it by hand with a tag to rebuild that
+# release's files; when the repo has no release of that name (the private repo)
+# the files are only kept as workflow artifacts.
+
+name: Release binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v1.0.0"
+        required: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  linux:
+    name: linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, image: x86_64, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, image: aarch64, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    # an old glibc, so the program runs on most current distributions
+    container: quay.io/pypa/manylinux_2_28_${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # a release builds its tag; a manual run builds the chosen branch
+          ref: ${{ github.event_name == 'release' && env.TAG || github.ref }}
+      - name: Build
+        run: |
+          dnf install -y -q zlib-devel
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sh work/csrc/build.sh
+      - name: Test
+        run: |
+          ./work/csrc/polypress --version
+          printf 'id,city,zip\n1,Chicago,60601\n2,Chicago,60601\n3,Boston,02108\n' > t.csv
+          ./work/csrc/polypress compress t.csv -o t.ppz
+          ./work/csrc/polypress restore t.ppz -o back.csv
+          cmp t.csv back.csv
+      - name: Package
+        run: |
+          v="${TAG#v}"; d="polypress-$v-linux-${{ matrix.arch }}"
+          mkdir -p "$d/licences"
+          cp work/csrc/polypress "$d/"
+          cp work/LICENSE "$d/LICENSE"
+          cp work/csrc/xz/LICENSE "$d/licences/xz-LICENSE"
+          cp work/csrc/readstat/LICENSE "$d/licences/ReadStat-LICENSE"
+          printf 'Polypress %s, command-line program for Linux (%s)\n\nInstall:  sudo cp polypress /usr/local/bin/\nUsage:    polypress --help\n\nRequires glibc 2.28 or later and zlib (libz.so.1).\nDocumentation: https://www.polypressapp.com/documentation.html\n' "$v" "${{ matrix.arch }}" > "$d/README.txt"
+          tar -czf "$d.tar.gz" "$d"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: polypress-*.tar.gz
+
+  macos:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # a release builds its tag; a manual run builds the chosen branch
+          ref: ${{ github.event_name == 'release' && env.TAG || github.ref }}
+      - name: Build the application
+        run: |
+          DEST="$RUNNER_TEMP/app" DMG_OUT="$RUNNER_TEMP/dmg" sh work/app/build_app.sh dmg
+          cp "$RUNNER_TEMP"/dmg/*.dmg "Polypress-${TAG#v}-macos.dmg"
+      - name: Build the command-line program for both architectures
+        run: |
+          rm -rf work/csrc/.build && sh work/csrc/build.sh && cp work/csrc/polypress polypress-arm64
+          mkdir shim && printf '#!/bin/sh\nexec /usr/bin/cc -arch x86_64 "$@"\n' > shim/cc && chmod +x shim/cc
+          rm -rf work/csrc/.build && PATH="$PWD/shim:$PATH" sh work/csrc/build.sh && cp work/csrc/polypress polypress-x86_64
+          lipo -create polypress-arm64 polypress-x86_64 -output polypress
+          lipo -info polypress
+      - name: Test both architectures
+        run: |
+          softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 || true
+          printf 'id,city,zip\n1,Chicago,60601\n2,Chicago,60601\n3,Boston,02108\n' > t.csv
+          for a in arm64 x86_64; do
+            arch -$a ./polypress --version
+            arch -$a ./polypress compress t.csv -o t-$a.ppz
+            arch -$a ./polypress restore t-$a.ppz -o back-$a.csv
+            cmp t.csv back-$a.csv
+          done
+          cmp t-arm64.ppz t-x86_64.ppz
+      - name: Package
+        run: |
+          v="${TAG#v}"; d="polypress-$v-macos-universal"
+          mkdir -p "$d/licences"
+          cp polypress "$d/"
+          cp work/LICENSE "$d/LICENSE"
+          cp work/csrc/xz/LICENSE "$d/licences/xz-LICENSE"
+          cp work/csrc/readstat/LICENSE "$d/licences/ReadStat-LICENSE"
+          printf 'Polypress %s, command-line program for macOS 11 or later (Apple silicon and Intel)\n\nInstall:  sudo cp polypress /usr/local/bin/\nUsage:    polypress --help\n\nThe program is not signed with an Apple Developer ID. If macOS refuses to run it, run:\n          xattr -d com.apple.quarantine polypress\nDocumentation: https://www.polypressapp.com/documentation.html\n' "$v" > "$d/README.txt"
+          tar -czf "$d.tar.gz" "$d"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            polypress-*.tar.gz
+            Polypress-*.dmg
+
+  attach:
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - name: Checksums
+        working-directory: files
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: files/*
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: files
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" * -R "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "No release $TAG in $GITHUB_REPOSITORY; files kept as the release-files artifact."
+          fi
