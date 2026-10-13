@@ -1122,8 +1122,11 @@ static int orig_open(const uint8_t *blob, size_t n, Orig *o)
     o->is_original = 1;
     size_t ml = ((size_t)blob[4] << 24) | ((size_t)blob[5] << 16) | ((size_t)blob[6] << 8) | blob[7];
     size_t bl = ((size_t)blob[8] << 24) | ((size_t)blob[9] << 16) | ((size_t)blob[10] << 8) | blob[11];
+    size_t tl = ((size_t)blob[12] << 24) | ((size_t)blob[13] << 16) | ((size_t)blob[14] << 8) | blob[15];
     const Js *f = js_get(og, "format"), *nb = js_get(og, "bytes");
-    if (bl > n - 16 - ml || og->kind != JS_OBJ || !f || f->kind != JS_STR || !ppz_stat_name(f->str) ||
+    /* the three streams fill the archive exactly: the text stream is unused
+     * here, but a file missing its last byte is still a cut file */
+    if (bl > n - 16 - ml || tl != n - 16 - ml - bl || og->kind != JS_OBJ || !f || f->kind != JS_STR || !ppz_stat_name(f->str) ||
         !nb || nb->kind != JS_NUM || !nb->is_int || nb->inum < 0 || strlen(f->str) >= sizeof(o->fmt))
         goto bad;
     snprintf(o->fmt, sizeof(o->fmt), "%s", f->str);

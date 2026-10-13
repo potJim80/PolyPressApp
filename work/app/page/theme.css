@@ -1,0 +1,161 @@
+/* PolyPress suite theme, version 2 (2026-10-12)
+ *
+ * One look for polypressapp.com and the suite's desktop apps (Polypress,
+ * Handrail, Table Viewer), which draw their windows as web pages in a
+ * WKWebView. It follows the website, whose layout and type follow the pattern
+ * of the GOV.UK Design System: Arial, black and white, one blue, underlined
+ * links, square edges, plain tables, a yellow keyboard-focus outline.
+ * (Version 1 followed the website's short-lived Furo-style look.)
+ *
+ * Master copy: ~/Desktop/Projects/PolyPressApp/theme/. Projects keep their
+ * own copy (sync.sh copies it in), so each repository builds on its own.
+ * See README.md for the components and the rules for using them.
+ */
+
+/* ------------------------------------------------------------------ tokens */
+:root {
+  --pp-bg: #ffffff;
+  --pp-bg-soft: #f3f2f1;
+  --pp-bg-code: #f3f2f1;
+  --pp-text: #0b0c0c;
+  --pp-text-soft: #505a5f;
+  --pp-text-faint: #6f777b;
+  --pp-border: #b1b4b6;
+  --pp-border-strong: #0b0c0c;
+  --pp-brand: #1d70b8;
+  --pp-brand-hover: #003078;
+  --pp-brand-soft: #d2e2f1;
+  --pp-ok: #005a30;
+  --pp-ok-soft: #cce2d8;
+  --pp-warn: #6e3619;
+  --pp-warn-soft: #fcd6c3;
+  --pp-error: #d4351c;
+  --pp-error-soft: #f6d7d2;
+  --pp-focus: #ffdd00;
+  --pp-button: #00703c;
+  --pp-button-hover: #005a30;
+  --pp-button-shadow: #002d18;
+  --pp-sans: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  --pp-mono: SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --pp-radius: 0;
+  --pp-radius-lg: 0;
+}
+
+/* -------------------------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--pp-bg); color: var(--pp-text);
+  font-family: var(--pp-sans); font-size: 16px; line-height: 1.32;
+}
+a { color: var(--pp-brand); text-decoration: underline; text-underline-offset: .15em; }
+a:hover { color: var(--pp-brand-hover); text-decoration-thickness: 3px; }
+a:focus, button:focus, select:focus, input:focus {
+  outline: 3px solid var(--pp-focus); outline-offset: 0; box-shadow: inset 0 0 0 2px var(--pp-text);
+}
+a:focus { background: var(--pp-focus); color: var(--pp-text); box-shadow: 0 -2px var(--pp-focus), 0 4px var(--pp-text); outline: none; text-decoration: none; }
+h1 { font-size: 32px; line-height: 1.09; font-weight: 700; margin: 0 0 10px; }
+h2 { font-size: 24px; line-height: 1.04; font-weight: 700; margin: 30px 0 15px; }
+h3 { font-size: 19px; font-weight: 700; margin: 20px 0 10px; }
+p { margin: 0 0 15px; }
+.pp-lead { font-size: 19px; line-height: 1.32; margin-bottom: 25px; }
+.pp-soft { color: var(--pp-text-soft); }
+.pp-small { font-size: 14px; color: var(--pp-text-soft); }
+.pp-mono, code { font-family: var(--pp-mono); font-variant-numeric: tabular-nums; }
+code { font-size: .9em; background: var(--pp-bg-code); padding: 0 .2em; }
+.pp-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ------------------------------------------------------------- app shell */
+/* A black section bar on the left, as the website's black header bar; the
+   window keeps its own macOS title bar above. */
+.pp-app { display: grid; grid-template-columns: 190px minmax(0, 1fr); height: 100vh; }
+.pp-side { background: var(--pp-text); border-right: 6px solid var(--pp-brand); padding: 15px 0; display: flex; flex-direction: column; overflow-y: auto; }
+.pp-side__label { font-size: 14px; font-weight: 700; color: #b1b4b6; margin: 15px 15px 5px; }
+.pp-side a, .pp-side button {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  font: 700 16px var(--pp-sans); color: #fff; background: none; border: 0; border-left: 5px solid transparent;
+  padding: 9px 15px 9px 10px; cursor: pointer; text-decoration: none;
+}
+.pp-side a:hover, .pp-side button:hover { text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: .2em; }
+.pp-side [aria-current="page"] { border-left-color: #fff; background: #1f2224; }
+.pp-side button:focus { outline: 3px solid var(--pp-focus); outline-offset: -3px; box-shadow: none; }
+.pp-side .pp-count { margin-left: auto; font-weight: 400; font-size: 14px; color: #b1b4b6; }
+.pp-side__foot { margin-top: auto; padding: 15px; font-size: 13px; color: #b1b4b6; font-family: var(--pp-sans); }
+.pp-main { overflow-y: auto; padding: 25px 30px 30px; }
+.pp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 10px; }
+
+/* --------------------------------------------------------------- buttons */
+.pp-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font: 400 16px var(--pp-sans); line-height: 1.2; padding: 7px 10px 6px; border: 2px solid transparent;
+  background: var(--pp-bg-soft); color: var(--pp-text); box-shadow: 0 2px 0 #929191; cursor: pointer; text-decoration: none;
+}
+.pp-btn:hover { background: #dbdad9; color: var(--pp-text); text-decoration: none; }
+.pp-btn:focus { background: var(--pp-focus); outline: 3px solid transparent; box-shadow: inset 0 0 0 1px var(--pp-focus), 0 2px 0 var(--pp-text); }
+.pp-btn:active { transform: translateY(2px); box-shadow: none; }
+.pp-btn:disabled { opacity: .5; cursor: default; }
+.pp-btn--primary { background: var(--pp-button); color: #fff; box-shadow: 0 2px 0 var(--pp-button-shadow); }
+.pp-btn--primary:hover { background: var(--pp-button-hover); color: #fff; }
+.pp-btn--quiet {
+  background: none; box-shadow: none; border: 0; padding: 2px 0; color: var(--pp-brand);
+  text-decoration: underline; text-underline-offset: .15em;
+}
+.pp-btn--quiet:hover { background: none; color: var(--pp-brand-hover); text-decoration-thickness: 3px; }
+.pp-btn--quiet:focus { background: var(--pp-focus); color: var(--pp-text); box-shadow: 0 -2px var(--pp-focus), 0 4px var(--pp-text); text-decoration: none; }
+.pp-btn--danger { background: var(--pp-error); color: #fff; box-shadow: 0 2px 0 #55150b; }
+.pp-btn--small { font-size: 14px; padding: 4px 8px 3px; }
+.pp-btn--quiet.pp-btn--small { padding: 2px 0; }
+
+/* ----------------------------------------------------------------- forms */
+.pp-field { margin: 0 0 20px; }
+.pp-field > label, .pp-legend { display: block; font-weight: 700; font-size: 16px; margin-bottom: 5px; }
+.pp-hint { font-size: 14px; color: var(--pp-text-soft); margin-top: 5px; }
+.pp-select {
+  font: 16px var(--pp-sans); color: var(--pp-text); background: var(--pp-bg);
+  border: 2px solid var(--pp-text); border-radius: 0; padding: 5px 6px; min-width: 220px; height: 38px;
+}
+.pp-choice { display: flex; flex-direction: column; gap: 8px; }
+.pp-choice label { display: flex; align-items: center; gap: 8px; font-size: 16px; cursor: pointer; }
+.pp-choice input { accent-color: var(--pp-text); margin: 0; width: 20px; height: 20px; }
+.pp-path { font-family: var(--pp-mono); font-size: 14px; color: var(--pp-text-soft); word-break: break-all; }
+
+/* -------------------------------------------------------------- drop zone */
+.pp-drop { border: 2px dashed var(--pp-border); padding: 30px 20px; text-align: center; background: var(--pp-bg); }
+.pp-drop.is-over, body.is-over .pp-drop { border-color: var(--pp-brand); border-style: solid; background: var(--pp-brand-soft); }
+.pp-drop__title { font-size: 19px; font-weight: 700; margin: 0 0 5px; }
+.pp-drop__hint { font-size: 14px; color: var(--pp-text-soft); margin: 5px 0 0; }
+
+/* --------------------------------------------------------------- tables */
+.pp-table-wrap { margin: 0 0 20px; overflow-x: auto; }
+.pp-table { border-collapse: collapse; width: 100%; font-size: 16px; }
+.pp-table th, .pp-table td { text-align: left; vertical-align: top; padding: 10px 15px 10px 0; border-bottom: 1px solid var(--pp-border); }
+.pp-table th:last-child, .pp-table td:last-child { padding-right: 0; }
+.pp-table thead th { font-weight: 700; }
+.pp-table .pp-name { font-weight: 400; }
+.pp-table .pp-actions { text-align: right; white-space: nowrap; }
+
+/* ----------------------------------------------------- status and progress */
+/* tags, as the GOV.UK tag component */
+.pp-badge { display: inline-block; font-size: 14px; font-weight: 700; padding: 2px 8px 1px; white-space: nowrap; }
+.pp-badge--ok { color: var(--pp-ok); background: var(--pp-ok-soft); }
+.pp-badge--warn { color: var(--pp-warn); background: var(--pp-warn-soft); }
+.pp-badge--error { color: #2a0b06; background: var(--pp-error-soft); }
+.pp-badge--neutral { color: #383f43; background: #e5e6e7; }
+.pp-progress { height: 8px; background: var(--pp-bg-soft); border: 1px solid var(--pp-border); overflow: hidden; margin-top: 6px; position: relative; }
+.pp-progress > b { position: absolute; inset: 0 auto 0 0; background: var(--pp-brand); transition: width .3s; }
+.pp-progress > i { position: absolute; top: 0; bottom: 0; width: 30%; background: var(--pp-brand); animation: pp-slide 1.2s ease-in-out infinite; }
+@keyframes pp-slide { from { left: -30%; } to { left: 100%; } }
+
+/* ---------------------------------------------------------- notes, cards */
+/* inset text and the notification banner */
+.pp-note { border-left: 10px solid var(--pp-brand); background: var(--pp-bg); padding: 10px 15px; margin: 0 0 20px; font-size: 16px; border-top: 1px solid var(--pp-border); border-right: 1px solid var(--pp-border); border-bottom: 1px solid var(--pp-border); }
+.pp-note--warn { border-left-color: #f47738; }
+.pp-note--error { border-left-color: var(--pp-error); }
+.pp-note p:last-child { margin: 0; }
+.pp-card { border: 1px solid var(--pp-border); padding: 15px; background: var(--pp-bg); }
+.pp-kv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0; font-size: 16px; border-top: 1px solid var(--pp-border); }
+.pp-kv dt { font-weight: 700; padding: 10px 20px 10px 0; border-bottom: 1px solid var(--pp-border); }
+.pp-kv dd { margin: 0; padding: 10px 0; border-bottom: 1px solid var(--pp-border); }
+.pp-empty { color: var(--pp-text-soft); padding: 30px 0; }
+.pp-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 15px; }
+.pp-spacer { flex: 1; }

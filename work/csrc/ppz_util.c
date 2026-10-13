@@ -123,7 +123,12 @@ Str table_at(const Table *t, size_t row, size_t col)
 
 /* ------------------------------------------------------------------- lzma */
 
-/* Raw LZMA2 at preset 9e, streamed a megabyte at a time. Each run holds one
+/* xz level for every stream. 9, not 9e, since 2026-10-13 (Mahdi: yes to
+ * the speed): ~16% less time for ~0.3% more bytes. The decoder does not
+ * care which -- both use the same 64 MB dictionary. */
+#define XZ_PRESET 9
+
+/* Raw LZMA2 at preset 9, streamed a megabyte at a time. Each run holds one
  * of the process-wide slots (ppz_thread.c), so however many blocks and
  * streams are being compressed at once, only ppz_workers() xz -9e working
  * sets exist at the same moment. */
@@ -235,6 +240,26 @@ size_t ppz_size_estimate(const uint8_t *in, size_t n)
     return (size_t)(bits / 8) + 1;
 }
 
+/* PPZ_MEASURE, a lab switch (2026-10-13, Mahdi: "make the process singular"):
+ * one size measure for every choice the encoder makes. Unset is today's
+ * mix -- the estimate first and the xz probe on close calls for parents, the
+ * probe for everything else; "xz" is the probe everywhere, "est" the
+ * estimate everywhere. */
+int ppz_measure_mode(void)
+{
+    static int mode = -1;               /* a benign race: every thread computes the same */
+    if (mode < 0) {
+        const char *e = getenv("PPZ_MEASURE");
+        mode = !e || !*e ? 0 : !strcmp(e, "xz") ? 1 : !strcmp(e, "est") ? 2 : 0;
+    }
+    return mode;
+}
+
+size_t ppz_measure(const uint8_t *in, size_t n)
+{
+    return ppz_measure_mode() == 2 ? ppz_size_estimate(in, n) : ppz_lzma_probe_len(in, n);
+}
+
 static size_t probe_whole(const uint8_t *in, size_t n);
 
 /* A probe longer than PROBE_CAP measures PROBE_SLICES evenly spaced slices
@@ -278,14 +303,14 @@ static size_t probe_whole(const uint8_t *in, size_t n)
     return r == LZMA_OK ? pos : (size_t)-1;
 }
 
-/* The same raw LZMA2 9e as ppz_lzma_compress_as, for input that does not
+/* The same raw LZMA2 9 as ppz_lzma_compress_as, for input that does not
  * fit in memory: `src` fills a buffer (returns bytes, 0 at the end, or
  * (size_t)-1 on error) and every piece of output goes to `sink`. */
 int ppz_xz_stream(PpzXz kind, size_t (*src)(uint8_t *, size_t, void *), void *sctx,
                   int (*sink)(const uint8_t *, size_t, void *), void *kctx, uint64_t *out_len)
 {
     lzma_options_lzma opt;
-    if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
+    if (lzma_lzma_preset(&opt, XZ_PRESET)) return -1;
     if (kind == PPZ_XZ_INTS) { opt.lc = 0; opt.lp = 2; opt.pb = 2; }
     else if (kind == PPZ_XZ_TEXT) { opt.lc = 4; opt.lp = 0; opt.pb = 1; }
     lzma_filter filters[2] = { { LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL } };
@@ -328,7 +353,7 @@ int ppz_xz_unstream(const uint8_t *in, size_t n, uint64_t limit,
                     int (*sink)(const uint8_t *, size_t, void *), void *kctx, uint64_t *got)
 {
     lzma_options_lzma opt;
-    if (lzma_lzma_preset(&opt, 9 | LZMA_PRESET_EXTREME)) return -1;
+    if (lzma_lzma_preset(&opt, XZ_PRESET)) return -1;
     lzma_filter filters[2] = { { LZMA_FILTER_LZMA2, &opt }, { LZMA_VLI_UNKNOWN, NULL } };
     lzma_stream strm = LZMA_STREAM_INIT;
     uint8_t *out = malloc(CHUNK);

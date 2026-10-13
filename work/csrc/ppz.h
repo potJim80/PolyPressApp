@@ -92,6 +92,11 @@ const char *csv_error(const CsvIn *c);
 size_t      csv_width(const CsvIn *c);
 uint64_t    csv_bytes_read(const CsvIn *c);   /* of the file, so far */
 char        csv_delim(const CsvIn *c);
+/* quoting -1: decided per file (ppz_io.c, quoting_for); 1: CSV quotes; 0: a
+ * quote is an ordinary character. csv_open is csv_open_as(..., -1, ...). */
+CsvIn      *csv_open_as(const char *path, const char *encoding, char delim,
+                        int quoting, char *err, size_t cap);
+int         csv_quoting(const CsvIn *c);
 void        csv_close(CsvIn *c);
 
 /* A whole table from any readable format, chosen by extension. */
@@ -157,7 +162,7 @@ void ppz_stream_info_free(StreamInfo *info);
 
 /* ------------------------------------------------------------------- lzma */
 
-/* Raw LZMA2 at preset 9|EXTREME, the one compressor every stream uses,
+/* Raw LZMA2 at preset 9 (XZ_PRESET), the one compressor every stream uses,
  * with layout settings tuned to what the stream holds (see ppz_util.c). */
 typedef enum { PPZ_XZ_PLAIN, PPZ_XZ_INTS, PPZ_XZ_TEXT } PpzXz;
 int ppz_lzma_compress(const uint8_t *in, size_t n, Buf *out);   /* PLAIN */
@@ -170,6 +175,9 @@ int ppz_lzma_compress_as(const uint8_t *in, size_t n, Buf *out, PpzXz kind);
 size_t ppz_lzma_probe_len(const uint8_t *in, size_t n);
 /* An LZ-style size estimate, no range coder: for ranking orders only. */
 size_t ppz_size_estimate(const uint8_t *in, size_t n);
+/* The one measure PPZ_MEASURE names (xz probe unless "est"); 0 = today's mix. */
+size_t ppz_measure(const uint8_t *in, size_t n);
+int    ppz_measure_mode(void);
 int ppz_lzma_decompress(const uint8_t *in, size_t n, Buf *out);
 /* The same, a piece at a time, for data bigger than memory (ppz_util.c). */
 int ppz_xz_stream(PpzXz kind, size_t (*src)(uint8_t *, size_t, void *), void *sctx,

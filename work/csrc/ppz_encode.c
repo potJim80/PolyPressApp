@@ -608,7 +608,7 @@ static int lenient_promising(const Table *t, size_t col, const int64_t *a,
     Buf pb;
     buf_init(&pb);
     pack_ints(gaps, nex, &pb);
-    num += ppz_lzma_probe_len(pb.data, pb.len);
+    num += ppz_measure(pb.data, pb.len);
     buf_free(&pb);
     free(gaps);
 
@@ -624,7 +624,7 @@ static int lenient_promising(const Table *t, size_t col, const int64_t *a,
             uint64_t x = (uint64_t)p->ids[i];
             for (int b = 0; b < w; b++) buf_putc(&idb, (char)((x >> (8 * b)) & 0xFF));
         }
-        alt = ppz_lzma_probe_len(idb.data, idb.len);
+        alt = ppz_measure(idb.data, idb.len);
         buf_free(&idb);
         Buf ab;
         buf_init(&ab);
@@ -632,7 +632,7 @@ static int lenient_promising(const Table *t, size_t col, const int64_t *a,
             if (i) buf_putc(&ab, '\n');
             buf_put(&ab, p->alpha[i].p, p->alpha[i].n);
         }
-        alt += ppz_lzma_probe_len(ab.data, ab.len);
+        alt += ppz_measure(ab.data, ab.len);
         buf_free(&ab);
     } else {
         Buf cb;
@@ -642,7 +642,7 @@ static int lenient_promising(const Table *t, size_t col, const int64_t *a,
             Str c = table_at(t, i, col);
             buf_put(&cb, c.p, c.n);
         }
-        alt = ppz_lzma_probe_len(cb.data, cb.len);
+        alt = ppz_measure(cb.data, cb.len);
         buf_free(&cb);
     }
     return num < alt;
@@ -989,8 +989,8 @@ static void guard_task(void *arg)
         memcpy(perm + i * (size_t)wb, &v1, (size_t)wb);
     }
     free(kv);
-    size_t cost_perm = ppz_lzma_probe_len(perm, nrows * (size_t)wb);
-    size_t cost_flat = ppz_lzma_probe_len(flat, nrows * (size_t)wb);
+    size_t cost_perm = ppz_measure(perm, nrows * (size_t)wb);
+    size_t cost_flat = ppz_measure(flat, nrows * (size_t)wb);
     free(flat); free(perm);
     g->pays = cost_perm < cost_flat;
 }
@@ -1171,7 +1171,8 @@ static size_t probe_order(const Table *t, size_t col, const size_t *perm,
         Str s = table_at(t, perm ? perm[i] : i, col);
         buf_put(&b, s.p, s.n);
     }
-    size_t got = est ? ppz_size_estimate(b.data, b.len) : ppz_lzma_probe_len(b.data, b.len);
+    size_t got = ppz_measure_mode() ? ppz_measure(b.data, b.len)
+               : est ? ppz_size_estimate(b.data, b.len) : ppz_lzma_probe_len(b.data, b.len);
     buf_free(&b);
     return got;
 }
@@ -1293,8 +1294,9 @@ static void pick_text_parents(const Table *t, ColPlan *plan, size_t nc,
     ppz_parallel(probe_task, probes, sizeof(Probe), nprobes);
 
     /* estimate first: only the orders within EST_MARGIN of the best
-     * estimate are probed with xz; the rest drop out */
-    {
+     * estimate are probed with xz; the rest drop out (not under PPZ_MEASURE,
+     * where the first measure is the only one) */
+    if (!ppz_measure_mode()) {
         const double m = EST_MARGIN;
         size_t nre = 0;
         for (size_t i = 0; i < nprobes; ) {
@@ -1401,7 +1403,7 @@ static size_t num_probe(const int64_t *a, size_t n, const size_t *perm)
     Buf b;
     buf_init(&b);
     num_pack(a, n, perm, &b);
-    size_t got = b.len || !n ? ppz_lzma_probe_len(b.data, b.len) : (size_t)-1;
+    size_t got = b.len || !n ? ppz_measure(b.data, b.len) : (size_t)-1;
     buf_free(&b);
     return got;
 }
@@ -1455,10 +1457,17 @@ static void pick_num_parents(const ColPlan *plan, size_t nc, size_t nr, long *np
         num_pack(plan[p].ints, nr, perm, &bw);
         num_pack(plan[p].ints, nr, NULL, &bo);
         free(perm);
-        size_t with = ppz_size_estimate(bw.data, bw.len), without = ppz_size_estimate(bo.data, bo.len);
-        if (!clear_cut(with, without)) {
-            with = ppz_lzma_probe_len(bw.data, bw.len);
-            without = ppz_lzma_probe_len(bo.data, bo.len);
+        size_t with, without;
+        if (ppz_measure_mode()) {
+            with = ppz_measure(bw.data, bw.len);
+            without = ppz_measure(bo.data, bo.len);
+        } else {
+            with = ppz_size_estimate(bw.data, bw.len);
+            without = ppz_size_estimate(bo.data, bo.len);
+            if (!clear_cut(with, without)) {
+                with = ppz_lzma_probe_len(bw.data, bw.len);
+                without = ppz_lzma_probe_len(bo.data, bo.len);
+            }
         }
         buf_free(&bw); buf_free(&bo);
         if (with >= without) nparent[p] = -1;

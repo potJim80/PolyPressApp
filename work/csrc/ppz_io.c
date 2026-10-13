@@ -44,6 +44,12 @@
 
 #define READ_CHUNK ((size_t)1 << 20)
 
+#ifdef __APPLE__
+#define ST_MTIM(st) ((st).st_mtimespec)
+#else
+#define ST_MTIM(st) ((st).st_mtim)
+#endif
+
 static void seterr(char *err, size_t cap, const char *fmt, ...)
 {
     if (!err || !cap) return;
@@ -347,6 +353,7 @@ typedef struct { size_t off, len; } Span;
 struct CsvIn {
     Src     src;
     char    delim;
+    int     quoting;         /* 0: a quote is an ordinary character (see quoting_for) */
     Buf     in;              /* decoded text */
     size_t  pos;             /* start of the next record in `in` */
     int     src_done;
@@ -357,6 +364,7 @@ struct CsvIn {
     int     finished;
     int     gave_block;
     unsigned long long record;   /* records read, the header counting as 1 */
+    unsigned long long ragged;   /* rows padded or trimmed to the header's width */
     char    err[640];
 };
 
@@ -379,7 +387,7 @@ static void span_push(Span **sp, size_t *n, size_t *cap, size_t off, size_t len)
  * `sp`. REC_MORE means the buffer ended mid-record and more input may follow;
  * the caller rolls back and retries with more. */
 static int parse_record(const uint8_t *d, size_t n, size_t *pos, int eof,
-                        char delim, Buf *arena,
+                        char delim, int quoting, Buf *arena,
                         Span **sp, size_t *nsp, size_t *capsp, size_t *nf)
 {
     size_t i = *pos;
@@ -397,7 +405,7 @@ static int parse_record(const uint8_t *d, size_t n, size_t *pos, int eof,
             return REC_OK;
         }
         uint8_t ch = d[i];
-        if (ch == '"' && !field_open) {
+        if (ch == '"' && !field_open && quoting) {
             i++;
             field_open = 1;
             for (;;) {
@@ -480,8 +488,119 @@ static int csv_refill(CsvIn *c)
     return 0;
 }
 
+/* Quote scan over the whole file: how often a quote that opens a cell is
+ * not a CSV quote. `bad` counts a closing quote followed by more text
+ * ("Hello" world -- CSV reading drops both quotes) and a quote that never
+ * closes. 0 bad: quoting cannot be wrong anywhere in the file. */
+static int quote_scan(const char *path, const char *encoding, char delim,
+                      unsigned long long *bad)
+{
+    Src s;
+    if (src_open(&s, path, encoding, NULL, 0)) return -1;
+    Buf b;
+    buf_init(&b);
+    enum { OUT, IN, SHUT } st = OUT;   /* SHUT: a quote inside, next byte decides */
+    uint8_t last = '\n';
+    int rc = 0;
+    *bad = 0;
+    for (;;) {
+        b.len = 0;
+        long got = src_read(&s, &b, NULL, 0);
+        if (got < 0) { rc = -1; break; }
+        if (got == 0) break;
+        const uint8_t *d = b.data;
+        size_t n = b.len, i = 0;
+        while (i < n) {
+            if (st == SHUT) {
+                uint8_t x = d[i];
+                if (x == '"') { st = IN; i++; continue; }      /* "" inside quotes */
+                if (x != (uint8_t)delim && x != '\n' && x != '\r') (*bad)++;
+                st = OUT;
+                continue;
+            }
+            const uint8_t *q = memchr(d + i, '"', n - i);
+            if (!q) { i = n; break; }
+            size_t k = (size_t)(q - d);
+            if (st == IN) { st = SHUT; i = k + 1; continue; }
+            uint8_t before = k ? d[k - 1] : last;
+            if (before == (uint8_t)delim || before == '\n' || before == '\r') st = IN;
+            i = k + 1;
+        }
+        last = d[n - 1];
+    }
+    if (st == IN) (*bad)++;
+    buf_free(&b);
+    src_close(&s);
+    return rc;
+}
+
+/* Rows the reader had to pad or trim, reading the whole file one way; -1 when
+ * it refuses the file that way. */
+static long long ragged_rows(const char *path, const char *encoding, char delim,
+                             int quoting)
+{
+    CsvIn *c = csv_open_as(path, encoding, delim, quoting, NULL, 0);
+    if (!c) return -1;
+    Table t;
+    int r;
+    while ((r = csv_next(c, &t, 1 << 16)) == 1) table_free(&t);
+    long long n = r < 0 ? -1 : (long long)c->ragged;
+    csv_close(c);
+    return n;
+}
+
+/* Quote or not. Most files say nothing: no opening quote is ever misused,
+ * so CSV quoting stands, exactly as before. Some files are written with no
+ * quoting at all (Public BI's pipe files: a cell may start with a quote that
+ * closes mid-cell or never), and CSV rules glue their rows together and drop
+ * quotes. Only then is the file read both ways, and the quote is an ordinary
+ * character only if that reading is cleaner: fewer rows padded or trimmed
+ * than the CSV reading's misused quotes plus its own. Standard input cannot
+ * be read twice, so it keeps quoting. PPZ_NOQUOTE=1 / =0 forces either way.
+ * The last answer is remembered, so the planner's open and the real one
+ * scan the file once. */
+static int quoting_for(const char *path, const char *encoding, char delim)
+{
+    const char *nq = getenv("PPZ_NOQUOTE");
+    if (nq && *nq) return *nq == '0';
+    if (!strcmp(path, "-")) return 1;
+    struct stat st;
+    if (stat(path, &st) || !S_ISREG(st.st_mode)) return 1;
+    static struct { char *path, *enc; char delim; dev_t dev; ino_t ino;
+                    off_t size; struct timespec mt; int quoting; } memo;
+    const char *e = encoding ? encoding : "";
+    if (memo.path && !strcmp(memo.path, path) && !strcmp(memo.enc, e)
+        && memo.delim == delim && memo.dev == st.st_dev && memo.ino == st.st_ino
+        && memo.size == st.st_size && memo.mt.tv_sec == ST_MTIM(st).tv_sec
+        && memo.mt.tv_nsec == ST_MTIM(st).tv_nsec)
+        return memo.quoting;
+
+    int quoting = 1;
+    unsigned long long bad;
+    if (quote_scan(path, encoding, delim, &bad) == 0 && bad) {
+        long long rq = ragged_rows(path, encoding, delim, 1);
+        long long rn = ragged_rows(path, encoding, delim, 0);
+        if (rn >= 0 && (rq < 0 || (unsigned long long)rn < bad + (unsigned long long)rq))
+            quoting = 0;
+    }
+    free(memo.path); free(memo.enc);
+    memo.path = strdup(path);
+    memo.enc = strdup(e);
+    if (!memo.path || !memo.enc) oom();
+    memo.delim = delim; memo.dev = st.st_dev; memo.ino = st.st_ino;
+    memo.size = st.st_size; memo.mt = ST_MTIM(st);
+    memo.quoting = quoting;
+    return quoting;
+}
+
 CsvIn *csv_open(const char *path, const char *encoding, char delim,
                 char *err, size_t cap)
+{
+    return csv_open_as(path, encoding, delim, -1, err, cap);
+}
+
+CsvIn *csv_open_as(const char *path, const char *encoding, char delim,
+                   int quoting, char *err, size_t cap)
 {
     CsvIn *c = calloc(1, sizeof(CsvIn));
     if (!c) oom();
@@ -501,6 +620,7 @@ CsvIn *csv_open(const char *path, const char *encoding, char delim,
         else delim = sniff_delim(c->in.data, c->in.len);
     }
     c->delim = delim;
+    c->quoting = quoting >= 0 ? quoting : quoting_for(path, encoding, delim);
     return c;
 }
 
@@ -508,6 +628,7 @@ const char *csv_error(const CsvIn *c) { return c->err; }
 size_t csv_width(const CsvIn *c) { return c->width; }
 uint64_t csv_bytes_read(const CsvIn *c) { return c->src.roff + c->src.rlen; }
 char csv_delim(const CsvIn *c) { return c->delim; }
+int csv_quoting(const CsvIn *c) { return c->quoting; }
 
 void csv_close(CsvIn *c)
 {
@@ -539,7 +660,7 @@ int csv_next(CsvIn *c, Table *t, size_t max_rows)
         size_t p = c->pos;
         Buf *arena = c->have_header ? &t->arena : &hdr;
         int r = parse_record(c->in.data, c->in.len, &p, c->src_done, c->delim,
-                             arena, &sp, &nsp, &capsp, &nf);
+                             c->quoting, arena, &sp, &nsp, &capsp, &nf);
         if (r == REC_MORE) {
             arena->len = save_arena;
             if (!c->have_header) hdr.len = 0;
@@ -572,6 +693,7 @@ int csv_next(CsvIn *c, Table *t, size_t max_rows)
             buf_free(&hdr);
             continue;
         }
+        if (nf != c->width) c->ragged++;
         if (nf < c->width) {
             for (; nf < c->width; nf++) span_push(&sp, &nsp, &capsp, 0, 0);
         } else if (nf > c->width) {

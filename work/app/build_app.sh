@@ -144,10 +144,14 @@ This is needed only once.
 
 Use
 ---
-Drop a table on the window (CSV, TSV, JSON or JSON Lines, or Parquet if the
-system Python has pyarrow) to compress it into a .ppz file next to the
-original. Drop a .ppz file to restore the table next to it. A .ppz file can
-also be opened by double-clicking it in the Finder.
+Compress: drag tables onto the window (CSV, TSV, JSON, JSON Lines, Stata,
+SPSS or SAS files, or Parquet if the system Python has pyarrow), or choose
+them with Choose files. Then press Compress. Restore: the same, with .ppz
+archives, and a choice of output format. A .ppz file double-clicked in the
+Finder opens in Restore, ready to restore.
+
+By default Polypress asks where to save each result; this can be changed in
+Settings. History lists every file compressed or restored on this Mac.
 
 Before an archive is written, it is decompressed and compared with the
 original, cell by cell.
