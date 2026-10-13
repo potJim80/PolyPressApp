@@ -1,0 +1,6 @@
+# The source archive must carry everything setup.py needs to compile the program.
+recursive-include work/csrc *.c *.h *.sh *.in *.inc LICENSE* COPYING*
+recursive-exclude work/csrc/tests *
+prune work/csrc/.build
+exclude work/csrc/polypress
+include work/py/parquet.py work/LICENSE

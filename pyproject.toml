@@ -1,0 +1,41 @@
+# The pip package: the C program, compiled, plus a launcher. There is one
+# compressor -- work/csrc -- and this only installs it. setup.py builds it.
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polypress"
+dynamic = ["version"]
+description = "Lossless compression for data tables: CSV, JSON, Parquet, Stata, SPSS and SAS"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["work/LICENSE", "work/csrc/readstat/LICENSE", "work/csrc/xz/LICENSE"]
+authors = [{ name = "Mahdi Akbarin" }]
+keywords = ["compression", "csv", "parquet", "columnar", "stata", "spss", "sas"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C",
+    "Topic :: System :: Archiving :: Compression",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+[project.urls]
+Homepage = "https://www.polypressapp.com"
+Repository = "https://github.com/potJim80/PolyPressApp"
+
+# pyarrow only for Parquet, which goes through the polypress-parquet converter
+[project.optional-dependencies]
+parquet = ["pyarrow>=8"]
+
+[project.scripts]
+polypress = "polypress.__main__:main"
+polypress-parquet = "polypress.parquet:main"
+
+[tool.setuptools]
+package-dir = { "" = "work/python" }
+packages = ["polypress"]

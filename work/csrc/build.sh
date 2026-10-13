@@ -33,6 +33,8 @@ LIB="$here/.build/liblzma.a"
 # It needs zlib (SPSS .zsav), which macOS ships and Linux has as zlib1g-dev.
 "$here/readstat/build.sh" "$here/.build" -O2
 LIB="$here/.build/libreadstat.a $LIB -lz"
+# the maths library is part of libc on macOS, a separate one (-lm) on Linux
+[ "$(uname)" = "Darwin" ] || LIB="$LIB -lm"
 
 echo "cc $CFLAGS $INC ... $LIB"
 # shellcheck disable=SC2086

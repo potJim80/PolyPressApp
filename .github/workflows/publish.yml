@@ -1,0 +1,115 @@
+# Build the pip package for each platform and, on a release, publish it to PyPI.
+#
+#   gh release create v1.0.0 -R potJim80/PolyPressApp --target turbo
+#
+# No token lives anywhere. PyPI's trusted publishing hands the publish job a
+# short-lived credential; the publisher registered on PyPI names this repo,
+# this filename and the `pypi` environment, so rename none of the three.
+#
+# Run it by hand (Actions -> Publish to PyPI -> Run workflow) to build and test
+# every package without uploading anything.
+#
+# A version number can never be reused on PyPI, so the publish job first checks
+# that the release tag matches PPZ_VERSION in work/csrc/ppz.h.
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  # The full C test suite, on each platform a wheel is built for. The tests live
+  # in the private repo only, so in the public one this job finds nothing to run.
+  tests:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run work/csrc/tests/run.sh
+        run: |
+          if [ ! -f work/csrc/tests/run.sh ]; then echo "no tests in this repo"; exit 0; fi
+          if command -v apt-get >/dev/null; then sudo apt-get install -y -qq zlib1g-dev; fi
+          sh work/csrc/tests/run.sh
+
+  wheels:
+    name: wheel (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # In the private repo README.md is the research log; PyPI shows the public one.
+      - run: if [ -f PUBLIC-README.md ]; then cp PUBLIC-README.md README.md; fi
+      - uses: pypa/cibuildwheel@v2.23.3
+        env:
+          # one wheel per platform covers every Python 3: it holds a program, not an extension
+          CIBW_BUILD: "cp312-*"
+          CIBW_ARCHS: native
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          CIBW_BEFORE_ALL_LINUX: dnf install -y zlib-devel
+          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0
+          CIBW_TEST_COMMAND: >-
+            polypress --version &&
+            printf 'id,city,zip\n1,Chicago,60601\n2,Chicago,60601\n3,Boston,02108\n' > t.csv &&
+            polypress compress t.csv -o t.ppz &&
+            polypress restore t.ppz -o back.csv &&
+            cmp t.csv back.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: if [ -f PUBLIC-README.md ]; then cp PUBLIC-README.md README.md; fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build && python -m build --sdist
+      - name: The source archive compiles and round-trips
+        run: |
+          python -m venv /tmp/v && /tmp/v/bin/pip install dist/*.tar.gz
+          printf 'id,n\n1,10\n2,11\n' > /tmp/t.csv
+          /tmp/v/bin/polypress compress /tmp/t.csv -o /tmp/t.ppz
+          /tmp/v/bin/polypress restore /tmp/t.ppz -o /tmp/back.csv
+          cmp /tmp/t.csv /tmp/back.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [tests, wheels, sdist]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # the credential PyPI trades for an upload grant
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse a tag that disagrees with PPZ_VERSION
+        run: |
+          v=$(sed -n 's/^#define PPZ_VERSION *"\([0-9]*\)\.\([0-9]\)\([0-9]\)"/\1.\2.\3/p' work/csrc/ppz.h)
+          echo "tag=${GITHUB_REF_NAME}  ppz.h=$v"
+          [ "${GITHUB_REF_NAME#v}" = "$v" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match version $v -- PyPI versions cannot be reused"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

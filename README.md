@@ -65,7 +65,19 @@ Every table in the benchmark is government open data, so there is no reason to
 assume the results carry over to other kinds of data. Nobody outside the
 project has used it yet.
 
-## Build
+## Install
+
+```sh
+pip install polypress               # the polypress command
+pip install "polypress[parquet]"    # also installs pyarrow, for Parquet files
+```
+
+Ready-built for macOS on Apple silicon and for Linux (x86-64 and ARM). Anywhere
+else, pip compiles it from source, which needs a C compiler. The package is the
+C program and a small launcher; there is no second copy of the compressor in
+Python.
+
+## Build from source
 
 You need a C compiler. The xz and ReadStat sources are included, so nothing else
 has to be installed.
@@ -77,8 +89,8 @@ PREFIX=/usr/local sh work/csrc/build.sh install    # put it on your PATH
 
 - **Mac app:** `sh work/app/build_app.sh` builds `Polypress.app` into
   `~/Applications` (macOS 11 or later, Xcode command line tools).
-- **Parquet** goes through `work/py/parquet.py`, which needs Python 3 and
-  `pyarrow`.
+- **Parquet** goes through a converter that needs Python 3 and `pyarrow`:
+  `polypress-parquet` when installed with pip, `work/py/parquet.py` from source.
 
 ## Use
 
@@ -88,6 +100,9 @@ polypress restore  data.csv.ppz          # -> data.csv
 polypress info     data.csv.ppz          # what is inside
 polypress convert  data.csv data.json    # one table format to another
 polypress stream-compress big.csv        # for files bigger than memory
+
+polypress-parquet to-csv data.parquet | polypress compress - -o data.ppz
+polypress restore data.ppz -o - | polypress-parquet from-csv - data.parquet
 ```
 
 - **Exactly means the table.** Column names, order, rows and every cell come
